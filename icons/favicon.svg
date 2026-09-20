@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#00504e"/>
+  <!-- amber dot accent -->
+  <circle cx="256" cy="106" r="26" fill="#ffd166"/>
+  <!-- equalizer bars -->
+  <rect x="132" y="211" width="44" height="190" rx="22" fill="#f7f6f2"/>
+  <rect x="200" y="191" width="44" height="230" rx="22" fill="#f7f6f2"/>
+  <rect x="268" y="221" width="44" height="190" rx="22" fill="#f7f6f2"/>
+  <rect x="336" y="251" width="44" height="110" rx="22" fill="#f7f6f2"/>
+</svg>

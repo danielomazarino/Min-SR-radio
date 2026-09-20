@@ -1,0 +1,10 @@
+# Dev files — only the built app is deployed from this branch
+server.js
+build.mjs
+scripts/
+src/
+tests/
+public/
+node_modules/
+package.json
+package-lock.json
