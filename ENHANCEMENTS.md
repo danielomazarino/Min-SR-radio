@@ -4,6 +4,55 @@ Pågående anteckningar för förbättringar att ta itu med senare. Nyast övers
 
 ---
 
+## 2026-09-22 — iPhone-feedback på DVR-UX-revisionen (buggar att fixa nästa session)
+
+**Användaren testade nya UX:n på riktig iPhone.** Funktionellt fungerar DVR
+(seek + Till Direkt via LIVE-etiketten), men två UX-problem rapporterades:
+
+### BUG A — Pillen ska visa minus-tid, inte klocktid (HIGH, OPEN)
+- **Observation:** pillen visar klocktid (t.ex. "23:05") men klocktiden står
+  redan nere till vänster vid slidern — pillen ska visa **minus-tiden**
+  ("−46 min") eftersom det är den information användaren vill se i pillen.
+- **Fix-riktning:** byt tillbaka pillen till `dvrOffsetLabel()` (relativ
+  offset). Behåll klocktiden i seekradens vänsterlabel (där den är nyttig
+  som drag-förhandsvisning). Detta återställer den icke-duplicerade
+  kompositionen: pill = minus-tid, slider-vänster = klocktid.
+- Obs: detta är en medveten designändring från UX-revisionen ovan —
+  användarens preferens vinner.
+
+### BUG B — Slider-upplevelsen fläckig/instabil (HIGH, OPEN)
+- **Observation:** slider-känslan är "fläckig" och känns inte stabil/smooth
+  på iPhone (touch).
+- **Möjliga orsaker att utreda (INTE bekräftade — utred först):**
+  1. `pointerdown` → `setPointerCapture` kan krocka med Safari's touch-
+     scroll/gester; prova `touch-action: none` på `.dvr-bar` (saknas idag —
+     CSS har ingen touch-action-regel för DVR-baren).
+  2. Seek committas först vid `pointerup` — under draget spelas fortfarande
+     gamla positionen; känslan av "instabil" kan vara att fill/thumb hoppar
+     tillbaka när `timeupdate`-paint krockar med drag-paint (dragging-guard
+     finns men `upd()` kan köras mellan pointerdown och paint).
+  3. `pointermove` utan throttling kan flöda paint på iOS.
+  4. iOS Safari kan rapportera `pointerId` annorlunda; `releasePointerCapture`
+     i try/catch finns men kolla att `pointerup` verkligen firear (annars
+     fastnar dragging=true och slidern "dör").
+- **Fix-riktning:** lägg `touch-action: none` på `.dvr-bar`, lägg till
+  `pointercancel`-säkerhet + drag-end-fallback, överväg rAF-throttling av
+  paint, och testa på riktig iPhone efter varje ändring.
+- **Regressionsskydd:** 49/49 tester ska fortsätta passera; lägg gärna till
+  ett test för touch-action-regeln.
+
+### Nästa session — startpunkt
+1. Läs denna post + "Fas 3 implementerad"-posten (nedan) för kontext.
+2. Fixa BUG A (pill → minus-tid) — liten ändring i `renderPlayer` mode-pill.
+3. Fixa BUG B (slider-stabilitet) — CSS `touch-action: none` + pointer-
+   robusthet; validera på riktig iPhone efteråt.
+4. Kör `node --test` (49/49), `node build.mjs`, kopiera dist → root, commit,
+   push — samma deploy-flöde som tidigare.
+5. Deploy-verifiering: riktig Edge via CDP (mönster i /tmp/ux-verify.js) +
+   användarens iPhone.
+
+---
+
 ## 2026-09-22 — DVR-UX reviderad (användarfeedback från riktig iPhone)
 
 **Användare bekräftade:** DVR fungerar på iPhone (P2, "−46 min", AAC 192) —
