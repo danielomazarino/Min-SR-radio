@@ -4,6 +4,38 @@ Pågående anteckningar för förbättringar att ta itu med senare. Nyast övers
 
 ---
 
+## 2026-09-21 — Fas 1a + Fas 1 implementerade (godkända)
+
+### Fas 1a — Livscykel-fix (buggen "stängd spelare kommer inte tillbaka")
+- `renderPlayer()` nollställer nu `$player.style.transform = ''` vid varje
+  render — kontraktet "renderPlayer äger ALLT presentations-state" är
+  genomfört. Svep-stängning lämnar inte längre spelaren osynlig under
+  skärmen.
+- **Alla 5 övergångar verifierade live på GitHub Pages** (synlig + på
+  skärmen + rätt titel): kanal→✕→kanal ✅, kanal→svep→kanal ✅,
+  kanal→svep→podd ✅, podd→svep→kanal ✅, podd→✕→podd ✅.
+
+### Fas 1 — Stream descriptors + CAPS + resolveStreams
+- `STREAM_TABLE` (statisk, Phase 1: endast FLAC-posten för P2 Musik 2562),
+  `CAPS` (isIOS/isSafari/isFirefox/canPlayAacDirect/canPlayFlac; HLS-flaggor
+  definierade men false till fas 2), `resolveStreams(channel)` som ger
+  descriptor-objekt `{url, codec, bitrate, transport, dvr, priority}`.
+- Kandidatordningen är **identisk** med den gamla `liveCandidates` —
+  skyddad av 8 nya enhetstester (`tests/streams.test.mjs`): P2 Musik
+  Chromium = FLAC→MP3; Safari = FLAC→AAC320→MP3; P1 = MP3 (Chromium) /
+  AAC320→MP3 (Safari).
+- `playTrack`/`advanceCandidate` bär descriptor-fält (codec/bitrate/
+  transport/dvr) till `state.current` — badgen läser fakta i stället för
+  URL-gissning.
+- **Två pills** enligt godkänd Bilaga A: `.player-quality` (FLAC / AAC 320 /
+  MP3 96 — ärlig bitrate, FLAC utan siffra) + `.player-mode` (LIVE; DVR-
+  tillstånd kommer i fas 3). icy-br HEAD bekräftar bitrate för direct-AAC.
+- **P2 FLAC skyddat:** verifierat live — P2 Musik spelar FLAC först
+  (badge "FLAC", paus/återupptagning OK), ingen nedgradering.
+- Tester: 18/18 passerar (10 gamla + 8 nya).
+
+---
+
 ## 2026-09-21 — KOMPATIBILITETSMATRIS: strömkvalitet över hela PWA-plattforms-matrisen
 
 **Princip:** "Använd den högsta ljudkvalitet som aktuell plattform/webbläsare
