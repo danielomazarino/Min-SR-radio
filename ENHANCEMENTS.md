@@ -4,6 +4,38 @@ Pågående anteckningar för förbättringar att ta itu med senare. Nyast övers
 
 ---
 
+## 2026-09-21 — Öppna punkter: genomförda (buffring, spelare, sheet, ikonfråga)
+
+### 1. Buffringsindikator (implementerat)
+- Badgen i spelaren visar "MP3 · buffrar" (pulsande animation) medan ljudet
+  laddar eller re-buffrar (`waiting`/`stalled`), och återgår till vanligt
+  format ("MP3") när ljudet flyter (`playing`). Noll extra plats — samma pill.
+- `prefers-reduced-motion` respekterad (ingen puls).
+- Verifierat live: "MP3 · buffrar" under laddning → "MP3" vid uppspelning.
+
+### 2. Spelaren: svep-ned-stäng + tydligare kryss (implementerat)
+- Svep nedåt på spelaren stoppar ljudet och stänger den (samma mönster som
+  Inställningar-sheeten, via `enableSwipeToClose` axis 'y'). Verifierat live.
+- Stäng-krysset är nu en SVG-ikon (skarp vid alla skalor) i stället för
+  text-tecknet ✕.
+
+### 3. Inställningar-sheeten: scroll bleed-through (fixat)
+- `overscroll-behavior: contain` på `.sheet` + `body.overflow=hidden` när
+  sheeten öppnas, återställt vid stängning (även via Spara och svep).
+- Verifierat live: sheet scrollar internt, sidan bakom står still, overflow
+  återställs efter stängning.
+
+### 4. P2 Musik-ikon (utrett — ingen distinkt ikon finns)
+- SR:s API har separata bildfiler för P2 (163: `684f7bac…`) och P2 Musik
+  (2562: `19ccfced…`), men **båda visar samma orangea "P2"-logo** — SR använder
+  samma design för båda kanalerna. Ingen "P2 Musik"-specifik logo finns i
+  API, CDN eller på sverigesradio.se (kanaler-sidan visar programbilder, inte
+  kanallogotyper; logotyp-sidan på om.sr.se 404:ar).
+- Appen visar alltså SR:s officiella ikoner korrekt. Om man vill skilja dem
+  åt visuellt krävs en egen påhittad ikon — inte gjort (behåller SR:s look).
+
+---
+
 ## 2026-09-21 — VIKTIGT: FLAC-mappningen var fel kanal (korrigerat)
 
 - **Fynd:** `edge1.sr.se/p2-flac` tillhör **P2 Musik (id 2562)**, inte P2
