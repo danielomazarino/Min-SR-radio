@@ -4,6 +4,34 @@ Pågående anteckningar för förbättringar att ta itu med senare. Nyast övers
 
 ---
 
+## 2026-09-21 — VIKTIGT: FLAC-mappningen var fel kanal (korrigerat)
+
+- **Fynd:** `edge1.sr.se/p2-flac` tillhör **P2 Musik (id 2562)**, inte P2
+  (id 163). Bevis: SR:s egna HLS-manifest — `163.hls` listar endast
+  `p2sm/*`-varianter, `2562.hls` listar endast `p2/*`-varianter. Edge-slug-
+  familjen "p2" = P2 Musik. Ingen `p2sm-flac` finns (edge1/ljud1/ljud2: 404).
+- **Konsekvens innan fixen:** när man tryckte på P2 (163) spelades P2 Musiks
+  FLAC-ström — fel kanalinnehåll utanför simucast-tider (t.ex. 06:00–12:30 när
+  P2 sänder finska/samiska program men P2 Musik sänder klassiskt).
+- **Fix:** FLAC-kandidaten flyttad till 2562. Nu: P2 Musik → FLAC först på
+  alla enheter; P2 (163) → AAC-320 på iOS, MP3 annars (ingen FLAC finns).
+- Verifierat live: P2 (163) → badge MP3; P2 Musik (2562) → badge FLAC, spelar.
+- **Lärdom:** testa kanalidentitet, inte bara URL-levnad. Simucast-fönster
+  (t.ex. "Konsert i P2" 20–22) kan dölja fel kanalmappning helt.
+
+## 2026-09-21 — iPhone-frågor (svar)
+
+- **Badges pålitliga?** Ja efter FLAC-fixen ovan. Badgen visar den URL som
+  faktiskt spelas (`cur.audioUrl`), och fallback uppdaterar den automatiskt.
+  AAC-badgen på iPhone = AAC-320 via officiell mall (icy-br 312 verifierat).
+- **~2 s fördröjning innan ljud på iPhone:** det är buffring, inte inbyggd
+  fördröjning. Kedjan är: API-hämtning av kanaler → tryck → `<audio>` laddar
+  via 2 redirects (topsy→live1→edge) → Safari buffrar ~1–2 s innan `playing`.
+  MP3-96 startar snabbare än FLAC (större bitrate = mer buffring). Kan
+  förbättras med HLS (6 s-segment, snabbare first-play) senare.
+
+---
+
 ## 2026-09-21 — Strömresolver med automatisk fallback (implementerat)
 
 **Princip: bästa ljudkvalitet först för ALLA enheter; automatisk fallback till
