@@ -4,6 +4,37 @@ Pågående anteckningar för förbättringar att ta itu med senare. Nyast övers
 
 ---
 
+## 2026-09-22 — FIX: DVR-raden dök inte upp på iPhone (render-trigger)
+
+**Användarobservation (riktig iPhone, skärmdump):** P4 Göteborg spelade via
+HLS (badge "AAC 192 · buffrar") men ingen DVR-rad syntes.
+
+### Rotorsak (etablerad, inte gissad)
+`updateSeekableState()` uppdaterade state men **anropade aldrig
+`renderPlayer()`**. DVR-raden byggs en gång per render — och på native HLS
+(iPhone Safari) är `seekable` **tom när uppspelningen startar** och växer
+först senare. Vid den initiala renderen var `dvrAvailable` false → raden
+byggdes aldrig → när seekable senare växte fanns ingen render som visade
+den. På desktop Edge i Fas 3-testet syntes raden eftersom testet interagerade
+(seek/klick) som triggade renders — därför upptäcktes det inte där.
+
+### Fix (minimal)
+`updateSeekableState()` spårar nu `prevDvr`/`prevAtLive` och anropar
+`renderPlayer()` **endast när `dvrAvailable` eller `atLiveEdge` flippar** —
+inte vid varje timeupdate (DVR-barens egen updater hanterar kontinuerlig
+position). Kontraktet "renderPlayer äger presentationen" är nu komplett
+även för asynkron seekable-tillväxt.
+
+### Verifiering
+- 49/49 tester passerar (oförändrat beteende i övrigt)
+- Riktig Edge 153 med ny build (app.f16d1ae6.js): P4 HLS → DVR-rad + Till
+  Direkt syns, seekable 181 min, LIVE-pill ✅
+- **iPhone är fortfarande ej verifierat** — men flip-mekanismen täcker nu
+  exakt det iPhone-scenario som observerades (seekable tom vid start →
+  växer senare → render triggas). Användaren ombeds testa igen på iPhone.
+
+---
+
 ## ROADMAP — projektstatus och framtida faser (2026-09-22)
 
 **Statusöversikt (distinguishera COMPLETE / NEXT / PLANNED / OPEN BUG /
