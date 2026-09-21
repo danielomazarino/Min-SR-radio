@@ -4,6 +4,50 @@ Pågående anteckningar för förbättringar att ta itu med senare. Nyast övers
 
 ---
 
+## 2026-09-21 — Strömresolver med automatisk fallback (implementerat)
+
+**Princip: bästa ljudkvalitet först för ALLA enheter; automatisk fallback till
+nästa kandidat vid fel — och badgen i spelaren följer med automatiskt så
+användaren ser när fallback triggas.**
+
+### Kandidatordning per kanal (`liveCandidates` i app.js)
+1. **P2 (id 163): FLAC** `edge1.sr.se/p2-flac` — förlustfri, spelar i Chromium
+   (verifierat: `playing@1347ms`, currentTime avancerar) och troligen Safari.
+   Omdokumenterad av SR → MP3 är alltid fallback.
+2. **iOS/Safari: AAC-320** via officiell mall `srapi/{id}-hi-aac-http`.
+   Safari spelar rå ADTS nativt (ej testad på riktig iPhone — se nedan).
+3. **Alla: officiell MP3** (`liveaudio.url` från API:t) — fungerar överallt.
+   Android/Chrome är Chromium-baserad → rå ADTS fungerar inte där heller,
+   så Android får MP3 (med FLAC för P2).
+
+### Fallback-mekanism (två vägar, båda verifierade)
+- **`error`-event:** död URL → error@562ms → nästa kandidat → spelar. ✅
+- **Watchdog (6 s):** Chromium **avfyrar INTE error** för rå ADTS-AAC — den
+  hänger sig tyst (readyState 0, inga events, verifierat 3 ggr). Därför: om
+  ingen `playing` inom 6 s → nästa kandidat. Watchdog rensas vid
+  `playing`/`pause`/`ended`/stängd spelare.
+- **Minne:** `workingStreamIdx` per stream-nyckel — paus/återupptagning
+  försöker inte igen en känd dålig kandidat.
+
+### Badge följer aktiv kandidat automatiskt
+- `advanceCandidate()` uppdaterar `cur.audioUrl` → `renderPlayer()` → badgen
+  renderas från `streamFormatLabel(cur.audioUrl)`. FLAC→MP3-shift syns alltså
+  direkt för användaren. icy-br-bitrate hämtas inte för FLAC (opålitlig).
+
+### Verifierat live på GitHub Pages (app.82cdcf19.js)
+- P2 → badge "FLAC", spelar, paus/återupptagning OK ✅
+- P1 → badge "MP3", spelar ✅ (resolveren bryter inte andra kanaler)
+- Simulerad död FLAC-URL → error-fallback → MP3 spelar ✅
+- Watchdog-kod i serverat bundle ✅
+
+### Ej testat / kvar
+- **AAC-320 på riktig iPhone/Safari** — Chromium-tester kan inte bevisa
+  Safari-beteende. Koden aktiverar AAC först på iOS; om den hänger sig tar
+  watchdog/error över till MP3 automatiskt, så risken är låg.
+- HLS + hls.js (192 kbps AAC för alla kanaler) — framtida förbättring.
+
+---
+
 ## 2026-09-21 — Spelare: format-badge (implementerat)
 
 - Badge under undertexten i spelaren visar strömformat: MP3 / AAC / FLAC / HLS,
