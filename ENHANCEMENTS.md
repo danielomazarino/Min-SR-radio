@@ -4,6 +4,106 @@ Pågående anteckningar för förbättringar att ta itu med senare. Nyast övers
 
 ---
 
+## 2026-09-21 — KOMPATIBILITETSMATRIS: strömkvalitet över hela PWA-plattforms-matrisen
+
+**Princip:** "Använd den högsta ljudkvalitet som aktuell plattform/webbläsare
+kan spela pålitligt, med behållna fallbacks." Ingen plattform ska gå sönder
+för att en annan stödjer mer.
+
+### Nyckelfynd från SR:s HLS (curl-verifierat 2026-09-21)
+
+- **DVR-fönstret är ~3 timmar!** Varianter-playlistor innehåller 1700 segment
+  × 6,4 s = 10 880 s ≈ 3,02 h rullande fönster (inga ENDLIST/PLAYLIST-TYPE =
+  sliding live). Detta gäller alla kanaler/varianter (p1_128, p2_320, p3_320).
+- **Kvalitetsladder per kanal (AAC-LC, mp4a.40.2):**
+  - P1 (132): 32 / 128 / 192 kbps
+  - P2 (163): 32 / 128 / 192 kbps
+  - P3 (164): 32 / 128 / **320 kbps**
+  - P4 Göteborg (212): 32 / 128 / 192 kbps
+  - P2 Musik (2562): 32 / 128 / **320 kbps**
+- **CORS:** ljud1-cdn + ljud2-cdn + roder.sr.se (content steering) alla
+  `access-control-allow-origin: *` — hls.js fungerar från GitHub Pages.
+- **Dubbla CDN:** LJUD1 (ljud1-cdn) + LJUD2 (ljud2-cdn) via content steering
+  (`roder.sr.se/hls/{kanal}?cc=XX`, PATHWAY-PRIORITY LJUD1→LJUD2).
+- **Segment:** MPEG-TS (`video/MP2T`), 6,4 s, AAC-LC i TS.
+
+### Browser-tester (Chromium 148/Electron — VS Code-webview)
+
+- **Native HLS i `<audio>`:** `canPlayType` säger "true" men **spelar inte** —
+  loadedmetadata@2.3s → error. Chromium ljuger i canPlayType för m3u8.
+- **hls.js 1.7.3:** manifest parsas, buffer appendas, **seekable = [0, 10880]**
+  — hela 3-h-fönstret exponeras! Seek 10 min bak fungerar (ct=10280 efter seek
+  till -600s). I den här Electron-webviewen uppstår `mediaSourceRequiresReset`-
+  fel (MSE-lifecycle-quirk i VS Code-webview, ej representativt för riktig
+  Chrome) — men pipeline och DVR-seek fungerar ändå delvis.
+- **Slutsats:** hls.js-arkitekturen är via-bar för DVR; kräver riktig
+  Chrome/Safari-test innan implementering.
+
+### Kompatibilitetsmatris (kodavkodning vs SR-ström vs arkitektur)
+
+| Kapabilitet | iOS Safari/PWA | iPadOS Safari/PWA | Android Chrome/PWA | Win Chrome | Win Edge | Win Firefox | macOS Safari | macOS Chrome | Linux Chrome | Linux Firefox |
+|---|---|---|---|---|---|---|---|---|---|---|
+| FLAC (Ogg) decode | ✅ (11.1+) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| FLAC via `<audio>` direkt | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| AAC-LC ADTS via `<audio>` | ✅ nativt | ✅ nativt | ❌ hänger sig | ❌ hänger sig | ❌ hänger sig | ⚠️ varierar | ✅ nativt | ❌ hänger sig | ❌ hänger sig | ⚠️ varierar |
+| MP3 via `<audio>` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| HLS nativt (m3u8 i media-el) | ✅ nativt | ✅ nativt | ❌ | ❌ | ❌ | ❌ | ✅ nativt | ❌ | ❌ | ❌ |
+| HLS via hls.js (MSE) | ⚠️ iOS 17.1+ ManagedMSE, annars begränsat | ⚠️ samma | ✅ | ✅ | ✅ | ⚠️ FF MSE ok men TS-i-MSE varierar | ⚠️ (native bättre) | ✅ | ✅ | ⚠️ |
+| HLS live-uppspelning | ✅ nativt | ✅ nativt | ✅ via hls.js | ✅ via hls.js | ✅ via hls.js | ⚠️ | ✅ nativt | ✅ via hls.js | ✅ via hls.js | ⚠️ |
+| HLS live seek/DVR (3 h) | ✅ nativt (seekable) | ✅ nativt | ✅ hls.js (verifierat seekable 0–10880) | ✅ hls.js | ✅ hls.js | ⚠️ | ✅ nativt | ✅ hls.js | ✅ hls.js | ⚠️ |
+| ~3 h rewind | ✅ (nativt DVR) | ✅ | ✅ (hls.js + backBufferLength) | ✅ | ✅ | ⚠️ | ✅ | ✅ | ✅ | ⚠️ |
+| MSE-stöd | ❌ (ingen MSE i Safari för audio-only; ManagedMSE iOS 17.1+ video) | ❌/⚠️ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
+| hls.js viabilitet | ⚠️ (native HLS bättre) | ⚠️ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ✅ | ✅ | ⚠️ |
+| Bakgrundsljud (PWA) | ✅ (media session) | ✅ | ✅ (media session + foreground service) | ✅ (flik aktiv) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Låsskärmskontroller | ✅ MediaSession API | ✅ | ✅ | ✅ (OS-beroende) | ✅ | ⚠️ | ✅ | ✅ | ⚠️ (DE-beroende) | ⚠️ |
+| Installerad PWA + ljud | ✅ hemskärms-PWA spelar i bakgrund | ✅ | ✅ (WebAPK) | ✅ | ✅ | ⚠️ (FF ej full PWA) | ✅ | ✅ | ✅ | ⚠️ |
+
+**Viktiga distinktioner (per krav):**
+1. "Kan avkoda codec" ≠ "kan spela SR:s ström": Chromium kan "avkoda AAC" men
+   SR:s rå-ADTS-ström hänger sig tyst (verifierat 3 ggr). Safari spelar ADTS.
+2. "Spela ström" ≠ "via arkitektur": Chromium spelar inte HLS nativt trots
+   canPlayType=true; via hls.js/MSE fungerar det (med DVR!).
+3. "PWA-beteende vid installering/bakgrund": iOS PWA spelar ljud i bakgrund
+   med MediaSession; Android WebAPK likaså; desktop = flik-musik.
+
+### Rekommenderad arkitektur (progressiv förstärkning, hela matrisen)
+
+1. **iOS/iPadOS Safari (primärt mål):** native HLS i `<audio>` — Safari spelar
+   m3u8 nativt inkl. DVR-seek (seekable exponeras). Bästa kvalitet: HLS 320
+   (P3/P2 Musik) resp 192 (P1/P2/P4). Ingen hls.js behövs. AAC-ADTS direkt
+   fungerar också men HLS ger DVR + adaptivt.
+2. **Android Chrome + desktop Chromium (Chrome/Edge):** hls.js + MSE.
+   Kvalitet: samma HLS-ladder, adaptiv eller låst till högsta. DVR via
+   seekable. hls.js ~100 KB gz, lazy-loadas bara när spelaren används.
+3. **Firefox (Win/Linux):** MSE finns men TS-i-MSE är opålitligt → behåll
+   MP3-96 som fallback (nuvarande beteende). Test krävs; hls.js kan funka.
+4. **P2 Musik FLAC:** behåll som kandidat 1 på alla plattformar (Ogg-FLAC
+   spelar överallt enligt matrisen) — men HLS 320 är nu ett dokumenterat,
+   stabilt alternativ med DVR som FLAC saknar.
+5. **Fallback-kedjan (nuvarande resolver) är fortfarande ryggraden:** varje
+   plattform faller automatiskt till nästa kandidat som fungerar.
+
+### 3-timmars rewind — plattformsoberoende bedömning
+
+- **Kan implementeras konsekvent på:** iOS/iPadOS (native HLS), Android
+  Chrome, Windows/macOS/Linux Chrome+Edge (hls.js). Det är majoriteten av
+  matrisen.
+- **Ej garanterat:** Firefox (TS-i-MSE opålitligt), äldre iOS (<17.1 har
+  begränsad MSE men native HLS täcker DVR ändå).
+- **Bästa korsplattforms-arkitektur:** HLS överallt där det fungerar (native
+  på Safari, hls.js på Chromium-baserade), MP3-fallback på Firefox tills
+  testat. DVR-UI (spola bakåt i direkt) aktiveras bara när
+  `audio.seekable` visar ett fönster > 0.
+
+### Kvar att testa på riktig hårdvara
+- iPhone: native HLS + DVR-seek + bakgrund/PWA (högsta prioritet)
+- Android: hls.js + DVR + bakgrund
+- Firefox desktop: TS-i-MSE
+- (Electron-webviewen här är inte representativ; dess MSE-quirk dokumenterad
+  ovan men påverkar bara VS Code-förhandsvisning)
+
+---
+
 ## 2026-09-21 — Öppna punkter: genomförda (buffring, spelare, sheet, ikonfråga)
 
 ### 1. Buffringsindikator (implementerat)
