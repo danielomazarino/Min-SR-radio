@@ -4,6 +4,318 @@ Status: **DESIGN — inte implementerad.** Väntar på godkännande.
 Datum: 2026-09-21. Grund: undersökningsresultat i ENHANCEMENTS.md
 (kompatibilitetsmatrisen) + curl-verifierade HLS-fakta.
 
+**Bilaga A (nedan): Spelar-UX & livscykel-granskning** — inklusive
+rotorsaken till buggen "stängd spelare kommer inte tillbaka" (§A.3),
+livscykel-kontrakt (§A.7) och rekommenderade layouter (§A.4–A.10).
+
+---
+
+# Bilaga A — Spelar-UX, livscykel & bugganalys
+
+## A.1 Nuvarande spelar-arkitektur (dokumenterad, oförändrad)
+
+### DOM & livscykel
+
+- `$player` = **en enda permanent div** (`<div class="player">`) som
+  skapas en gång vid appstart och aldrig tas bort från DOM.
+- **Öppna:** `renderPlayer()` sätter `classList.add('visible')` och
+  bygger om innehållet (`$player.textContent = ''` + nya noder).
+  Synlighet styrs av CSS: `.player { transform: translateY(110%) }` →
+  `.player.visible { transform: translateY(0) }` (glid-in från botten).
+- **Stäng:** `stopAndClosePlayer()` — pausar ljudet, tar bort `src`,
+  nollställer `state.current`/`lastPlayingKey`, tar bort `visible`-klassen
+  och **tömmer innehållet** (`textContent = ''`). Spelaren glider ut
+  (CSS-transition) men div:en finns kvar i DOM.
+- **Uppdatera:** `renderPlayer()` anropas vid play/pause/buffring/
+  kandidatbyte — bygger alltid om hela innehållet (full re-render,
+  inget diffat).
+
+### Nuvarande layout (kompakt läge, ~78–115 px hög)
+
+```
+┌──────────────────────────────────────────────┐
+│ [✕]  [thumb 44px] Titel            [⏪][⏯][⏩]│  ← player-row
+│                Undertext                     │
+│                [MP3-pill]                    │
+│ [0:01] ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬ [66:15]        │  ← seek-row (endast episode)
+└──────────────────────────────────────────────┘
+```
+
+- Direkt (live): ingen seek-rad, inga ⏪/⏩-knappar — bara ⏯ + ✕.
+- Episode: seek-rad + ⏪/⏩.
+- Badgen (`.player-quality`) sitter under undertexten i metakolumnen.
+- Svep nedåt stänger spelaren (`enableSwipeToClose`, axis 'y').
+
+### Händelseflöden som påverkar spelaren
+
+| Händelse | Effekt |
+|---|---|
+| `playTrack(track)` | sätter state, `renderPlayer()` → öppnar |
+| `advanceCandidate()` | `renderPlayer()` (badgen följer) |
+| `playing`-event | `renderPlayer()` (buffring av) |
+| `pause`/`play` | `renderPlayer()` |
+| `waiting`/`stalled` | `setBadgeBuffering(true)` (påverkar bara badgen) |
+| `stopAndClosePlayer()` | stänger + tömmer |
+| swipe-ned (touch) | animerar transform → `stopAndClosePlayer()` |
+
+## A.2 Bugganalys: "stängd spelare kommer inte tillbaka"
+
+### Reproduktion (verifierad live i webbläsaren)
+
+Testade alla fyra övergångarna i den nu deployade builden:
+
+| Övergång | Spelaren kommer tillbaka? |
+|---|---|
+| kanal → stäng (✕) → ny kanal | ✅ JA |
+| kanal → stäng (✕) → podd | ✅ JA |
+| podd → stäng (✕) → kanal | ✅ JA |
+| **kanal → stäng (SVEP NED) → ny kanal** | ❌ **NEJ — spelaren förblir osynlig** |
+
+### Exakt rotorsak (etablerad, inte gissad)
+
+`enableSwipeToClose`-animeringen sätter en **inline `style.transform`**
+på spelaren när svepet lyckas:
+
+```js
+// enableSwipeToClose, finish():
+panel.style.transform = axis === 'x' ? `translateX(${dir}px)` : `translateY(${dir}px)`;
+setTimeout(close, 180);
+```
+
+`close()` (= `stopAndClosePlayer`) tar bort `visible`-klassen men
+**nollställer aldrig `panel.style.transform`**. Inline-stilen har högre
+specificitet än CSS-regeln `.player.visible { transform: translateY(0) }`.
+
+Nästa `renderPlayer()` lägger tillbaka `visible`-klassen och bygger om
+innehållet — men **rör aldrig inline-transformen**. Resultat (mätt live):
+
+- `classList = "player visible"` ✅
+- `style.transform = "translateY(1123px)"` ❌ (viewport = 1123 px)
+- `getBoundingClientRect().top = 2131 px` — spelaren ligger ~1000 px
+  **under skärmen**, osynlig för användaren trots "visible".
+
+**Sammanfattning av rotorsaken:** svep-stängningsanimationen lämnar en
+föräldrad inline-transform kvar; `.visible`-klassen kan inte återsynliggöra
+spelaren eftersom inline-stilen vinner. ✕-knappens stängväg sätter aldrig
+transform och drabbas därför inte — därför är buggen svår att se om man
+testar med knappen.
+
+### Buggen är livscykel-, inte logik-
+
+All playback-state (`state.current`, `audioEl.src`, `lastPlayingKey`)
+uppdateras korrekt vid ny kanal — ljudet spelas till och med. Endast
+*presentationen* är trasig. Detta bekräftar att felet är rent visuell
+livscykel-state (inline-transform), inte "permanent stängd"-logik.
+
+### Fix-princip (för fas 1, inte nu)
+
+`stopAndClosePlayer()` (eller `renderPlayer()`) ska nollställa
+`$player.style.transform = ''` — en rad. Alternativt: låt svep-animationen
+använda en CSS-klass i stället för inline-stil. **HLS/DVR-arbetet får
+inte bygga på den nuvarande transform-hanteringen** — kontraktet i §A.7
+gör detta explicit.
+
+## A.3 Rekommenderat spelar-livscykel-kontrakt
+
+```
+VÄLJ KANAL/PODD (från vilket tillstånd som helst)
+  → playTrack(): state uppdateras, renderPlayer() KALLAS ALLTID
+  → spelaren MÅSTE vara synlig oavsett hur den senast stängdes
+  → kontrakt: renderPlayer() äger ALLT presentations-state:
+    visible-klass, transform, innehåll. Ingen annan funktion får
+    lämna presentation-state "halvänd".
+
+STÄNG (✕ eller svep)
+  → stopAndClosePlayer(): ljud stoppas, state nollställs
+  → spelaren göms KOMPLETT (klass + transform + innehåll nollställs)
+  → gömd ≠ förstörd: samma div återanvänds nästa gång
+
+REGEL (kontrakt): "renderPlayer() är den enda funktionen som får
+sätta presentations-state, och den sätter det ALLTID helt"
+— dvs. den nollställer transform explicit varje gång.
+```
+
+Gäller konsekvent för: kanal→kanal, kanal→podd, podd→kanal, podd→podd.
+
+## A.4 Rekommenderad kompakt layout (mobil-först)
+
+Behåller dagens struktur (den är bra) med tre förbättringar:
+
+```
+┌──────────────────────────────────────────────┐
+│ [✕]  [thumb] Titel                [⏪][⏯][⏩]│
+│              Undertext · status              │
+│              [FLAC] [LIVE]  ← två små pills  │
+│ (DVR: [0:00] ▬▬▬●▬▬▬▬▬▬▬ LIVE [Till Direkt]) │  ← endast när DVR finns
+└──────────────────────────────────────────────┘
+```
+
+- **Två pills i stället för en:** vänster pill = kvalitet (`FLAC` /
+  `AAC 320` / `MP3 96`), höger pill = läge (`LIVE` / `~10 min bakom` /
+  `buffrar`). Skiljer "vad jag lyssnar på" från "var i tiden jag är" —
+  två olika frågor som idag blandas i en pill.
+- **Status i undertexten:** buffring visas som pulsande pill (befintlig
+  mekanism) + undertexten kan visa "Buffrar…" vid långdragen buffring.
+- **Höjd:** ~95–120 px med DVR-rad — acceptabelt; DVR-raden är valfri.
+
+## A.5 Rekommenderad expanderad layout (framtidssäkrad)
+
+**Arkitektursvar: bottom-sheet-expansion (tap på spelaren expanderar).**
+
+```
+EXPANDERAD (tap på kompakt spelare, eller svep uppåt):
+┌──────────────────────────────────────────────┐
+│ [⌄]  (dra ned/tap ⌄ för att kollapsa)        │
+│                                              │
+│   [Större omslag 96–120px]  PROGRAMNAMN      │
+│                             Låt / Avsnitt    │
+│                             Artist/ledare   │
+│                                              │
+│   [0:00] ▬▬▬▬▬●▬▬▬▬▬▬▬▬▬ [LIVE]              │
+│   [⏪15]        [⏯]        [⏩15]  [Till Direkt]│
+│   [FLAC] [LIVE ~10 min bakom]                │
+└──────────────────────────────────────────────┘
+```
+
+- **Varför tap-att-expandera (primärt) + svep-upp (bonus):** tap är
+  pålitligt, tillgängligt (knapp-semantik) och krockar inte med scroll.
+  Svep-upp kan läggas till senare via samma `enableSwipeToClose`-mönster
+  (inverterad) — men tap räcker för att inte skapa gest-konflikt med
+  hemskärmens scroll.
+- **Samma div, två lägen:** `.player.expanded` — ingen ny komponent,
+  ingen routing. CSS max-height/transition. Kollaps vid ✕ eller ⌄.
+- **Plats för metadata:** expanderat läge ger 3 rader text + större
+  omslag — räcker för program/låt/artist (SR-metadata, fas 6+).
+
+## A.6 Rekommenderad buffrings-visualisering
+
+- **Kompakt läge:** befintlig pulsande pill ("MP3 · buffrar") — beprövad,
+  tar noll extra plats. Utökas med att undertexten visar "Buffrar…"
+  efter >2 s (skiljer kort stöt från lång väntan).
+- **Expanderat läge:** samma pill + tunn linjär indikator under
+  timeline (obestämd shimmer) — bara i expanderat läge.
+- **Stalled/recovering:** samma som buffring; ingen separat nivå
+  (onödig komplexitet).
+
+## A.7 Rekommenderad kvalitets/bitrate-pill
+
+- **Två pills** (se A.4): kvalitet + läge. Enskild pill blir för lång
+  ("FLAC · buffrar · ~10 min bakom" är oläslig på iPhone).
+- **Ärlighet (ingen fake precision):**
+  - `FLAC` — ingen bitrate (icy-br opålitlig; aldrig "FLAC 128")
+  - `AAC 320` — descriptor-bitrate; vid hls.js bekräftad via
+    LEVEL_SWITCHED; nativ Safari = descriptor (dokumenterad begränsning)
+  - `MP3 96` — descriptor (liveaudio.url är alltid 96)
+  - Okänd bitrate → bara codec (`AAC`), aldrig påhittad siffra
+- **Konfigurerad vs aktiv:** badgen visar ALLTID aktiv ström
+  (`state.current` efter fallback), aldrig önskad. Fallback → pill
+  följer automatiskt (befintlig mekanism).
+
+## A.8 Rekommenderad DVR-affordans
+
+**Enkel modell, tre tillstånd:**
+
+1. **LIVE (normal):** höger pill visar `LIVE`. Ingen spolrad för direkt
+   (som idag) — MEN om DVR finns: liten "Spola tillbaka"-knapp (⏪-ikon
+   med text) till vänster om ⏯. Tryck → hoppar 15 s bak (och pillen
+   blir `~15 min bakom`).
+2. **SPOLAT BAKÅT:** spolrad visas med position i fönstret; höger pill
+   `~10 min bakom`; knapp **"Till Direkt"** till höger om spolraden.
+3. **INGEN DVR (FLAC/MP3):** ingen spolrad, ingen Spola-knapp — spelaren
+   ser ut som idag. Ingen teknisk förklaring behövs.
+
+- **Upptäckbarhet utan HLS-kunskap:** "Spola tillbaka"-knappen syns bara
+  när DVR finns; att trycka den är självförklarande. Ingen inställning
+  krävs för att upptäcka funktionen.
+- **FLAC vs HLS-distinktionen (om läge A/B väljs senare):** pillen visar
+  `FLAC` resp `AAC 320` — kvalitetsskillnaden är synlig utan att appen
+  pratar om HLS. Om användaren i "bäst ljud"-läge trycker "Spola" på en
+  FLAC-ström: toast en gång "Spolning kräver spolbar kvalitet — byter"
+  → HLS 320 (medvetet val, synligt i badgen). Ingen tyst nedgradering:
+  bytet sker bara på explicit spol-begäran.
+
+## A.9 Framtida metadata-yta
+
+- **Kompakt:** undertexten visar program/podd-namn (idag) — låt/artist
+  kommer INTE att få plats i kompakt läge; det är OK, expanderat läge
+  är hemmet för detaljer.
+- **Expanderat:** dedikerade rader (se A.5): PROGRAMNAMN (semibold),
+  Låt/Avsnitt (stor), Artist/ledare (sekundär). SR:s metadata-API kan
+  fylla dessa senare utan layoutändring — raderna finns från fas 3
+  (tomma/dolda tills data finns).
+- **Poddar:** avsnittstitel + poddnamn — redan idag i kompakt; expanderat
+  lägger beskrivning-utdrag.
+
+## A.10 Svep-expansion — lämplig?
+
+**Ja, som sekundär gest; tap som primär.** `enableSwipeToClose`-mönstret
+återanvänds inverterat (svep upp på spelaren = expandera). Risk: gest-
+konflikt med sidscroll är låg eftersom spelaren är fixed längst ner och
+vertikal intent-detektering redan finns. Men tap-att-expandera är
+tillgängligare (skärmläsare, motorik) och implementeras först.
+
+## A.11 UI-oberoende från HLS/hls.js
+
+- UI:t läser ENDAST: `state.current.codec/bitrate` (pill),
+  `state.current.dvrWindow` (spolrad), `atLiveEdge` (LIVE-pill),
+  buffrings-events. **Ingen referens till hls.js, MSE, transport eller
+  URL-mönster i renderPlayer.**
+- `hlsAttach/hlsDetach` bor i playback-lagret; UI:t vet bara "spolning
+  finns / finns inte" via `dvrWindow`.
+- Ny transport i framtiden (t.ex. DASH) = playback-lagerändring, UI:t
+  opåverkat.
+
+## A.12 Tillgänglighet
+
+- Alla nya kontroller som knappar med svenska aria-labels ("Spola
+  tillbaka 15 sekunder", "Till Direkt", "Expandera spelare",
+  "Kollapsa spelaren").
+- Pills: `role="status"` + `aria-live="polite"` på läge-pillen så
+  skärmläsare hör "buffrar"/"~10 min bakom"-byten utan att spamma.
+- Spolrad: `role="slider"` med aria-valuemin/max/now (eller behåll
+  klick-bar som idag + tangentbordsstöd ←/→).
+- `prefers-reduced-motion`: puls av (finns), expansion utan animation.
+- Fokusordning: ✕ → ⏪ → ⏯ → ⏩ → (Spola/Till Direkt) → pills (icke-
+  interaktiva, tabindex=-1).
+
+## A.13 Konflikter med DESIGN-HLS-DVR.md (huvuddokumentet)
+
+| Punkt | Huvuddok | Bilaga A justerar |
+|---|---|---|
+| §4 Player state | en pill (codec+bitrate) | **två pills** (kvalitet + läge) |
+| §4 UI-status | "~10 min bakom Direkt" i undertext | oförändrat, men som egen pill |
+| §6 DVR | "Till Direkt"-knapp | + "Spola tillbaka"-knapp i LIVE-läge (upptäckbarhet) |
+| §12 Fas 3 | spolrad för live | + fix av transform-buggen FÖRST (fas 1) |
+| §12 Fas 1 | descriptors + CAPS | **+ livscykel-fix + renderPlayer-kontrakt** |
+
+Inga motsägelser i playback-arkitekturen — justeringarna är UI-nivå.
+
+## A.14 Rekommenderade ändringar av Fas 1 (huvuddok §12)
+
+Fas 1 utökas till **"Fas 1a: livscykel-fix"** (före allt annat):
+
+1. `stopAndClosePlayer()` nollställer `$player.style.transform = ''`
+   (eller renderPlayer gör det — kontraktet i A.3).
+2. Enhetstest/regression: svep-stäng → ny kanal → spelaren synlig
+   (automatiserat i Playwright där möjligt).
+3. Ingen annan ändring i fas 1a — minimal, isolerad, låg risk.
+
+Fas 1 (descriptors + CAPS) genomförs sedan enligt huvuddokumentet, med
+tillägg att `renderPlayer` läser descriptor-fält i stället för
+URL-gissning (redan specificerat) och att pill-strukturen blir två
+(kvalitet + läge) enligt A.7.
+
+**P2 FLAC-skydd bekräftas:** ingen ändring i FLAC-vägen i någon fas;
+livscykel-fixen rör bara presentations-state.
+
+## A.15 Svar på de 14 frågorna (kortindex)
+
+1. Arkitektur: §A.1 · 2. Rotorsak: §A.2 (inline-transform från svep) ·
+3. Kontrakt: §A.3 · 4. Kompakt: §A.4 · 5. Expanderad: §A.5 ·
+6. Buffring: §A.6 · 7. Pill: §A.7 · 8. DVR: §A.8 · 9. Metadata: §A.9 ·
+10. Svep: §A.10 (ja, sekundärt) · 11. UI-oberoende: §A.11 ·
+12. A11y: §A.12 · 13. Konflikter: §A.13 · 14. Fas 1-ändringar: §A.14
+
 ---
 
 ## 0. Designprinciper
