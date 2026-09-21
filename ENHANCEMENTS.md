@@ -4,6 +4,21 @@ Pågående anteckningar för förbättringar att ta itu med senare. Nyast övers
 
 ---
 
+## 2026-09-21 — Spelare: format-badge (implementerat)
+
+- Badge under undertexten i spelaren visar strömformat: MP3 / AAC / FLAC / HLS,
+  härlett från URL-mönstret (`streamFormatLabel` i app.js).
+- För direktströmmar hämtas verklig bitrate från `icy-br`-headern och läggs till
+  ("MP3 · 148 kbps") — men **endast för direkta `edge*.sr.se`-URL:er**: den
+  officiella kedjan topsy→live1→edge har en CORS-lös mellanhopp (live1), så
+  `fetch()` dit blockeras alltid. `<audio>`-uppspelning påverkas inte (media-
+  element tvingar inte CORS). Poddar/episoder visar bara format (MP3).
+- Verifierat live på GitHub Pages: P1 → "MP3"-badge, inga CORS-fel i konsolen.
+- Kvar: bitrate visas bara om SR någon gång servar edge-URL direkt i API:t;
+  idag är badge format-only för live. Se strömrapport nedan för källor.
+
+---
+
 ## 2026-09-21 — Öppna punkter (att ta itu med nästa session)
 
 ### 1. Inställningar-vyn: scrollning är inte smidig
