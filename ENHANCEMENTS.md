@@ -4,6 +4,129 @@ Pågående anteckningar för förbättringar att ta itu med senare. Nyast övers
 
 ---
 
+## ROADMAP — projektstatus och framtida faser (2026-09-22)
+
+**Statusöversikt (distinguishera COMPLETE / NEXT / PLANNED / OPEN BUG /
+NOT YET VALIDATED — historiken nedan är oförändrad):**
+
+| Fas | Status |
+|---|---|
+| Fas 1 — Foundation (descriptors, CAPS, livscykel-fix) | **COMPLETE** |
+| Fas 2A — HLS playback-engine | **COMPLETE** |
+| Fas 2B — Validering på riktiga webbläsare | **COMPLETE ENOUGH TO PROCEED** |
+| Fas 3 — DVR-UI | **COMPLETE** (se nedan; verifierad på riktig Edge) |
+| Fas 4 — Expanderbar/rich player | **PLANNED** |
+| Fas 5 — Context cards: Tablå & podcast-avsnitt | **PLANNED** (framtida) |
+| Validering på riktig iPhone Safari + Android Chrome | **NOT YET VALIDATED** |
+| Bug backlog (Inställningar-krasch, nyhetslänkar) | **OPEN BUG** |
+
+**Fas 2B-nyckelbevis (bevarat):** riktig Edge 153 (riktig Chromium, CDP-driven
+mot deployad GitHub Pages — ej Electron/VS Code-webview): seekable 0 → 10 880 s
+(≈181 min / 3,02 h), currentTime ≈ 10 868 vid live-kanten, 5-min-bakåtseek
+lyckades med uppspelning aktiv; P1 HLS-192 AAC 192, P2 Musik FLAC först,
+P3 HLS-320 AAC 320, P2 (163) HLS-192 AAC 192. Firefox 155: HLS korrekt
+filtrerad, MP3 96-fallback, `hlsLoaded: false`, livscykel OK, inga HLS-fel
+exponeras. `backBufferLength: 90` / `maxBufferLength: 30` räckte för den
+testade bakåtseeken — **ändra inte dessa värden** bara för att SR:s playlist
+innehåller ~3 timmar.
+
+**Ej verifierade plattformar (kvarstår):** iPhone Safari, Android Chrome,
+bakgrund/låsskärm-uppspelning. Fas 2B gav tillräckligt underlag för DVR-UI;
+**riktig enhetsvalidering krävs innan iPhone/Android-DVR-stöd kan förklaras
+komplett.**
+
+### Fas 3 — DVR-UI (status: COMPLETE, verifierad på riktig Edge 153)
+Implementerad och verifierad 2026-09-22 (se detaljerad post nedan): mode-pill
+med relativ offset, DVR-seekrad mappad till aktuell seekable-range, "Till
+Direkt", transportoberoende (läser Phase 2A-state), P2 FLAC aldrig automatiskt
+ersatt. Kvar för Fas 3: validering på riktig iPhone Safari + Android Chrome när
+enheter finns tillgängliga.
+
+### Fas 4 — Expanderbar/rich player (status: PLANNED — efter Fas 3)
+Syfte: expandera den kompakta spelaren till en rikare spelare utan att den
+normala spelaren blir rörig.
+- Tap på spelaren expanderar
+- Program/programmets namn, aktuell låt, artist
+- Podd/avsnitt-information där tillgänglig
+- Eventuellt omslagsbild
+- Kompakt spelarläge förblir standard
+
+**UX-princip:** den normala spelaren förblir kompakt. Den expanderade
+spelaren är ett extra informationslager, inte en ersättning.
+
+### Fas 5 — Context cards: Tablå & podcast-avsnitt (status: PLANNED)
+Framtida funktion som kräver egen UX- och datakälls-utredning innan
+implementering. **Implementeras inte nu.**
+
+**Kanaler — långtryck öppnar Tablå-kort:**
+1. Långtryck på en vald kanal öppnar ett kompakt informations/åtgärds-kort
+   med relevant programschema (tablå).
+2. Kortet visar tillgängliga/relevanta program från schemat.
+3. Användaren kan välja ett program direkt från kortet.
+4. Valda program spelas när uppspelning är tillgänglig.
+
+Kortet ska tydligt skilja på: pågående/live-program, program som är
+uppspelningsbara, och program som inte är uppspelningsbara (om tillämpligt).
+Anta INTE att varje program i en tablå är uppspelningsbart — kortet ska
+använda faktisk tillgänglighetsinformation från appens datakälla.
+
+**Poddar — långtryck öppnar avsnittskort:**
+1. Långtryck på en vald podd öppnar ett kompakt kort med tillgängliga
+   avsnitt.
+2. Användaren ser avsnitten och kan välja valigt uppspelningsbart avsnitt.
+3. Uppspelning startar direkt från kortet.
+
+**UX-intent:** ett snabbt kontextuellt sätt att bläddra i innehåll utan att
+lämna huvudkanal/podd-val-upplevelsen.
+
+### Validering på riktig enhet (status: NOT YET VALIDATED)
+Kvar att validera när enheter finns tillgängliga:
+- iPhone Safari + installerad PWA: native HLS, DVR-UI, bakgrundsljud,
+  låsskärm, kanalbyte, fallback
+- Android Chrome + installerad PWA: hls.js, DVR-UI, bakgrundsljud,
+  låsskärm, kanalbyte, fallback
+- DVR-UI:n är transportoberoende (läser bara seekable-state) och ska
+  valideras på båda plattformarna innan stödet förklaras komplett.
+
+### BUG BACKLOG (status: OPEN — separerade från feature-faser)
+
+Dessa är bekräftade applikationsbuggar som inte får glömmas. De är inte
+valfria förbättringar och kan behöva åtgärdas före/mellan feature-faser
+beroende på utredning.
+
+**BUG 1 — Inställningssidan kraschar vid scroll till kanal/podd-val**
+- Severity: HIGH · Status: OPEN
+- Observerat: Inställningssidan kraschar när användaren scrollar ned till
+  sektionen där kanaler/poddar kan väljas.
+- Förväntat: sidan ska vara stabil genom hela Inställningar-sidan, inklusive
+  kanal- och poddval — öppna, scrolla, nå kanalval, nå poddval, välja/avvälja
+  och fortsätta scrolla utan krasch.
+- **Ingen rotorsak är känd — registrerad som observerad bugg som kräver
+  utredning.** Vid framtida fix: reproducera först, identifiera exakt fel
+  (rendering, event-hantering, DOM-livscykel, dataladdning eller annat),
+  gör den minsta lämpliga korrigeringen, lägg till regressionstäckning där
+  praktiskt.
+
+**BUG 2 — Nyhetslänkar (URL) öppnas inte korrekt**
+- Severity: HIGH · Status: OPEN
+- Observerat: URL-länkar i nyhetssidorna öppnas inte korrekt.
+- Förväntat: när användaren väljer en länk från en nyhetssida ska
+  destinationen öppnas korrekt, med plattformslämplig navigering (PWA/
+  webbläsare).
+- **Ingen rotorsak är känd — registrerad som observerad bugg som kräver
+  utredning.** Vid framtida fix: identifiera hur nyhetslänkar renderas idag,
+  avgör om länkar fångas fel, om SPA-routing/PWA-navigering/target-hantering
+  eller URL-hantering är inblandad, reproducera, gör minsta lämpliga
+  korrigering, lägg till regressionstäckning där praktiskt.
+
+### Rekommenderad arbetsordning
+Faserna behöver inte genomföras i strikt numerisk ordning. De två bekräftade
+buggarna (Inställningar-krasch, nyhetslänkar) kan behöva åtgärdas före eller
+mellan feature-faser beroende på utredning. Riktig enhetsvalidering
+(iPhone/Android) krävs innan plattformsspecifikt DVR-stöd förklaras komplett.
+
+---
+
 ## 2026-09-22 — Fas 3 implementerad: DVR-UI (transportoberoende)
 
 ### Implementerat
