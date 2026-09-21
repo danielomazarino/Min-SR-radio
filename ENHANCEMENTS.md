@@ -4,6 +4,55 @@ Pågående anteckningar för förbättringar att ta itu med senare. Nyast övers
 
 ---
 
+## 2026-09-22 — Fas 2B: validering på riktiga webbläsare (rapport)
+
+**Genombrott: SR:s ~3-h-DVR-fönster är NU OBSERVERAT i en riktig Chromium-
+webbläsare.** Riktig Microsoft Edge 153 (headless, ej Electron/VS Code-webview)
+mot deployad GitHub Pages-build:
+
+### Edge 153 (riktig Chromium) — HLS FUNGERAR
+- **P3:** HLS via hls.js 1.7.3, badge "AAC 320", spelar ✅
+- **P1:** HLS, badge "AAC 192", spelar ✅
+- **P2 (163):** HLS, badge "AAC 192", spelar ✅
+- **P2 Musik:** **FLAC först** (badge "FLAC") — skyddat ✅
+- **SEEKABLE = 0 → 10880 s = 181 min ≈ 3,02 h** — hela SR:s rullande fönster
+  exponeras av `audio.seekable` i en MSE-kapabel webbläsare ✅
+- **BAKÅTSEEK 5 MIN VERIFIERAD:** seek till liveEdge−300 s → currentTime
+  10586→10588 (avancerar), `paused: false` — uppspelning fortsätter från det
+  förflutna ✅
+- Kanalbyte, svep-stäng → ny kanal: allt OK, livscykel intakt ✅
+- Buffring: backBufferLength 90/maxBufferLength 30 räckte — seek 5 min bak
+  fungerade utan omkonfiguration (segment hämtas on-demand) ✅
+
+### Firefox 155 (riktig Firefox, via Playwright)
+- **HLS filtreras bort som designat:** badge "MP3 96", `hlsLoaded: false` ✅
+- Spelar, livscykel OK, inga HLS-fel exponeras ✅
+- Seekable-proben: `dvrAvailable: false` (direct har inget fönster) ✅
+
+### Electron/VS Code-webview (SEPARAT från riktiga resultat — som alltid)
+- MSE-quirken (mediaSourceRequiresReset) → HLS-fallback till MP3 är den enda
+  spelbara vägen där. Bevisar endast fallback-kedjan, inte Chrome-kompatibilitet.
+
+### Acceptansmatris
+
+| Platform | HLS-metod | HLS-uppspelning | Seekable | Bakåtseek | Bakgrundsljud | Not |
+|---|---|---|---|---|---|---|
+| iPhone Safari | native | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | ingen enhet tillgänglig |
+| Android Chrome | hls.js | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | ingen enhet tillgänglig |
+| Chrome desktop | hls.js | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | ej installerad |
+| **Edge desktop** | **hls.js** | **JA** | **JA — 181 min** | **JA — 5 min** | NOT TESTED | riktig Edge 153 headless |
+| Firefox | fallback | N/A | N/A | N/A | NOT TESTED | MP3-fallback bekräftad |
+
+### Slutsats
+- Fas 2A-implementeringen ska förbli oförändrad — inga fel krävde korrigering.
+- **Tillräckligt underlag för DVR-UI på Chromium-vägen:** seekable-mekanismen
+  är bevisad (181-min fönster + lyckad 5-min-bakåtseek med fortsatt uppspelning).
+- Safari/iOS och Android är fortfarande otestade — DVR-UI bör byggas
+  transport-oberoende (läser bara seekable-state) och valideras på riktig
+  iPhone/Android i nästa steg.
+
+---
+
 ## 2026-09-21 — Fas 2A implementerad: HLS playback-engine (utan DVR-UI)
 
 ### Implementerat i `public/app.js`
