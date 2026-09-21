@@ -4,6 +4,63 @@ Pågående anteckningar för förbättringar att ta itu med senare. Nyast övers
 
 ---
 
+## 2026-09-22 — Fas 3 implementerad: DVR-UI (transportoberoende)
+
+### Implementerat
+- **Mode-pill visar tidsposition:** `LIVE` vid live-kanten, annars relativ
+  offset ("−12 min", "−1 h 5 min") via `dvrOffsetLabel()`. Rounding enligt
+  spec: < 60 s bakom = LIVE (användarvänlig "effectively live"-regel),
+  minuter nedrundade, timmar + minuter över en timme. Pillen får accent-
+  toning när bakom (`.player-mode.behind`) — inte färg-enbart (texten ändras).
+- **DVR-seekrad** (`.dvr-row`): visas ENDAST när `cur.dvrAvailable === true`
+  och `kind === 'live'`. Mappar seek-baren till den AKTUELLA seekable-
+  range:n (`seekableStart`/`seekableEnd`) — aldrig hårdkodad 3 h. Samma
+  visuella språk som episode-seekraden; höger sida har "Till Direkt"-
+  knappen i stället för duration.
+- **"Till Direkt"** (`seekToLive()`): seek till AKTUELLT `seekableEnd`
+  (rullande fönster), ingen omstart av ström, inget nytt HLS-session,
+  paus/spelar-state bevaras. UI återgår till LIVE när kanten nås.
+- **Seek-mappning** (`seekToWindowFraction()`): klick/keyboard (pil-tangenter,
+  shift = 10 % steg) → fraktion av aktuell range, clampad säkert, ingen
+  NaN/Infinity. Paus/spelar-state orörd — ingen reload, ingen kandidatbyte.
+- **Tillgänglighet:** seek-bar `role="slider"` med aria-label
+  "Spola i direktinspelningen" + aria-valuenow; "Till Direkt" har aria-label;
+  mode-pill `aria-live="polite"`; tangentbord stöds på desktop.
+
+### Arkitekturbeslut
+- **Konsumerar Phase 2A-state rakt av** (`dvrAvailable`, `seekableStart/End`,
+  `distanceFromLiveEdge`, `atLiveEdge`) — inget nytt DVR-state-model, ingen
+  inspectering av HLS/hls.js/URL:er i UI:t. Transportoberoende: samma UI
+  fungerar för framtida native-Safari-DVR (läser samma state).
+- **Etikett-tröskel vs mekanisk tolerans:** `atLiveEdge`-toleransen är 10 s
+  (mekanisk), medan etiketten visar LIVE under 60 s bakom (specens
+  "effectively live"-regel). Dokumenterat i koden.
+- **P2 FLAC skyddad:** ingen automatisk FLAC→HLS-switch; DVR-raden visas
+  bara när den AKTUELLA strömmen har seekable-state.
+
+### Verifierat live på riktig Edge 153 (app.3a8a811f.js)
+- P3 HLS: DVR-rad + "Till Direkt" visas, pill "LIVE" ✅
+- Seek bakåt via baren (25 %) → pill "−2 h 16 min", currentTime 2723 s,
+  uppspelning fortsätter (paus-state orörd) ✅
+- "Till Direkt" → currentTime = seekableEnd (10892.8), pill "LIVE",
+  `atLiveEdge: true` ✅
+- P2 Musik FLAC: **ingen DVR-rad, ingen Till Direkt** — normal spelare ✅
+- Rullande fönster: seekableEnd flyttade sig 10880→10892.8 under testet och
+  UI följde ✅
+
+### Tester
+- 49/49 passerar (34 tidigare + 15 nya DVR-tester): offset-formatering (6),
+  seek-mappning (5: aktuell range, 181-min-fönstret, clamp, ogiltiga värden,
+  rullande Till Direkt-mål), DVR-gating (4: ingen DVR, bakom live, podd,
+  fallback tar bort DVR).
+
+### Begränsningar
+- iPhone Safari / Android Chrome: NOT TESTED (ingen enhet) — UI:t är
+  transportoberoende och läser samma state, men ej validerat där.
+- Bakgrundsljud: NOT TESTED.
+
+---
+
 ## 2026-09-22 — Fas 2B: validering på riktiga webbläsare (rapport)
 
 **Genombrott: SR:s ~3-h-DVR-fönster är NU OBSERVERAT i en riktig Chromium-
