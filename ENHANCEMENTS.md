@@ -4,6 +4,50 @@ Pågående anteckningar för förbättringar att ta itu med senare. Nyast övers
 
 ---
 
+## 2026-09-22 — DVR-UX reviderad (användarfeedback från riktig iPhone)
+
+**Användare bekräftade:** DVR fungerar på iPhone (P2, "−46 min", AAC 192) —
+men UX:n behövde förbättras: duplicerad "−46 min"-info, slider var bara
+klickbar (inte dragbar), LIVE i två ställen + ful "Till Direkt"-knapp.
+
+### Ny design (implementerad)
+- **Klocktid i stället för duplicerad offset:** mode-pill visar nu KLOCKTID
+  (svensk tid, HH:MM) för positionen man hör — t.ex. "23:05". Seekradens
+  vänsterlabel visar samma klocktid (drag-förhandsvisning medan man drar).
+  Relativ offset ("−46 min") används bara som fallback om klocktid inte kan
+  beräknas. Ingen duplicering: pill = klocktid, seekrad-vänster = klocktid
+  (samma information, en gång i pillen + en gång vid slidern där man pekar).
+- **Riktig drag-slider:** pointer events (touch + mus) — dra för att
+  förhandsvisa (fill + thumb följer fingret, vänsterlabel visar mål-klocktid
+  live), släpp för att committa seeket. Ingen seek-storm under draget.
+  Thumb-knapp (14 px, accentfärg) som växer vid drag.
+- **Klickbar LIVE-etiket ersätter Till Direkt-knappen:** seekradens högersida
+  visar "LIVE" — klick → tillbaka till live-kanten. När man redan är live
+  dimmas den (grå) men är fortfarande klickbar. Ingen separat knapp, ingen
+  duplicerad LIVE-state.
+- **Live-läge ser nu rent ut:** pill "LIVE", fill 100 %, thumb vid kanten,
+  LIVE-etikett dimmad — inga knappar som skriker.
+
+### Klocktidens sanningskälla
+Live-kanten ≈ nu. Position p i fönstret mappas till `now − (seekableEnd − p)`
+— korrekt även när fönstret rullar. Formateras med `toLocaleTimeString
+('sv-SE')` → svensk tidszon.
+
+### Verifierat live på riktig Edge 153 (app.c7d189bd.js)
+- Live: pill "01:12" (klocktid), fill 99,9 %, thumb vid kanten ✅
+- Drag 80 % → 30 %: fill/thumb följde (30 %), vänsterlabel visade
+  mål-klocktid "23:05" under draget ✅
+- Efter släpp: pill "23:05", seek committad, uppspelning fortsatte ✅
+- Klick på LIVE-etiketten: fill 100 %, pill "LIVE", etiketten dimmad
+  (at-live) ✅
+- 49/49 tester passerar ✅
+
+### Kvar
+- iPhone-verifiering av nya UX:n (användaren har enheten) — mekanismen är
+  oförändrad, bara presentationen.
+
+---
+
 ## 2026-09-22 — FIX: DVR-raden dök inte upp på iPhone (render-trigger)
 
 **Användarobservation (riktig iPhone, skärmdump):** P4 Göteborg spelade via
