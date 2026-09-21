@@ -4,6 +4,54 @@ Pågående anteckningar för förbättringar att ta itu med senare. Nyast övers
 
 ---
 
+## 2026-09-21 — Fas 2A implementerad: HLS playback-engine (utan DVR-UI)
+
+### Implementerat i `public/app.js`
+- **Stale-session-skydd:** `hlsSession`-token ökas vid varje playback-ändring;
+  HLS-eventhandlers fångar sin token vid attach och ignorerar events från
+  ersatta sessioner (P1-HLS som laddar när användaren redan valt P3 får
+  inte röra P3:s state eller avancera P3:s kandidater).
+- **SR-ladder-mappning:** `SR_HLS_LADDER` + `nominalKbpsFor()` — verifierad
+  uppslagning (34000→32, 136000→128, 204000→192, 340000→320), INTE division
+  med 1000 (340000 bps = "320 kbps"-rendition pga container-overhead).
+  LEVEL_SWITCHED mappar genom tabellen.
+- **Seekable-state (engine only):** `updateSeekableState()` läser
+  `audio.seekable` vid timeupdate för live-HLS och skriver till
+  `state.current`: `dvrAvailable` (tröskel `DVR_MIN_WINDOW_S = 60`),
+  `seekableStart/End/Duration`, `currentTime`, `distanceFromLiveEdge`,
+  `atLiveEdge` (tolerans 10 s). Debug-probe: `window.__srSeekable()`.
+  Ingen DVR-UI — nästa fas bygger den på denna state.
+- **Konservativ buffring:** `backBufferLength: 90` (sekunder bakom
+  playhead), `maxBufferLength: 30` — INTE 3 timmar. SR:s rullande playlist
+  är DVR-sanningskällan; hls.js hämtar äldre segment vid seek.
+
+### Verifierat live (app.f5145488.js, Chromium/Electron-webview)
+- hls.js lazy-loadas först när HLS ska spelas (1.7.3) ✅
+- HLS startar: badge "AAC 192 · buffrar" syns under laddning ✅
+- **Fallback fungerar som designad:** denna webview har den dokumenterade
+  MSE-quirken (mediaSourceRequiresReset) → fatal → hlsDetach →
+  advanceCandidate → MP3 96 spelar. Badgen följer korrekt.
+- Seekable-proben rapporterar korrekt `dvrAvailable: false` på MP3-fallback
+  (direct har inget DVR-fönster) ✅
+- P2 Musik: **FLAC spelas fortfarande först** (badge "FLAC", LIVE) ✅
+- Svep-stäng → ny kanal: spelaren synlig (Fas 1a intakt) ✅
+
+### Tester
+- 34/34 passerar (10 favorites + 24 streams). Nya: stale-session-guard (2),
+  seekable-state (6: fullt fönster, 10-min-bakåt, under-tröskel, tom,
+  null, exakt-tröskel).
+
+### Ej verifierat på riktig hårdvara (ärlig status)
+- **Ingen riktig iPhone/Android/desktop-Chrome/Firefox-test har gjorts** —
+  endast Electron/VS Code-webview, som uttryckligen INTE är bevis för
+  vanlig Chrome. HLS-uppspelning i riktig Chrome och native-HLS i Safari
+  är därför **ej bekräftad**; webview-quirken gör att HLS-fallbacken är
+  den enda vägen som spelar här.
+- Seekable-fönstret (~3 h) är ännu inte observerat i en webbläsare som
+  klarar MSE — nästa fas bör börja med den verifieringen.
+
+---
+
 ## 2026-09-21 — Fas 1a + Fas 1 implementerade (godkända)
 
 ### Fas 1a — Livscykel-fix (buggen "stängd spelare kommer inte tillbaka")
