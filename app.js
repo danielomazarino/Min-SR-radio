@@ -1222,6 +1222,33 @@
       el('div', { class: 'player-sub', text: cur.subtitle || (live ? 'Direkt' : '') }),
       quality, mode);
 
+    // Fas 4: expanded player. Tap on the meta area toggles an info panel
+    // (program description / episode info). Compact remains the default;
+    // the panel is an additive layer, never a replacement.
+    let expandPanel = null;
+    if (cur.description || cur.programName || cur.duration) {
+      meta.classList.add('tappable');
+      meta.setAttribute('role', 'button');
+      meta.setAttribute('tabindex', '0');
+      meta.setAttribute('aria-label', 'Visa programinformation');
+      const toggleExpand = () => {
+        const existing = $player.querySelector('.player-expand');
+        if (existing) { existing.remove(); return; }
+        expandPanel = el('div', { class: 'player-expand' },
+          cur.image ? el('img', { class: 'expand-img', src: cur.image, alt: '' }) : null,
+          el('div', { class: 'expand-text' },
+            el('div', { class: 'expand-title', text: cur.title || '' }),
+            cur.programName ? el('div', { class: 'expand-sub', text: cur.programName }) : null,
+            cur.description ? el('div', { class: 'expand-desc', text: cur.description }) : null,
+            cur.duration ? el('div', { class: 'expand-meta', text: `Längd: ${fmtDur(cur.duration)}` }) : null));
+        $player.appendChild(expandPanel);
+      };
+      meta.addEventListener('click', toggleExpand);
+      meta.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpand(); }
+      });
+    }
+
     // Direct AAC streams: confirm bitrate via icy-br HEAD (edge hosts only).
     // Only overrides the descriptor when the header gives a real value —
     // never invents one. Skipped for FLAC (icy-br unreliable there).
@@ -1281,82 +1308,32 @@
         'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': 100,
         tabindex: '0',
       }, el('div', { class: 'seek-fill' }), el('div', { class: 'seek-thumb' }));
-            const timeLeft = el('div', { class: 'player-time', text: '' });
-      const liveLabel = el('button', {
-        class: 'player-live-label', type: 'button',
-        'aria-label': 'Tillbaka till Direkt',
-        text: 'LIVE',
-        onclick: seekToLive,
-      });
+      const timeLeft = el('div', { class: 'player-time', text: '' });
 
-      // ±15 s step buttons — the 3-h window makes the bare slider coarse.
-      const back15Btn = el('button', {
-        class: 'dvr-step-btn', type: 'button',
-        'aria-label': 'Bakåt 15 sekunder',
-        onclick: () => seekBy(-SEEK_STEP_S_DVR),
-      });
-      back15Btn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>';
-      const fwd15Btn = el('button', {
-        class: 'dvr-step-btn', type: 'button',
-        'aria-label': 'Framåt 15 sekunder',
-        onclick: () => seekBy(SEEK_STEP_S_DVR),
-      });
-      fwd15Btn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z"/></svg>';
+      // ±15 s step buttons + program skip now live in the MAIN controls row
+      // (flanking play/pause) per user request 2026-09-23 — the seek row
+      // keeps only the slider + clock label. LIVE label removed: the mode
+      // pill shows LIVE/−time and tapping the bar's right edge returns to
+      // live (seekToLive is wired on the bar's right 12 % zone below).
 
-      // Program skip: prev seeks to the start of the programme before the
-      // current position; next lights up only when an earlier programme is
-      // selected AND a later programme exists in the schedule. Both need the
-      // schedule — fetched async; buttons stay hidden until it resolves.
-      // If the schedule API is down (it has outages), they never appear.
-      const prevProgramBtn = el('button', {
-        class: 'dvr-step-btn dvr-program-btn', type: 'button',
-        'aria-label': 'Till föregående programs start',
-        style: 'display:none;',
-      });
-      prevProgramBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>';
-      const nextProgramBtn = el('button', {
-        class: 'dvr-step-btn dvr-program-btn', type: 'button',
-        'aria-label': 'Till nästa programs start',
-        style: 'display:none;',
-      });
-      nextProgramBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg>';
-
-      // Wire program buttons once the schedule resolves. Re-render is NOT
-      // needed: the buttons live in this seekRow instance.
-      if (cur.id) {
-        fetchSchedule(cur.id).then((schedule) => {
-          if (!schedule || !document.contains(prevProgramBtn)) return;
-          const posMs = Date.now() - (cur.seekableEnd - (audioEl.currentTime || 0)) * 1000;
-          const prevEv = programBoundary(schedule, posMs, -1);
-          if (prevEv) {
-            prevProgramBtn.style.display = '';
-            prevProgramBtn.onclick = () => seekToProgramTime(prevEv.startMs);
-          }
-          const syncNext = () => {
-            const p = Date.now() - (cur.seekableEnd - (audioEl.currentTime || 0)) * 1000;
-            const nextEv = programBoundary(schedule, p, +1);
-            // "Next" only lights up when an earlier programme is selected
-            // (not at live) AND a later programme exists.
-            const behindLive = cur.atLiveEdge === false
-              || (Number.isFinite(cur.seekableEnd) && cur.seekableEnd - (audioEl.currentTime || 0) > 60);
-            if (nextEv && behindLive) {
-              nextProgramBtn.style.display = '';
-              nextProgramBtn.title = nextEv.title || 'Nästa program';
-              nextProgramBtn.onclick = () => seekToProgramTime(nextEv.startMs);
-            } else {
-              nextProgramBtn.style.display = 'none';
-            }
-          };
-          if (prevEv) syncNext();
-          // Keep next-button state fresh as playback moves.
-          audioEl.addEventListener('timeupdate', syncNext);
-        }).catch(() => { /* schedule unavailable — buttons stay hidden */ });
-      }
+      // Program-skip buttons live in the MAIN controls row now (created
+      // below); the schedule wiring happens after they exist.
 
       seekRow = el('div', { class: 'seek-row dvr-row' },
-        prevProgramBtn, back15Btn, timeLeft, bar, fwd15Btn, liveLabel);
+        timeLeft, bar);
       const fill = bar.querySelector('.seek-fill');
       const thumb = bar.querySelector('.seek-thumb');
+
+      // Right-edge tap zone on the bar = "back to live" (replaces the old
+      // LIVE button). A tap (not drag) in the right 12 % of the bar while
+      // behind live snaps to the live edge — same gesture surface, no extra
+      // button to mis-hit.
+      bar.addEventListener('click', (e) => {
+        if (cur.atLiveEdge !== false) return; // already live
+        const rect = bar.getBoundingClientRect();
+        const frac = (e.clientX - rect.left) / rect.width;
+        if (frac >= 0.88) seekToLive();
+      });
 
       // Drag state: while dragging, the UI previews the target position and
       // does NOT fight the rolling window; the seek is committed on release
@@ -1392,8 +1369,6 @@
         const f = windowFrac();
         if (f === null) { timeLeft.textContent = ''; fill.style.width = '0%'; return; }
         paint(f);
-        // Right label reflects reachability of live: dim when already there.
-        liveLabel.classList.toggle('at-live', cur.atLiveEdge !== false);
       };
       if (audioEl._srDvrUpd) audioEl.removeEventListener('timeupdate', audioEl._srDvrUpd);
       audioEl._srDvrUpd = upd;
@@ -1516,11 +1491,29 @@
       });
     }
 
-    const backBtn = live ? null : el('button', {
-      class: 'player-btn', type: 'button', 'aria-label': 'Bakåt 15 sekunder',
-      html: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z"/></svg>',
-      onclick: () => { audioEl.currentTime = Math.max(0, audioEl.currentTime - SEEK_STEP_S); },
+    // DVR transport buttons (±15 s + program skip) flank play/pause in the
+    // main controls row — user request 2026-09-23: "logically placed left and
+    // right of the play/stop button". For non-DVR (podcast/episode) playback
+    // the ±15 s buttons use plain currentTime seeks (SEEK_STEP_S).
+    const isDvr = live && cur.dvrAvailable;
+    const backBtn = el('button', {
+      class: `player-btn${isDvr ? ' dvr-step-btn' : ''}`, type: 'button', 'aria-label': 'Bakåt 15 sekunder',
+      html: isDvr
+        ? '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>'
+        : '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z"/></svg>',
+      onclick: () => {
+        if (isDvr) seekBy(-SEEK_STEP_S_DVR);
+        else audioEl.currentTime = Math.max(0, audioEl.currentTime - SEEK_STEP_S);
+      },
     });
+
+    // Program-skip back button (DVR only, hidden until schedule resolves).
+    const prevProgramBtn = isDvr ? el('button', {
+      class: 'player-btn dvr-program-btn', type: 'button',
+      'aria-label': 'Till föregående programs start',
+      style: 'display:none;',
+      html: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>',
+    }) : null;
 
     const playPause = el('button', {
       class: 'player-btn player-btn-main', type: 'button',
@@ -1535,10 +1528,22 @@
       },
     });
 
-    const fwdBtn = live ? null : el('button', {
-      class: 'player-btn', type: 'button', 'aria-label': 'Framåt 15 sekunder',
-      html: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13 6v12l8.5-6L13 6zM3 18l8.5-6L3 6v12z"/></svg>',
+    // Program-skip forward button (DVR only, lights up when behind live AND
+    // a later programme exists — same semantics as before, new position).
+    const nextProgramBtn = isDvr ? el('button', {
+      class: 'player-btn dvr-program-btn', type: 'button',
+      'aria-label': 'Till nästa programs start',
+      style: 'display:none;',
+      html: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg>',
+    }) : null;
+
+    const fwdBtn = el('button', {
+      class: `player-btn${isDvr ? ' dvr-step-btn' : ''}`, type: 'button', 'aria-label': 'Framåt 15 sekunder',
+      html: isDvr
+        ? '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z"/></svg>'
+        : '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13 6v12l8.5-6L13 6zM3 18l8.5-6L3 6v12z"/></svg>',
       onclick: () => {
+        if (isDvr) { seekBy(SEEK_STEP_S_DVR); return; }
         const d = Number.isFinite(audioEl.duration) && audioEl.duration > 0
           ? audioEl.duration : cur.duration;
         if (d) audioEl.currentTime = Math.min(d, audioEl.currentTime + SEEK_STEP_S);
@@ -1552,9 +1557,41 @@
     });
 
     const controls = el('div', { class: 'player-controls' });
+    if (prevProgramBtn) controls.appendChild(prevProgramBtn);
     if (backBtn) controls.appendChild(backBtn);
     controls.appendChild(playPause);
     if (fwdBtn) controls.appendChild(fwdBtn);
+    if (nextProgramBtn) controls.appendChild(nextProgramBtn);
+
+    // Wire program-skip buttons once the schedule resolves (DVR only).
+    // Re-render is NOT needed: the buttons live in this render instance.
+    if (isDvr && cur.id && prevProgramBtn && nextProgramBtn) {
+      fetchSchedule(cur.id).then((schedule) => {
+        if (!schedule || !document.contains(prevProgramBtn)) return;
+        const posMs = () => Date.now() - (cur.seekableEnd - (audioEl.currentTime || 0)) * 1000;
+        const prevEv = programBoundary(schedule, posMs(), -1);
+        if (prevEv) {
+          prevProgramBtn.style.display = '';
+          prevProgramBtn.onclick = () => seekToProgramTime(prevEv.startMs);
+        }
+        const syncNext = () => {
+          const nextEv = programBoundary(schedule, posMs(), +1);
+          // "Next" only lights up when behind live AND a later programme exists.
+          const behindLive = cur.atLiveEdge === false
+            || (Number.isFinite(cur.seekableEnd) && cur.seekableEnd - (audioEl.currentTime || 0) > 60);
+          if (nextEv && behindLive) {
+            nextProgramBtn.style.display = '';
+            nextProgramBtn.title = nextEv.title || 'Nästa program';
+            nextProgramBtn.onclick = () => seekToProgramTime(nextEv.startMs);
+          } else {
+            nextProgramBtn.style.display = 'none';
+          }
+        };
+        if (prevEv) syncNext();
+        // Keep next-button state fresh as playback moves.
+        audioEl.addEventListener('timeupdate', syncNext);
+      }).catch(() => { /* schedule unavailable — buttons stay hidden */ });
+    }
 
     $player.appendChild(closeBtn);
     $player.appendChild(el('div', { class: 'player-row' }, thumb, meta, controls));
@@ -1591,6 +1628,9 @@
         audioUrl: ep.audioUrl,
         duration: ep.duration,
         artwork: pod.image,
+        description: pod.description || null,
+        programName: pod.name,
+        image: pod.image || null,
       });
     } catch (err) {
       showToast(err.message || 'Kunde inte hämta avsnittet.');
@@ -1803,9 +1843,13 @@
           onclick: () => (isPod ? playPodcast(item.id) : toggleTrack({
             kind: 'live', id: item.id, title: item.name, subtitle: 'Direkt',
             audioUrl: item.liveaudioUrl, artwork: item.image,
+            description: item.tagline || null,
             candidates: liveCandidates(item),
           })),
         });
+        // Fas 5: long-press opens the context card (tablå for channels,
+        // episode list for podcasts). Tap still plays.
+        addLongPress(btn, () => (isPod ? openPodcastCard(item) : openChannelCard(item)));
         if (item.image) {
           btn.appendChild(el('img', { src: item.image, alt: '', loading: 'lazy', draggable: 'false' }));
         } else {
@@ -1939,6 +1983,186 @@
       if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc); }
     });
     enableSwipeToClose(overlay, about, close);
+  }
+
+  // ---------------- Fas 5: context cards (long-press) ----------------
+  // Long-press (500 ms hold, cancelled by movement > 10 px or early release)
+  // opens a context card. Tap still plays as before — long-press is additive.
+  function addLongPress(node, onLongPress) {
+    let timer = null;
+    let startX = 0, startY = 0;
+    const CANCEL_MOVE = 10;
+    const HOLD_MS = 500;
+    const start = (x, y) => {
+      startX = x; startY = y;
+      timer = setTimeout(() => { timer = null; onLongPress(); }, HOLD_MS);
+    };
+    const cancel = () => { if (timer) { clearTimeout(timer); timer = null; } };
+    node.addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 1) return;
+      start(e.touches[0].clientX, e.touches[0].clientY);
+    }, { passive: true });
+    node.addEventListener('touchmove', (e) => {
+      if (!timer) return;
+      const t = e.touches[0];
+      if (Math.abs(t.clientX - startX) > CANCEL_MOVE || Math.abs(t.clientY - startY) > CANCEL_MOVE) cancel();
+    }, { passive: true });
+    node.addEventListener('touchend', cancel, { passive: true });
+    node.addEventListener('touchcancel', cancel, { passive: true });
+    // Desktop: right-click opens the card too (contextual parity).
+    node.addEventListener('contextmenu', (e) => { e.preventDefault(); onLongPress(); });
+  }
+
+  // Generic context-card sheet (reuses the settings-sheet visual language).
+  function openContextCard({ title, subtitle, image, buildBody }) {
+    const overlay = el('div', { class: 'sheet-overlay' });
+    const sheet = el('div', { class: 'sheet context-card', role: 'dialog', 'aria-modal': 'true', 'aria-label': title });
+    const grabZone = el('div', { class: 'sheet-grab-zone' }, el('div', { class: 'sheet-grab' }));
+    const header = el('div', { class: 'sheet-header' },
+      el('div', { class: 'card-head' },
+        image ? el('img', { class: 'card-img', src: image, alt: '' }) : null,
+        el('div', { class: 'card-head-text' },
+          el('div', { class: 'sheet-title', text: title }),
+          subtitle ? el('div', { class: 'card-sub', text: subtitle }) : null)),
+      el('button', {
+        class: 'sheet-close', type: 'button', 'aria-label': 'Stäng', text: '✕',
+        onclick: close,
+      }));
+    const body = el('div', { class: 'card-body' });
+    buildBody(body, close);
+    sheet.appendChild(grabZone);
+    sheet.appendChild(header);
+    sheet.appendChild(body);
+    overlay.appendChild(sheet);
+    $sheetRoot.textContent = '';
+    $sheetRoot.appendChild(overlay);
+    document.body.style.overflow = 'hidden';
+    function close() {
+      $sheetRoot.textContent = '';
+      document.body.style.overflow = '';
+    }
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    document.addEventListener('keydown', function esc(e) {
+      if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc); }
+    });
+    enableSwipeToClose(overlay, sheet, close, { axis: 'y' });
+  }
+
+  // Channel card: today's tablå via scheduledepisodes (live endpoint).
+  // Tap a past/ongoing programme with an episodeId → play on-demand via
+  // episodes/get. Future programmes are listed but marked "ej påbörjad".
+  function openChannelCard(channel) {
+    openContextCard({
+      title: channel.name,
+      subtitle: 'Tablå — idag',
+      image: channel.image || null,
+      buildBody: (body, close) => {
+        body.appendChild(el('div', { class: 'card-loading', text: 'Hämtar tablå…' }));
+        fetchSchedule(channel.id).then((schedule) => {
+          body.textContent = '';
+          if (!schedule) {
+            body.appendChild(el('div', { class: 'state-msg', text: 'Tablån kunde inte hämtas just nu.' }));
+            return;
+          }
+          const now = Date.now();
+          const list = el('div', { class: 'card-list', role: 'list' });
+          for (const ev of schedule) {
+            const ongoing = now >= ev.startMs && now < ev.endMs;
+            const past = now >= ev.endMs;
+            const playable = Boolean(ev.episodeId);
+            const row = el('button', {
+              class: `card-row${ongoing ? ' ongoing' : ''}${playable ? '' : ' no-audio'}`,
+              type: 'button', role: 'listitem',
+              'aria-label': playable ? `Spela ${ev.title} från ${dvrClockLabel(new Date(ev.startMs))}` : ev.title,
+              disabled: !playable,
+            });
+            row.appendChild(el('span', { class: 'card-time', text: dvrClockLabel(new Date(ev.startMs)) || '' }));
+            row.appendChild(el('span', { class: 'card-title', text: ev.title + (ongoing ? ' ●' : '') }));
+            row.appendChild(el('span', { class: 'card-state', text: playable ? '▶' : (past ? '' : '⏳') }));
+            if (playable) {
+              row.onclick = async () => {
+                close();
+                showToast('Hämtar avsnitt…', 1500);
+                try {
+                  const data = await apiFetch(`${SR_API}/episodes/get?id=${ev.episodeId}&format=json`);
+                  const ep = data?.episode || {};
+                  const { audioUrl, duration } = episodeAudioFields(ep);
+                  if (!audioUrl) { showToast('Inget ljud för detta avsnitt.'); return; }
+                  playTrack({
+                    kind: 'episode', id: ep.id ?? ev.episodeId,
+                    title: ep.title || ev.title,
+                    subtitle: ev.programName || channel.name,
+                    audioUrl, duration,
+                    artwork: ev.image || channel.image,
+                  });
+                } catch { showToast('Kunde inte hämta avsnittet.'); }
+              };
+            }
+            list.appendChild(row);
+          }
+          body.appendChild(list);
+        }).catch(() => {
+          body.textContent = '';
+          body.appendChild(el('div', { class: 'state-msg', text: 'Tablån kunde inte hämtas.' }));
+        });
+      },
+    });
+  }
+
+  // Podcast card: recent episodes via episodes/index (SR quirk: page 1 is
+  // empty for many programs — try page 2 as well).
+  function openPodcastCard(pod) {
+    openContextCard({
+      title: pod.name,
+      subtitle: 'Avsnitt',
+      image: pod.image || null,
+      buildBody: (body, close) => {
+        body.appendChild(el('div', { class: 'card-loading', text: 'Hämtar avsnitt…' }));
+        (async () => {
+          let eps = [];
+          for (const page of [1, 2]) {
+            const data = await apiFetch(`${SR_API}/episodes/index?format=json&programid=${pod.id}&size=10&page=${page}`);
+            eps = Array.isArray(data?.episodes) ? data.episodes : [];
+            if (eps.length) break;
+          }
+          body.textContent = '';
+          if (!eps.length) {
+            body.appendChild(el('div', { class: 'state-msg', text: 'Inga avsnitt hittades.' }));
+            return;
+          }
+          const list = el('div', { class: 'card-list', role: 'list' });
+          for (const ep of eps) {
+            const { audioUrl, duration } = episodeAudioFields(ep);
+            const row = el('button', {
+              class: `card-row${audioUrl ? '' : ' no-audio'}`,
+              type: 'button', role: 'listitem',
+              'aria-label': audioUrl ? `Spela ${ep.title}` : ep.title,
+              disabled: !audioUrl,
+            });
+            row.appendChild(el('span', { class: 'card-time', text: formatTime(parseSrDate(ep.publishdateutc)) || '' }));
+            row.appendChild(el('span', { class: 'card-title', text: ep.title || '' }));
+            if (duration) row.appendChild(el('span', { class: 'card-state', text: fmtDur(duration) }));
+            if (audioUrl) {
+              row.onclick = () => {
+                close();
+                playTrack({
+                  kind: 'episode', id: ep.id,
+                  title: ep.title || pod.name,
+                  subtitle: pod.name,
+                  audioUrl, duration,
+                  artwork: pod.image,
+                });
+              };
+            }
+            list.appendChild(row);
+          }
+          body.appendChild(list);
+        })().catch(() => {
+          body.textContent = '';
+          body.appendChild(el('div', { class: 'state-msg', text: 'Avsnitten kunde inte hämtas.' }));
+        });
+      },
+    });
   }
 
   // ---------------- bottom sheet (selection UI) ----------------
