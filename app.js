@@ -882,8 +882,11 @@
     audioEl.removeAttribute('src');
     state.current = null;
     lastPlayingKey = null;
+    playerMinimized = false; // a fresh play must never open as mini-bar
     updateMediaSession(); // clears lock-screen now-playing immediately
     $player.classList.remove('visible');
+    $player.classList.remove('minimized');
+    $player.onclick = null;
     $player.textContent = '';
     updatePlayingMarks();
   }
@@ -1191,9 +1194,54 @@
     // (verified bug 2026-09-21). Clear it every render.
     $player.style.transform = '';
     $player.classList.add('visible');
+    $player.classList.toggle('minimized', playerMinimized);
     $player.textContent = '';
 
     const live = cur.kind === 'live';
+
+    // ---- MINIMIZED mini-bar layout (2026-09-23) ----
+    // Swipe down on the player minimizes it: a compact bar at the bottom
+    // with artwork, title, play/pause, expand and stop. The page behind is
+    // fully visible and scrollable; audio keeps playing. Tap the mini-bar
+    // (except buttons) restores the full player.
+    if (playerMinimized) {
+      const miniPlay = el('button', {
+        class: 'player-btn player-btn-main', type: 'button',
+        'aria-label': audioEl.paused ? 'Spela' : 'Pausa',
+        html: audioEl.paused
+          ? '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>'
+          : '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>',
+        onclick: () => {
+          if (audioEl.paused) audioEl.play().catch(() => {});
+          else audioEl.pause();
+          renderPlayer();
+        },
+      });
+      const miniExpand = el('button', {
+        class: 'player-btn', type: 'button', 'aria-label': 'Visa programinformation',
+        html: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>',
+        onclick: () => { restorePlayer(); },
+      });
+      const miniStop = el('button', {
+        class: 'player-btn player-btn-close', type: 'button', 'aria-label': 'Stäng spelaren',
+        html: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 13.41 12z"/></svg>',
+        onclick: () => { playerMinimized = false; stopAndClosePlayer(); },
+      });
+      const mini = el('div', { class: 'player-mini' },
+        thumb,
+        el('div', { class: 'player-meta', onclick: restorePlayer },
+          el('div', { class: 'player-title', text: cur.title || '' }),
+          el('div', { class: 'player-sub', text: cur.subtitle || (live ? 'Direkt' : '') })),
+        miniPlay, miniExpand, miniStop);
+      $player.appendChild(mini);
+      // Tap anywhere on the mini-bar (except buttons) restores the player.
+      $player.onclick = (e) => {
+        if (e.target.closest('button')) return;
+        restorePlayer();
+      };
+      return;
+    }
+    $player.onclick = null;
 
     const thumb = el('div', { class: 'player-thumb', 'aria-hidden': 'true' },
       cur.artwork
@@ -1670,14 +1718,132 @@
     $player.appendChild(closeBtn);
     $player.appendChild(el('div', { class: 'player-row' }, thumb, meta, controls));
     if (seekRow) $player.appendChild(seekRow);
-    // Expand handle sits in the header row (next to close) — deliberate
-    // target, no accidental one-click expansion.
+    // Expand handle sits in the header row (next to close).
     $player.insertBefore(expandBtn, closeBtn.nextSibling);
 
-    // Swipe the player down to stop & close (same pattern as the settings
-    // sheet). The player itself is the panel; it springs back if the swipe
-    // is too short.
-    enableSwipeToClose($player, $player, stopAndClosePlayer, { axis: 'y' });
+    // ---- Player vertical gestures (redesign 2026-09-23) ----
+    // The player surface owns ALL vertical gestures on itself:
+    //   swipe UP   → expand the info panel upward (finger-following)
+    //   swipe DOWN → MINIMIZE to a mini-bar (audio keeps playing; the page
+    //                becomes visible again). NOT close — closing is the ✕
+    //                button's job.
+    // The background page must never move with the gesture: the player has
+    // touch-action:none and the handlers preventDefault vertical moves.
+    // (Old behavior — swipe down = stop & close — removed per user request:
+    // accidental kills of playback were too easy.)
+    enablePlayerGestures($player, {
+      onExpand: () => expandBtn.click(),
+      onMinimize: minimizePlayer,
+    });
+  }
+
+  // ---- player gesture engine: finger-following expand/minimize ----
+  // Vertical drag on the player surface:
+  //   up   → expands the info panel (panel height follows the finger)
+  //   down → minimizes the player (player slides down, page visible)
+  // The gesture NEVER scrolls the background page: the player element has
+  // touch-action:none and touchmove is preventDefault-ed while dragging.
+  function enablePlayerGestures(surface, { onExpand, onMinimize }) {
+    let startY = 0, startX = 0, dragging = false, axis = null, t0 = 0;
+    const THRESHOLD = 0.22; // 22 % of viewport height commits the gesture
+    const FLICK_MS = 260;
+
+    surface.addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 1) return;
+      startY = e.touches[0].clientY;
+      startX = e.touches[0].clientX;
+      t0 = Date.now();
+      axis = null;
+    }, { passive: true });
+
+    surface.addEventListener('touchmove', (e) => {
+      if (e.touches.length !== 1) return;
+      const dy = e.touches[0].clientY - startY;
+      const dx = e.touches[0].clientX - startX;
+      if (axis === null && (Math.abs(dy) > 10 || Math.abs(dx) > 10)) {
+        // Vertical intent only — horizontal gestures belong to the DVR bar
+        // (which stops propagation anyway via its own touch-action:none).
+        axis = Math.abs(dy) > Math.abs(dx) ? 'y' : null;
+        if (axis === 'y') {
+          surface.classList.add('gesture-owning'); // locks page scroll
+          document.body.classList.add('player-gesture-lock'); // belt+suspenders
+          surface.style.transition = 'none';
+        }
+      }
+      if (axis !== 'y') return;
+      e.preventDefault(); // THE key line: background page never moves
+      if (dy < 0) {
+        // Dragging up: expand panel grows with the finger (0 → max 40 dvh).
+        const panel = surface.querySelector('.player-expand');
+        if (!panel) {
+          // create the panel on first upward movement
+          onExpand();
+        }
+        const p = surface.querySelector('.player-expand');
+        if (p) {
+          const h = Math.min(-dy, window.innerHeight * 0.4);
+          p.style.height = `${Math.max(0, h)}px`;
+        }
+      } else {
+        // Dragging down: player follows the finger toward minimized state.
+        surface.style.transform = `translateY(${Math.min(dy, window.innerHeight * 0.5)}px)`;
+      }
+    }, { passive: false });
+
+    const finish = (e) => {
+      if (axis !== 'y') return;
+      axis = null;
+      surface.classList.remove('gesture-owning');
+      document.body.classList.remove('player-gesture-lock');
+      surface.style.transition = '';
+      const dy = e.changedTouches?.[0] ? e.changedTouches[0].clientY - startY : 0;
+      const flick = Date.now() - t0 < 260 && Math.abs(dy) > 40;
+      const panel = surface.querySelector('.player-expand');
+      if (dy < -window.innerHeight * THRESHOLD || (Date.now() - t0 < 260 && dy < -40)) {
+        // Commit EXPAND: panel snaps to full height.
+        if (panel) panel.style.height = '';
+        return; // panel already open via onExpand
+      }
+      if (dy > window.innerHeight * THRESHOLD || (Date.now() - t0 < 260 && dy > 40)) {
+        // Commit MINIMIZE.
+        surface.style.transform = '';
+        onMinimize();
+        return;
+      }
+      // Spring back: restore whatever state we were in.
+      surface.style.transform = '';
+      if (panel && dy < 0 && -dy < window.innerHeight * THRESHOLD) {
+        // Not dragged far enough up — fold the panel back.
+        panel.style.height = '';
+        panel.remove();
+        const btn = surface.querySelector('.player-expand-btn');
+        btn?.setAttribute('aria-expanded', 'false');
+        btn?.classList.remove('open');
+      }
+    };
+    surface.addEventListener('touchend', finish, { passive: true });
+    surface.addEventListener('touchcancel', finish, { passive: true });
+  }
+
+  // ---- minimize: player shrinks to a mini-bar; page visible; audio keeps playing ----
+  let playerMinimized = false;
+  function minimizePlayer() {
+    if (playerMinimized || !state.current) return;
+    playerMinimized = true;
+    // Fold the expand panel if open.
+    $player.querySelector('.player-expand')?.remove();
+    $player.querySelector('.player-expand-btn')?.setAttribute('aria-expanded', 'false');
+    $player.querySelector('.player-expand-btn')?.classList.remove('open');
+    $player.classList.add('minimized');
+    // Mini-bar content: artwork, title, play/pause, expand, stop.
+    renderPlayer();
+  }
+
+  function restorePlayer() {
+    if (!playerMinimized) return;
+    playerMinimized = false;
+    $player.classList.remove('minimized');
+    renderPlayer();
   }
 
   // ---------------- playback actions ----------------
