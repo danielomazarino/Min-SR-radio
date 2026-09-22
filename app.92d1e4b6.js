@@ -1016,10 +1016,94 @@
   // the current paused/playing state.
   function seekToLive() {
     const cur = state.current;
+    if (!cur) return;
+    const end = cur.dvrAvailable ? cur.seekableEnd : null;
+    if (!Number.isFinite(end)) return;
+    audioEl.currentTime = end;
+    updateSeekableState();
+    renderPlayer();
+  }
+
+  // ---- DVR transport: ±15 s steps + program skip (2026-09-22 request) ----
+  // The 3-hour window makes the bare slider too coarse; ±15 s buttons give
+  // fine control. Program skip uses SR's schedule (tablå): seek to the start
+  // of the previous/next programme. If the schedule API is unavailable
+  // (it has had outages), the buttons simply don't render.
+  const SEEK_STEP_S_DVR = SEEK_STEP_S; // 15 s, same as on-demand
+
+  function seekBy(deltaSeconds) {
+    const cur = state.current;
+    if (!cur || !cur.dvrAvailable) return;
+    const start = Number.isFinite(cur.seekableStart) ? cur.seekableStart : 0;
+    const target = Math.max(start, (audioEl.currentTime || 0) + deltaSeconds);
+    if (!Number.isFinite(target)) return;
+    audioEl.currentTime = target;
+    updateSeekableState();
+    renderPlayer();
+  }
+
+  // Fetch today's schedule for a channel. Returns [{startMs, endMs, title}]
+  // sorted by start time, or null if unavailable (API error / empty).
+  // Cached per channel+date for 10 minutes.
+  const scheduleCache = new Map();
+  async function fetchSchedule(channelId) {
+    const key = `${channelId}:${new Date().toISOString().slice(0, 10)}`;
+    const cached = scheduleCache.get(key);
+    if (cached && Date.now() - cached.at < 10 * 60 * 1000) return cached.value;
+    let value = null;
+    try {
+      const data = await apiFetch(
+        `${SR_API}/scheduledevents?channelid=${channelId}&date=${new Date().toISOString().slice(0, 10)}&format=json`
+      );
+      const events = Array.isArray(data?.schedule) ? data.schedule : [];
+      const parsed = events
+        .map((ev) => {
+          const startMs = parseSrDate(ev.starttimeutc);
+          const endMs = parseSrDate(ev.endtimeutc);
+          if (startMs == null || endMs == null) return null;
+          return { startMs, endMs, title: ev.title || '' };
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.startMs - b.startMs);
+      value = parsed.length ? parsed : null;
+    } catch {
+      value = null; // API down / rate-limited → feature hides
+    }
+    scheduleCache.set(key, { value, at: Date.now() });
+    return value;
+  }
+
+  // Find the programme boundary to seek to. direction -1 = start of the
+  // programme before the current position; +1 = start of the next programme
+  // after it. Returns {startMs, title} or null.
+  function programBoundary(schedule, positionMs, direction) {
+    if (!Array.isArray(schedule) || !schedule.length) return null;
+    if (direction < 0) {
+      // Previous programme: the last one whose start is before the position.
+      const prev = [...schedule].reverse().find((ev) => ev.startMs < positionMs - 1000);
+      return prev ? { startMs: prev.startMs, title: prev.title } : null;
+    }
+    // Next programme: the first event starting after the position.
+    const next = schedule.find((ev) => ev.startMs > positionMs + 1000);
+    return next ? { startMs: next.startMs, title: next.title } : null;
+  }
+
+  // Seek to a programme start time inside the DVR window. The window maps
+  // wall-clock → position: live edge ≈ now, so position = end − (now − t).
+  function seekToProgramTime(startMs) {
+    const cur = state.current;
     if (!cur || !cur.dvrAvailable) return;
     const end = cur.seekableEnd;
     if (!Number.isFinite(end)) return;
-    audioEl.currentTime = end;
+    const behindMs = Date.now() - startMs;
+    if (behindMs < 0) return; // future programme — nothing to seek to yet
+    const target = end - behindMs / 1000;
+    const start = Number.isFinite(cur.seekableStart) ? cur.seekableStart : 0;
+    if (target < start) {
+      showToast('Programmet ligger utanför spolbart område (3 timmar).');
+      return;
+    }
+    audioEl.currentTime = target;
     updateSeekableState();
     renderPlayer();
   }
@@ -1137,14 +1221,80 @@
         'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': 100,
         tabindex: '0',
       }, el('div', { class: 'seek-fill' }), el('div', { class: 'seek-thumb' }));
-      const timeLeft = el('div', { class: 'player-time', text: '' });
+            const timeLeft = el('div', { class: 'player-time', text: '' });
       const liveLabel = el('button', {
         class: 'player-live-label', type: 'button',
         'aria-label': 'Tillbaka till Direkt',
         text: 'LIVE',
         onclick: seekToLive,
       });
-      seekRow = el('div', { class: 'seek-row dvr-row' }, timeLeft, bar, liveLabel);
+
+      // ±15 s step buttons — the 3-h window makes the bare slider coarse.
+      const back15Btn = el('button', {
+        class: 'dvr-step-btn', type: 'button',
+        'aria-label': 'Bakåt 15 sekunder',
+        onclick: () => seekBy(-SEEK_STEP_S_DVR),
+      });
+      back15Btn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>';
+      const fwd15Btn = el('button', {
+        class: 'dvr-step-btn', type: 'button',
+        'aria-label': 'Framåt 15 sekunder',
+        onclick: () => seekBy(SEEK_STEP_S_DVR),
+      });
+      fwd15Btn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z"/></svg>';
+
+      // Program skip: prev seeks to the start of the programme before the
+      // current position; next lights up only when an earlier programme is
+      // selected AND a later programme exists in the schedule. Both need the
+      // schedule — fetched async; buttons stay hidden until it resolves.
+      // If the schedule API is down (it has outages), they never appear.
+      const prevProgramBtn = el('button', {
+        class: 'dvr-step-btn dvr-program-btn', type: 'button',
+        'aria-label': 'Till föregående programs start',
+        style: 'display:none;',
+      });
+      prevProgramBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>';
+      const nextProgramBtn = el('button', {
+        class: 'dvr-step-btn dvr-program-btn', type: 'button',
+        'aria-label': 'Till nästa programs start',
+        style: 'display:none;',
+      });
+      nextProgramBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg>';
+
+      // Wire program buttons once the schedule resolves. Re-render is NOT
+      // needed: the buttons live in this seekRow instance.
+      if (cur.id) {
+        fetchSchedule(cur.id).then((schedule) => {
+          if (!schedule || !document.contains(prevProgramBtn)) return;
+          const posMs = Date.now() - (cur.seekableEnd - (audioEl.currentTime || 0)) * 1000;
+          const prevEv = programBoundary(schedule, posMs, -1);
+          if (prevEv) {
+            prevProgramBtn.style.display = '';
+            prevProgramBtn.onclick = () => seekToProgramTime(prevEv.startMs);
+          }
+          const syncNext = () => {
+            const p = Date.now() - (cur.seekableEnd - (audioEl.currentTime || 0)) * 1000;
+            const nextEv = programBoundary(schedule, p, +1);
+            // "Next" only lights up when an earlier programme is selected
+            // (not at live) AND a later programme exists.
+            const behindLive = cur.atLiveEdge === false
+              || (Number.isFinite(cur.seekableEnd) && cur.seekableEnd - (audioEl.currentTime || 0) > 60);
+            if (nextEv && behindLive) {
+              nextProgramBtn.style.display = '';
+              nextProgramBtn.title = nextEv.title || 'Nästa program';
+              nextProgramBtn.onclick = () => seekToProgramTime(nextEv.startMs);
+            } else {
+              nextProgramBtn.style.display = 'none';
+            }
+          };
+          if (prevEv) syncNext();
+          // Keep next-button state fresh as playback moves.
+          audioEl.addEventListener('timeupdate', syncNext);
+        }).catch(() => { /* schedule unavailable — buttons stay hidden */ });
+      }
+
+      seekRow = el('div', { class: 'seek-row dvr-row' },
+        prevProgramBtn, back15Btn, timeLeft, bar, fwd15Btn, liveLabel);
       const fill = bar.querySelector('.seek-fill');
       const thumb = bar.querySelector('.seek-thumb');
 
@@ -1196,10 +1346,17 @@
       };
 
       // Pointer events = unified touch/mouse dragging.
-      // Paint is rAF-throttled: pointermove can fire faster than frames on
-      // iOS; without throttling, paint floods the compositor and the fill/
-      // thumb feel spotty (BUG B, 2026-09-22 iPhone feedback).
+      // GESTURE DISAMBIGUATION (fix for "slider jumps to zero by itself"):
+      // a vertical swipe-down on the player that BEGINS on the seek bar was
+      // interpreted as a horizontal drag → the release committed a seek to
+      // the finger's x-position (often near 0). Fix: only treat a pointer as
+      // a seek-drag once it shows HORIZONTAL intent (dx >= dy, dx >= 8 px).
+      // Vertical-dominant gestures are ignored entirely — the swipe-to-close
+      // handler owns those.
       let paintPending = false;
+      let dragStartX = null;
+      let dragStartY = null;
+      let dragAxis = null; // 'x' | 'y' | null (undecided)
       const paintThrottled = (frac) => {
         dragFrac = frac;
         if (paintPending) return;
@@ -1212,6 +1369,7 @@
 
       bar.addEventListener('pointerdown', (e) => {
         dragging = true;
+        dragAxis = null; // decided on first significant move
         dragFrac = fracFromEvent(e);
         paint(dragFrac);
         try { bar.setPointerCapture(e.pointerId); } catch (err) { /* ok */ }
@@ -1219,18 +1377,39 @@
       });
       bar.addEventListener('pointermove', (e) => {
         if (!dragging) return;
+        if (dragAxis === null) {
+          const dx = Math.abs(e.clientX - (dragStartX ?? e.clientX));
+          const dy = Math.abs(e.clientY - (dragStartY ?? e.clientY));
+          if (dx < 8 && dy < 8) return; // not yet significant
+          dragAxis = dx >= dy ? 'x' : 'y';
+          if (dragAxis === 'y') {
+            // Vertical intent — this is a swipe-to-close gesture, not a seek.
+            // Abort the drag WITHOUT committing anything; the swipe handler
+            // owns vertical gestures.
+            dragging = false;
+            dragFrac = null;
+            bar.classList.remove('dragging');
+            try { bar.releasePointerCapture(e.pointerId); } catch (err) { /* ok */ }
+            paint(windowFrac() ?? 0); // restore the real position
+            return;
+          }
+        }
+        if (dragAxis !== 'x') return;
         paintThrottled(fracFromEvent(e));
       });
       const endDrag = (e) => {
         if (!dragging) return;
         dragging = false;
+        // Only commit a seek when the gesture was a horizontal drag (or a
+        // plain tap). A vertical-dominant gesture belongs to swipe-to-close.
+        const commit = dragAxis === 'x' || dragAxis === null;
         const frac = (e && Number.isFinite(e.clientX)) ? fracFromEvent(e) : dragFrac;
         dragFrac = null;
         bar.classList.remove('dragging');
         if (e && Number.isFinite(e.pointerId)) {
           try { bar.releasePointerCapture(e.pointerId); } catch (err) { /* released */ }
         }
-        if (frac !== null) seekToWindowFraction(frac);
+        if (commit && frac !== null) seekToWindowFraction(frac);
         upd();
       };
       bar.addEventListener('pointerup', endDrag);
@@ -1248,7 +1427,11 @@
       // its guard is cleared).
       let lastDragMove = Date.now();
       bar.addEventListener('pointermove', () => { lastDragMove = Date.now(); });
-      bar.addEventListener('pointerdown', () => { lastDragMove = Date.now(); });
+      bar.addEventListener('pointerdown', (e) => {
+        lastDragMove = Date.now();
+        dragStartX = e.clientX;
+        dragStartY = e.clientY;
+      });
       const stuckGuard = setInterval(() => {
         if (!dragging) return;
         // A real drag produces pointermove; if none arrived for 3 s while

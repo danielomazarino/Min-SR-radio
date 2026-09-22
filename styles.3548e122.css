@@ -818,6 +818,30 @@ a:focus-visible {
   cursor: default;
 }
 
+/* DVR transport buttons: ±15 s steps + program skip (2026-09-22 request).
+   Same visual language as the LIVE label — quiet, accent-colored icons. */
+.dvr-step-btn {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  width: 36px;
+  height: 44px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex: none;
+}
+.dvr-step-btn svg { width: 20px; height: 20px; }
+.dvr-step-btn:active { opacity: 0.6; }
+.dvr-program-btn { color: var(--text-secondary); }
+.dvr-program-btn[style*="display: none"] { display: none !important; }
+
+/* The DVR row now carries more controls — tighten the time label so the bar
+   keeps most of the width. */
+.dvr-row .player-time { min-width: 30px; }
+
 /* Mode pill when behind live: accent tint + shows the clock time of the
    heard position (not color-only — the text changes from LIVE to HH:MM). */
 .player-mode.behind {
