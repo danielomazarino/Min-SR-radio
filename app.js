@@ -1088,9 +1088,17 @@
     renderPlayer();
   }
 
-  // Fetch today's schedule for a channel. Returns [{startMs, endMs, title}]
-  // sorted by start time, or null if unavailable (API error / empty).
+  // Fetch today's schedule for a channel. Returns [{startMs, endMs, title,
+  // programId, programName}] sorted by start time, or null if unavailable.
   // Cached per channel+date for 10 minutes.
+  //
+  // ENDPOINT NOTE (2026-09-23): scheduledevents is DEAD (SR confirmed the
+  // open API is being decommissioned; that endpoint 500s permanently).
+  // scheduledepisodes is the endpoint SR's own ecosystem still serves —
+  // verified 200 (today, tomorrow AND yesterday) and it's what
+  // servicenoden.se/srtableau uses for its working tablå. Same response
+  // shape (schedule[] with starttimeutc/endtimeutc) plus program metadata
+  // and episodeid (playable on-demand via episodes/get?id=...).
   const scheduleCache = new Map();
   async function fetchSchedule(channelId) {
     const key = `${channelId}:${new Date().toISOString().slice(0, 10)}`;
@@ -1099,7 +1107,7 @@
     let value = null;
     try {
       const data = await apiFetch(
-        `${SR_API}/scheduledevents?channelid=${channelId}&date=${new Date().toISOString().slice(0, 10)}&format=json`
+        `${SR_API}/scheduledepisodes?channelid=${channelId}&date=${new Date().toISOString().slice(0, 10)}&format=json&pagination=false`
       );
       const events = Array.isArray(data?.schedule) ? data.schedule : [];
       const parsed = events
@@ -1107,7 +1115,13 @@
           const startMs = parseSrDate(ev.starttimeutc);
           const endMs = parseSrDate(ev.endtimeutc);
           if (startMs == null || endMs == null) return null;
-          return { startMs, endMs, title: ev.title || '' };
+          return {
+            startMs, endMs,
+            title: ev.title || '',
+            programId: ev.program?.id ?? null,
+            programName: ev.program?.name || '',
+            episodeId: ev.episodeid ?? null,
+          };
         })
         .filter(Boolean)
         .sort((a, b) => a.startMs - b.startMs);
