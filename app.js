@@ -25,7 +25,7 @@
   const MAX_FAVORITES = 4;
   const FETCH_TIMEOUT_MS = 10000;
   const SEEK_STEP_S = 15;
-  const APP_VERSION = '1.3.0';
+  const APP_VERSION = '1.5.0';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -275,6 +275,30 @@
       .slice(0, 6);
   }
 
+  // ---- BUG 2 fix (2026-09-22): news links open a 404 ----
+  // ROOT CAUSE (verified with browser-perfect iOS Safari headers):
+  //   1. The Ekot feed's <link> is /artikel/<id> — SR's own site returns 404
+  //      for ALL id URLs (SR migrated to slug URLs; the feed was not updated).
+  //   2. Working URLs are /artikel/<slug> on the www host (non-www 403s).
+  //   3. Slugs CANNOT be fetched cross-origin (sverigesradio.se sends no CORS
+  //      headers), so the browser cannot resolve id→slug at runtime.
+  //   4. Slugify-from-title matches ~half of articles; editorial slugs differ
+  //      for the rest (e.g. "Vill bygga stängsel runt Israels ambassad" →
+  //      "stangsel-kring-israels-ambassad-utreds-i-stockholm") — and a wrong
+  //      slug 404s exactly like the id URL, so slug-guessing is not viable.
+  // FIX: link to SR's search page for the title (www.sverigesradio.se/sok?
+  // query=… — verified 200, article is the top result). Never open the dead
+  // id URL.
+  function articleLinkFor(item) {
+    // ALWAYS the SR search page for the title. Slug-guessing from the title
+    // matches only ~half of articles (SR uses editorial slugs for the rest —
+    // e.g. "Vill bygga stängsel runt Israels ambassad" →
+    // "stangsel-kring-israels-ambassad-utreds-i-stockholm"), and a wrong
+    // slug 404s exactly like the dead id URL. The search page always loads
+    // (verified 200) and shows the article as the top result.
+    return `https://www.sverigesradio.se/sok?query=${encodeURIComponent(item.title || '')}`;
+  }
+
   function formatTime(ms) {
     if (!Number.isFinite(ms)) return '';
     const d = new Date(ms);
@@ -320,6 +344,407 @@
 
   let lastPlayingKey = null; // `${kind}:${id}` of what's loaded
 
+  // ---- stream format badge ----
+  // Derives a short format label (MP3/AAC/FLAC/HLS) from the stream URL.
+  // For live streams the real bitrate is also fetched from the icy-br
+  // response header — but only for direct edge*.sr.se URLs: the official
+  // topsy→live1 redirect chain has a CORS-less middle hop, so fetch() there
+  // is always blocked (playback via <audio> is unaffected — media elements
+  // don't enforce CORS).
+  function streamFormatLabel(url) {
+    if (!url || typeof url !== 'string') return null;
+    const u = url.toLowerCase();
+    if (u.includes('.m3u8')) return 'HLS';
+    if (u.includes('flac')) return 'FLAC';
+    if (u.includes('-aac-') || u.includes('.aac')) return 'AAC';
+    if (u.includes('.mp3') || u.includes('-mp3-')) return 'MP3';
+    return null;
+  }
+
+  async function fetchStreamBitrate(url) {
+    try {
+      const host = new URL(url).hostname;
+      if (!/^edge\d*\.sr\.se$/.test(host)) return null; // CORS-readable only on edge
+      const res = await fetch(url, { method: 'HEAD' });
+      const br = parseInt(res.headers.get('icy-br') || '', 10);
+      return Number.isFinite(br) && br > 0 ? br : null;
+    } catch {
+      return null; // badge stays format-only — never blocks playback
+    }
+  }
+
+  // ---- live stream resolver (Phase 1: stream descriptors) ----
+  // Streams are now described as objects instead of bare URLs, so the badge
+  // and future DVR UI can read codec/bitrate/transport/dvr directly instead
+  // of guessing from URL patterns. The resolver output is still an ordered
+  // candidate list — playTrack/advanceCandidate/watchdog/workingStreamIdx
+  // work unchanged.
+  //
+  // Descriptor shape:
+  //   { url, codec: 'aac'|'mp3'|'flac', bitrate: kbps|null,
+  //     transport: 'direct'|'hls', dvr: bool, priority: number }
+  //   priority: higher = tried first. FLAC 100 > HLS 80 > AAC-direct 60 > MP3 10.
+  //
+  // Order per channel (verified 2026-09-21, see ENHANCEMENTS.md):
+  //   1. P2 Musik (id 2562): FLAC-in-Ogg at edge1.sr.se/p2-flac — lossless,
+  //      plays in Chromium & Safari. Undocumented by SR → MP3 stays as
+  //      fallback. NOTE: edge slug family 'p2' belongs to P2 Musik
+  //      (SR's own 2562.hls lists p2/* variants; 163.hls lists p2sm/*).
+  //   2. iOS/Safari: official AAC template srapi/{id}-hi-aac-http → 320 kbps.
+  //      Safari plays raw ADTS natively; Chromium does not (verified).
+  //   3. Official MP3 (liveaudio.url from the API) — works everywhere.
+  // Android/Chrome is Chromium-based → raw ADTS AAC fails there too, so
+  // Android intentionally keeps MP3.
+  const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const IS_SAFARI = IS_IOS || /^((?!chrome|android|crios|fxios).)*safari/i.test(navigator.userAgent);
+  const IS_FIREFOX = /firefox|fxios/i.test(navigator.userAgent);
+
+  // Platform capabilities — detected once. UI never checks the browser
+  // directly; it reads state.current fields set by the resolver.
+  // NOTE: canPlayType lies about HLS in Chromium (says "probably" but native
+  // HLS in <audio> errors after ~2.3 s — verified 2026-09-21). So nativeHls
+  // is gated on Safari, not on canPlayType.
+  const CAPS = {
+    isIOS: IS_IOS,
+    isSafari: IS_SAFARI,
+    isFirefox: IS_FIREFOX,
+    // Raw ADTS AAC: Safari plays it natively; Chromium hangs silently
+    // (verified 3× 2026-09-21) — so direct AAC is Safari-only.
+    canPlayAacDirect: IS_SAFARI,
+    // FLAC-in-Ogg plays on all target platforms (verified Chromium; Safari
+    // supports Ogg FLAC since 11.1).
+    canPlayFlac: true,
+    // Native HLS: Safari only (iOS/iPadOS/macOS). Chromium's canPlayType
+    // claims support but playback fails — do not trust it.
+    nativeHls: IS_SAFARI,
+    // hls.js path: MSE-capable Chromium browsers. Firefox has MSE but
+    // TS-in-MSE is unreliable — excluded until real-Firefox validation.
+    // Electron/VS Code webviews are NOT treated as proof of Chrome support;
+    // this flag is UA-based, not canPlayType-based.
+    hlsjs: !IS_SAFARI && !IS_FIREFOX && ('MediaSource' in window),
+    canPlayHls: IS_SAFARI || (!IS_FIREFOX && 'MediaSource' in window),
+  };
+
+  // Static stream table. Bitrates are VERIFIED against SR's actual manifests
+  // (AVERAGE-BANDWIDTH per STABLE-VARIANT-ID, curl-checked 2026-09-21):
+  //   p1/p2sm/p4gbg ladders: 32 / 128 / 192 kbps AAC
+  //   p3/p2 (P3 / P2 Musik): 32 / 128 / 320 kbps AAC
+  // FLAC entries stay hand-maintained (undocumented by SR); liveaudio.url
+  // (MP3 96) is appended by the resolver for every channel.
+  // HLS entries point at the master manifest — Safari/hls.js pick the variant
+  // and handle SR's content steering (LJUD1→LJUD2) themselves.
+  const HLS_MASTER = (slug) => `https://ljud1-cdn.sr.se/lc/${slug}.m3u8`;
+  const STREAM_TABLE = {
+    // P2 Musik (2562): FLAC stays highest priority — HLS must NOT replace it.
+    2562: [
+      { url: 'https://edge1.sr.se/p2-flac', codec: 'flac', bitrate: null,
+        transport: 'direct', dvr: false, priority: 100 },
+      { url: HLS_MASTER('p2'), codec: 'aac', bitrate: 320,
+        transport: 'hls', dvr: true, priority: 80 },
+    ],
+    // P3 (164): 320 kbps top level
+    164: [
+      { url: HLS_MASTER('p3'), codec: 'aac', bitrate: 320,
+        transport: 'hls', dvr: true, priority: 80 },
+    ],
+    // P1 (132), P2 (163), P4 Göteborg (212): 192 kbps top level
+    132: [
+      { url: HLS_MASTER('p1'), codec: 'aac', bitrate: 192,
+        transport: 'hls', dvr: true, priority: 80 },
+    ],
+    163: [
+      { url: HLS_MASTER('p2sm'), codec: 'aac', bitrate: 192,
+        transport: 'hls', dvr: true, priority: 80 },
+    ],
+    212: [
+      { url: HLS_MASTER('p4gbg'), codec: 'aac', bitrate: 192,
+        transport: 'hls', dvr: true, priority: 80 },
+    ],
+  };
+
+  function descriptorFor(channel, entry) {
+    return {
+      url: entry.url,
+      codec: entry.codec,
+      bitrate: entry.bitrate,
+      transport: entry.transport,
+      dvr: entry.dvr,
+      priority: entry.priority,
+    };
+  }
+
+  function mp3Descriptor(channel) {
+    return {
+      url: channel.liveaudioUrl,
+      codec: 'mp3',
+      bitrate: 96, // liveaudio.url is always the 96 kbps MP3 chain
+      transport: 'direct',
+      dvr: false,
+      priority: 10,
+    };
+  }
+
+  function aacDirectDescriptor(channel) {
+    return {
+      url: `https://www.sverigesradio.se/topsy/direkt/srapi/${channel.id}-hi-aac-http`,
+      codec: 'aac',
+      bitrate: 320, // -hi-aac-http resolves to the 320 kbps chain (icy-br 312–320)
+      transport: 'direct',
+      dvr: false,
+      priority: 60,
+    };
+  }
+
+  // Builds the ordered candidate list for a channel. Same output shape as
+  // the old liveCandidates (array), but each item is a descriptor object.
+  // Order (priority-sorted, stable):
+  //   P2 Musik: FLAC(100) → HLS-320(80) → (Safari: AAC-320 direct, 60) → MP3(10)
+  //   P3:       HLS-320(80) → (Safari: AAC-320 direct, 60) → MP3(10)
+  //   P1/P2/P4: HLS-192(80) → (Safari: AAC-320 direct, 60) → MP3(10)
+  // NOTE: in "best audio" mode P2 Musik still tries FLAC FIRST — HLS never
+  // replaces FLAC just because it has DVR. HLS is a higher-priority fallback
+  // than direct AAC because it is SR-documented and carries the DVR window.
+  function resolveStreams(channel) {
+    if (!channel || !channel.liveaudioUrl) return [];
+    const cands = [];
+
+    // Static table entries, filtered by platform capability.
+    for (const entry of STREAM_TABLE[channel.id] || []) {
+      if (entry.codec === 'flac' && !CAPS.canPlayFlac) continue;
+      if (entry.transport === 'hls' && !CAPS.canPlayHls) continue;
+      cands.push(descriptorFor(channel, entry));
+    }
+
+    // Direct AAC — Safari only (Chromium hangs on raw ADTS).
+    if (CAPS.canPlayAacDirect && channel.id) {
+      cands.push(aacDirectDescriptor(channel));
+    }
+
+    // Official MP3 — always last, works everywhere.
+    cands.push(mp3Descriptor(channel));
+
+    // Stable sort by priority (descending). The push order above already
+    // matches priority order, but sorting makes the table declarative.
+    return cands.sort((a, b) => b.priority - a.priority);
+  }
+
+  // Backwards-compatible shim: playTrack call sites pass descriptors now;
+  // candidates array items carry codec/bitrate/transport/dvr fields.
+  function liveCandidates(channel) {
+    return resolveStreams(channel);
+  }
+
+  // Remembers which candidate index last played successfully per stream key,
+  // so pause/resume doesn't retry a known-bad candidate.
+  const workingStreamIdx = new Map();
+
+  // ---- HLS playback engine (Phase 2) ----
+  // One active hls.js instance at most, owned by the playback layer. The UI
+  // never sees hls.js — it reads state.current fields (transport/dvr/bitrate).
+  //
+  // Lifecycle:
+  //   hlsAttach(url) → manifest parsed → media attached → buffering → playing
+  //   fatal error    → hlsDetach() → advanceCandidate() (existing fallback)
+  //
+  // hlsDetach() is called from EVERY path that changes playback:
+  // playTrack (new track), advanceCandidate (fallback), stopAndClosePlayer.
+  // No stale instance may survive a session change.
+  let hlsInstance = null;
+  let hlsScriptPromise = null;
+  // Session token: incremented on every playback change. HLS event handlers
+  // capture their token and ignore events that arrive after the session moved
+  // on (e.g. user picks P3 while P1 HLS is still loading — P1's late events
+  // must not touch P3's state or advance P3's candidates).
+  let hlsSession = 0;
+
+  // Lazy-load hls.js from CDN only when an HLS stream is actually about to
+  // play. Direct FLAC/AAC/MP3 never load it. Cached promise = one load.
+  function loadHlsJs() {
+    if (window.Hls) return Promise.resolve();
+    if (hlsScriptPromise) return hlsScriptPromise;
+    hlsScriptPromise = new Promise((resolve) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js';
+      s.onload = () => resolve();
+      s.onerror = () => { hlsScriptPromise = null; resolve(); /* caller falls back */ };
+      document.head.appendChild(s);
+    });
+    return hlsScriptPromise;
+  }
+
+  // Conservative buffering (per approved design): do NOT retain 3 h of media.
+  // SR's sliding playlist is the DVR source of truth; hls.js re-fetches older
+  // segments on seek. backBufferLength keeps a short tail behind the playhead.
+  const HLS_CONFIG = {
+    enableWorker: true,
+    backBufferLength: 90,      // 90 s behind playhead — not hours
+    maxBufferLength: 30,       // forward buffer (s)
+    maxMaxBufferLength: 120,
+    liveSyncDurationCount: 3,
+    fragLoadingMaxRetry: 4,
+    manifestLoadingMaxRetry: 2,
+    levelLoadingMaxRetry: 3,
+  };
+
+  function hlsDetach() {
+    if (hlsInstance) {
+      try { hlsInstance.destroy(); } catch (e) { /* already gone */ }
+      hlsInstance = null;
+    }
+  }
+
+  // ---- verified SR/HLS bitrate ladder (curl-checked 2026-09-21) ----
+  // SR's master manifests advertise AVERAGE-BANDWIDTH including container
+  // overhead (~6.25% above nominal), so the mapping advertised→display is a
+  // lookup against this verified table — NOT a division by 1000 (340000 bps
+  // is the "320 kbps" rendition, not 340).
+  const SR_HLS_LADDER = [
+    { advertisedBps: 34000, nominalKbps: 32 },
+    { advertisedBps: 136000, nominalKbps: 128 },
+    { advertisedBps: 204000, nominalKbps: 192 },
+    { advertisedBps: 340000, nominalKbps: 320 },
+  ];
+
+  function nominalKbpsFor(advertisedBps) {
+    let best = SR_HLS_LADDER[0];
+    for (const entry of SR_HLS_LADDER) {
+      if (Math.abs(entry.advertisedBps - advertisedBps)
+        < Math.abs(best.advertisedBps - advertisedBps)) best = entry;
+    }
+    return best.nominalKbps;
+  }
+
+  // DVR usability threshold: a seekable window shorter than this is not
+  // worth exposing to the future DVR UI (rolling window start-up, odd browsers).
+  const DVR_MIN_WINDOW_S = 60;
+
+  // Attaches url to audioEl for the CURRENT playback session. Returns:
+  //   null          → attached (native or hls.js), playback can proceed
+  //   'unsupported' → caller must advanceCandidate()
+  function hlsAttach(url) {
+    const session = ++hlsSession; // new session; old handlers become stale
+    if (CAPS.nativeHls) {
+      // Safari: native HLS in <audio>. Safari handles variant selection,
+      // content steering and the DVR window itself.
+      audioEl.src = url;
+      return null;
+    }
+    if (!CAPS.hlsjs || !window.Hls || !window.Hls.isSupported()) {
+      return 'unsupported';
+    }
+    hlsDetach(); // never two live instances
+    const hls = new window.Hls(HLS_CONFIG);
+    hlsInstance = hls;
+    hls.on(window.Hls.Events.LEVEL_SWITCHED, (e, data) => {
+      // Stale-session guard: events from a superseded session never touch
+      // the current track's state.
+      if (session !== hlsSession) return;
+      const cur = state.current;
+      if (!cur || cur.transport !== 'hls') return;
+      // Bitrate truth: the ACTUALLY selected level, mapped through the
+      // verified SR ladder (advertised bps → nominal display kbps).
+      const level = hls.levels && hls.levels[data.level];
+      if (level && Number.isFinite(level.bitrate)) {
+        cur.bitrate = nominalKbpsFor(level.bitrate);
+        renderPlayer();
+      }
+    });
+    hls.on(window.Hls.Events.ERROR, (e, data) => {
+      if (!data.fatal) return; // hls.js recovers non-fatal errors internally
+      // Stale-session guard: an old session's fatal error must not advance
+      // the NEW playback's candidates.
+      if (session !== hlsSession) { hlsDetach(); return; }
+      const cur = state.current;
+      if (!cur || cur.transport !== 'hls') { hlsDetach(); return; }
+      // Fatal → destroy cleanly and use the EXISTING fallback chain.
+      hlsDetach();
+      advanceCandidate();
+    });
+    hls.loadSource(url);
+    hls.attachMedia(audioEl);
+    return null;
+  }
+
+  // Seekable DVR window → application state. Reads audio.seekable — the
+  // browser's actual window, never an assumption about SR's playlist length.
+  // Updates state.current so the DVR UI can read: seekableStart/End/Duration,
+  // currentTime, distanceFromLiveEdge, atLiveEdge, dvrAvailable. Threshold:
+  // window must exceed DVR_MIN_WINDOW_S.
+  //
+  // RENDER TRIGGER (iPhone bug fix 2026-09-22): the DVR row is built once per
+  // renderPlayer(). On native HLS (iPhone Safari) seekable is EMPTY when
+  // playback starts and grows later — so at the initial render dvrAvailable
+  // is false and the row is never built. Without a render on the flip, the
+  // DVR row never appears on iPhone (observed). So: when dvrAvailable or
+  // atLiveEdge CHANGES, re-render so the UI follows the state.
+  const LIVE_EDGE_TOLERANCE_S = 10;
+  function updateSeekableState() {
+    const cur = state.current;
+    if (!cur || cur.kind !== 'live') return;
+    const prevDvr = cur.dvrAvailable;
+    const prevAtLive = cur.atLiveEdge;
+    const s = audioEl.seekable;
+    if (!s || !s.length) {
+      cur.dvrAvailable = false;
+      cur.seekableStart = null;
+      cur.seekableEnd = null;
+      cur.seekableDuration = null;
+      cur.distanceFromLiveEdge = null;
+      cur.atLiveEdge = true;
+    } else {
+      const start = s.start(0);
+      const end = s.end(s.length - 1);
+      const size = end - start;
+      const usable = Number.isFinite(size) && size >= DVR_MIN_WINDOW_S;
+      cur.dvrAvailable = usable;
+      cur.seekableStart = usable ? start : null;
+      cur.seekableEnd = usable ? end : null;
+      cur.seekableDuration = usable ? size : null;
+      cur.currentTime = audioEl.currentTime;
+      cur.distanceFromLiveEdge = usable ? Math.max(0, end - audioEl.currentTime) : 0;
+      cur.atLiveEdge = !usable || cur.distanceFromLiveEdge <= LIVE_EDGE_TOLERANCE_S;
+      if (console.debug && usable) {
+        console.debug('[stream] seekable', {
+          start: Math.round(start), end: Math.round(end),
+          windowMin: Math.round(size / 60),
+          behindLiveS: Math.round(cur.distanceFromLiveEdge),
+          atLiveEdge: cur.atLiveEdge,
+        });
+      }
+    }
+    // Re-render only on meaningful flips — not on every timeupdate (the DVR
+    // bar's own updater handles continuous position changes).
+    if (cur.dvrAvailable !== prevDvr || cur.atLiveEdge !== prevAtLive) {
+      renderPlayer();
+    }
+  }
+
+  // Observe the window while HLS is playing. Cheap: only runs when a live
+  // HLS track is active, piggybacks on timeupdate.
+  audioEl.addEventListener('timeupdate', () => {
+    if (state.current && state.current.kind === 'live'
+      && state.current.transport === 'hls') {
+      updateSeekableState();
+    }
+  });
+
+  // Debug handle for manual engine verification (not user UI).
+  window.__srSeekable = () => {
+    updateSeekableState();
+    return {
+      dvrAvailable: state.current?.dvrAvailable ?? null,
+      seekableStart: state.current?.seekableStart,
+      seekableEnd: state.current?.seekableEnd,
+      seekableDurationMin: state.current?.seekableDuration != null
+        ? Math.round(state.current.seekableDuration / 60) : null,
+      currentTime: state.current?.currentTime,
+      distanceFromLiveEdgeS: state.current?.distanceFromLiveEdge != null
+        ? Math.round(state.current.distanceFromLiveEdge) : null,
+      atLiveEdge: state.current?.atLiveEdge,
+    };
+  };
+
   function isCurrent(kind, id) {
     return state.current && state.current.kind === kind && state.current.id === id;
   }
@@ -327,14 +752,115 @@
   function playTrack(track) {
     state.current = track;
     lastPlayingKey = `${track.kind}:${track.id}`;
-    if (audioEl.src !== track.audioUrl) {
-      audioEl.src = track.audioUrl;
+    let srcUrl = track.audioUrl;
+    if (Array.isArray(track.candidates) && track.candidates.length) {
+      const key = lastPlayingKey;
+      const idx = Math.min(workingStreamIdx.get(key) || 0, track.candidates.length - 1);
+      track.candidateIndex = idx;
+      const cand = track.candidates[idx];
+      // Candidates are descriptors (Phase 1): carry codec/bitrate/transport/dvr
+      // onto the track so the badge and future DVR UI read facts, not guesses.
+      if (typeof cand === 'object' && cand !== null) {
+        srcUrl = cand.url;
+        track.audioUrl = cand.url;
+        track.codec = cand.codec;
+        track.bitrate = cand.bitrate;
+        track.transport = cand.transport;
+        track.dvr = cand.dvr;
+      } else {
+        srcUrl = cand;
+        track.audioUrl = cand;
+      }
     }
-    audioEl.play().catch(() => {
-      showToast('Kunde inte starta uppspelning. Försök igen.');
-    });
+    // Any playback change detaches a previous HLS instance first — no stale
+    // instance may survive into the new session.
+    hlsDetach();
+    if (track.transport === 'hls') {
+      // HLS: attach may be async (hls.js lazy-load). Native Safari path is sync.
+      const startHls = () => {
+        const cur = state.current;
+        if (!cur || cur.audioUrl !== track.audioUrl) return; // superseded meanwhile
+        const res = hlsAttach(track.audioUrl);
+        if (res === 'unsupported') { advanceCandidate(); return; }
+        audioEl.play().catch(() => {
+          showToast('Kunde inte starta uppspelning. Försök igen.');
+        });
+      };
+      if (CAPS.nativeHls) {
+        startHls();
+      } else {
+        loadHlsJs().then(startHls);
+      }
+    } else if (audioEl.src !== srcUrl) {
+      audioEl.src = srcUrl;
+      audioEl.play().catch(() => {
+        showToast('Kunde inte starta uppspelning. Försök igen.');
+      });
+    } else {
+      audioEl.play().catch(() => {
+        showToast('Kunde inte starta uppspelning. Försök igen.');
+      });
+    }
+    armPlaybackWatchdog();
     renderPlayer();
     updatePlayingMarks();
+  }
+
+  // ---- playback watchdog ----
+  // Chromium does NOT fire 'error' for raw ADTS AAC streams — it hangs
+  // silently (readyState stays 0, no events). Verified 2026-09-21. So the
+  // resolver can't rely on the error event alone: if no 'playing' within
+  // WATCHDOG_MS, advance to the next candidate.
+  const WATCHDOG_MS = 6000;
+  let watchdogTimer = null;
+
+  function advanceCandidate() {
+    const cur = state.current;
+    if (!cur || !Array.isArray(cur.candidates)) return false;
+    if (cur.candidateIndex >= cur.candidates.length - 1) return false;
+    cur.candidateIndex += 1;
+    const cand = cur.candidates[cur.candidateIndex];
+    if (typeof cand === 'object' && cand !== null) {
+      cur.audioUrl = cand.url;
+      cur.codec = cand.codec;
+      cur.bitrate = cand.bitrate;
+      cur.transport = cand.transport;
+      cur.dvr = cand.dvr;
+    } else {
+      cur.audioUrl = cand;
+    }
+    workingStreamIdx.set(lastPlayingKey, cur.candidateIndex);
+    hlsDetach(); // leaving (or re-entering) HLS — always clean slate
+    if (cur.transport === 'hls') {
+      const startHls = () => {
+        if (!state.current || state.current.audioUrl !== cur.audioUrl) return;
+        const res = hlsAttach(cur.audioUrl);
+        if (res === 'unsupported') { advanceCandidate(); return; }
+        audioEl.play().catch(() => {});
+      };
+      if (CAPS.nativeHls) startHls();
+      else loadHlsJs().then(startHls);
+    } else {
+      audioEl.src = cur.audioUrl;
+      audioEl.play().catch(() => {});
+    }
+    armPlaybackWatchdog();
+    renderPlayer();
+    return true;
+  }
+
+  function armPlaybackWatchdog() {
+    clearTimeout(watchdogTimer);
+    watchdogTimer = setTimeout(() => {
+      if (state.current && audioEl.paused === false && audioEl.readyState < 3) {
+        advanceCandidate();
+      }
+    }, WATCHDOG_MS);
+  }
+
+  function clearPlaybackWatchdog() {
+    clearTimeout(watchdogTimer);
+    watchdogTimer = null;
   }
 
   function toggleTrack(track) {
@@ -348,6 +874,9 @@
   }
 
   function stopAndClosePlayer() {
+    clearPlaybackWatchdog();
+    if (audioEl._srStuckGuard) { clearInterval(audioEl._srStuckGuard); audioEl._srStuckGuard = null; }
+    hlsDetach(); // no HLS instance may outlive the player
     audioEl.pause();
     audioEl.removeAttribute('src');
     state.current = null;
@@ -358,6 +887,8 @@
   }
 
   audioEl.addEventListener('error', () => {
+    // Resolver fallback: try the next candidate before giving up.
+    if (advanceCandidate()) return;
     if (state.current) showToast('Uppspelningsfel. Försök igen.');
     updatePlayingMarks();
   });
@@ -380,13 +911,133 @@
   }
 
   ['play', 'pause', 'ended'].forEach((ev) => audioEl.addEventListener(ev, () => {
+    if (ev === 'play') {
+      armPlaybackWatchdog();
+    } else if (ev === 'pause' || ev === 'ended') {
+      clearPlaybackWatchdog();
+    }
     updatePlayingMarks();
     if (ev === 'pause' || ev === 'play') renderPlayer();
+  }));
+
+  // Once audio is actually flowing, remember the working candidate and stop
+  // the watchdog. The badge re-renders from cur.audioUrl, so it follows the
+  // active candidate automatically (FLAC → MP3 shift is visible to the user).
+  audioEl.addEventListener('playing', () => {
+    clearPlaybackWatchdog();
+    const cur = state.current;
+    if (cur && Array.isArray(cur.candidates)) {
+      workingStreamIdx.set(lastPlayingKey, cur.candidateIndex || 0);
+    }
+    setBadgeBuffering(false);
+    renderPlayer();
+  });
+
+  // ---- buffering indicator ----
+  // While audio is loading (no playback yet, or re-buffering mid-play) the
+  // quality pill pulses with a "buffrar" suffix — zero extra layout space.
+  // Reverts to the plain quality label once audio flows again.
+  function setBadgeBuffering(buffering) {
+    const badge = $player.querySelector('.player-quality');
+    if (!badge) return;
+    badge.classList.toggle('buffering', buffering);
+    const cur = state.current;
+    const fmt = badge.dataset.format || qualityLabel(cur) || '';
+    badge.textContent = buffering ? `${fmt} · buffrar` : fmt;
+  }
+
+  // ---- quality label (Phase 1: honest bitrate from descriptors) ----
+  // Reads the ACTIVE stream's descriptor fields (set by playTrack/
+  // advanceCandidate), never the preferred one. Bitrate is shown only when
+  // reliably known — FLAC shows no bitrate (icy-br is unreliable there),
+  // and no bitrate is ever invented.
+  function qualityLabel(cur) {
+    if (!cur) return null;
+    const codec = cur.codec || streamFormatLabel(cur.audioUrl); // descriptor first, URL-guess fallback
+    if (!codec) return null;
+    const known = typeof cur.bitrate === 'number' && cur.bitrate > 0;
+    return known ? `${codec.toUpperCase()} ${cur.bitrate}` : codec.toUpperCase();
+  }
+
+  // ---- DVR UI helpers (Phase 3, UX rev 2026-09-22) ----
+  // All DVR UI reads the Phase 2A seekable state (dvrAvailable, seekableStart,
+  // seekableEnd, distanceFromLiveEdge, atLiveEdge) — never HLS/hls.js/URLs.
+
+  // Clock time (Swedish timezone) for a position inside the DVR window.
+  // The live edge ≈ now, so a position p maps to now − (seekableEnd − p).
+  // This stays correct as the window rolls. Shown as HH:MM.
+  function dvrPositionToDate(position) {
+    const cur = state.current;
+    if (!cur || !Number.isFinite(position)) return null;
+    const end = cur.seekableEnd;
+    if (!Number.isFinite(end)) return null;
+    const behindMs = (end - position) * 1000;
+    const d = new Date(Date.now() - behindMs);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  function dvrClockLabel(date) {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+    return date.toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  // Relative offset label: "−12 min", "−1 h 5 min". Sensible rounding per the
+  // approved spec: under 60 s behind → LIVE (effectively live), minutes
+  // rounded down, hours + minutes above an hour. No unnecessary precision.
+  // (The mechanical atLiveEdge tolerance stays 10 s; this label threshold is
+  // the user-facing "effectively live" rule.)
+  function dvrOffsetLabel(secondsBehind) {
+    if (!Number.isFinite(secondsBehind) || secondsBehind < 60) return 'LIVE';
+    const totalMin = Math.floor(secondsBehind / 60);
+    if (totalMin < 1) return 'LIVE';
+    if (totalMin < 60) return `−${totalMin} min`;
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    return m > 0 ? `−${h} h ${m} min` : `−${h} h`;
+  }
+
+  // Seek to a fraction (0..1) of the CURRENT seekable window. Uses the live
+  // values from state — never a hard-coded window size. Clamps safely and
+  // does not touch playback state (no pause, no reload, no new session).
+  function seekToWindowFraction(frac) {
+    const cur = state.current;
+    if (!cur || !cur.dvrAvailable) return;
+    const start = cur.seekableStart;
+    const end = cur.seekableEnd;
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
+    const clamped = Math.min(1, Math.max(0, frac));
+    const target = start + clamped * (end - start);
+    if (!Number.isFinite(target)) return;
+    audioEl.currentTime = target;
+  }
+
+  // "Till Direkt": seek to the current seekable end (the live edge). Does
+  // NOT reload the stream, does NOT create a new HLS session, and preserves
+  // the current paused/playing state.
+  function seekToLive() {
+    const cur = state.current;
+    if (!cur || !cur.dvrAvailable) return;
+    const end = cur.seekableEnd;
+    if (!Number.isFinite(end)) return;
+    audioEl.currentTime = end;
+    updateSeekableState();
+    renderPlayer();
+  }
+
+  ['waiting', 'stalled'].forEach((ev) => audioEl.addEventListener(ev, () => {
+    if (state.current && audioEl.paused === false) setBadgeBuffering(true);
   }));
 
   function renderPlayer() {
     const cur = state.current;
     if (!cur) return;
+    // Lifecycle contract: renderPlayer() owns ALL presentation state — class,
+    // transform AND content. The swipe-close animation leaves an inline
+    // style.transform on the player; inline style beats the CSS
+    // .player.visible { transform: translateY(0) } rule, so without clearing
+    // it here the player re-opens "visible" but positioned below the screen
+    // (verified bug 2026-09-21). Clear it every render.
+    $player.style.transform = '';
     $player.classList.add('visible');
     $player.textContent = '';
 
@@ -397,9 +1048,52 @@
         ? el('img', { src: cur.artwork, alt: '' })
         : el('span', { class: 'player-thumb-letter', text: (cur.title || '?').slice(0, 1) }));
 
+    // Two pills (approved Appendix A design):
+    //   .player-quality — WHAT am I listening to (codec + honest bitrate)
+    //   .player-mode    — WHERE am I in time (LIVE / relative DVR offset)
+    const qLabel = qualityLabel(cur);
+    const quality = qLabel
+      ? el('span', { class: 'player-quality', text: qLabel, 'data-format': qLabel })
+      : null;
+    // Mode pill: WHERE am I in time. At the live edge → "LIVE". Behind live →
+    // the RELATIVE OFFSET ("−12 min") per user preference (2026-09-22 iPhone
+    // feedback): the pill is the minus-time surface; the clock time lives on
+    // the seek row's left label (drag preview + heard position). No duplication:
+    // pill = minus-time, slider-left = clock time.
+    const behind = live && cur.atLiveEdge === false && cur.distanceFromLiveEdge;
+    let modeText = 'LIVE';
+    if (behind) {
+      modeText = dvrOffsetLabel(cur.distanceFromLiveEdge);
+    }
+    const mode = live
+      ? el('span', {
+          class: `player-mode${behind ? ' behind' : ''}`,
+          text: modeText,
+          'aria-live': 'polite',
+        })
+      : null;
+
     const meta = el('div', { class: 'player-meta' },
       el('div', { class: 'player-title', text: cur.title || '' }),
-      el('div', { class: 'player-sub', text: cur.subtitle || (live ? 'Direkt' : '') }));
+      el('div', { class: 'player-sub', text: cur.subtitle || (live ? 'Direkt' : '') }),
+      quality, mode);
+
+    // Direct AAC streams: confirm bitrate via icy-br HEAD (edge hosts only).
+    // Only overrides the descriptor when the header gives a real value —
+    // never invents one. Skipped for FLAC (icy-br unreliable there).
+    // HLS bitrate comes from LEVEL_SWITCHED (see hlsAttach) — no HEAD here.
+    if (live && cur.audioUrl && quality && cur.codec !== 'flac'
+        && cur.transport === 'direct') {
+      const key = lastPlayingKey;
+      fetchStreamBitrate(cur.audioUrl).then((br) => {
+        if (!br || lastPlayingKey !== key) return; // track changed meanwhile
+        const badge = $player.querySelector('.player-quality');
+        if (badge) {
+          badge.dataset.format = `${cur.codec.toUpperCase()} ${br}`;
+          badge.textContent = badge.dataset.format;
+        }
+      });
+    }
 
     let seekRow = null;
     if (!live) {
@@ -430,6 +1124,152 @@
         const rect = bar.getBoundingClientRect();
         const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
         audioEl.currentTime = frac * d;
+      });
+    } else if (cur.dvrAvailable) {
+      // DVR seek row (Phase 3, UX rev): a REAL draggable slider (pointer
+      // events — touch + mouse), mapped to the actual seekable range. Left
+      // label = clock time of the heard position; right label = "LIVE",
+      // clickable to return to the live edge (replaces the separate button —
+      // no duplicated LIVE state, no extra button when already live).
+      const bar = el('div', {
+        class: 'seek-bar dvr-bar', role: 'slider',
+        'aria-label': 'Spola i direktinspelningen',
+        'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': 100,
+        tabindex: '0',
+      }, el('div', { class: 'seek-fill' }), el('div', { class: 'seek-thumb' }));
+      const timeLeft = el('div', { class: 'player-time', text: '' });
+      const liveLabel = el('button', {
+        class: 'player-live-label', type: 'button',
+        'aria-label': 'Tillbaka till Direkt',
+        text: 'LIVE',
+        onclick: seekToLive,
+      });
+      seekRow = el('div', { class: 'seek-row dvr-row' }, timeLeft, bar, liveLabel);
+      const fill = bar.querySelector('.seek-fill');
+      const thumb = bar.querySelector('.seek-thumb');
+
+      // Drag state: while dragging, the UI previews the target position and
+      // does NOT fight the rolling window; the seek is committed on release
+      // (feels native on touch, avoids seek-storms while sliding).
+      let dragging = false;
+      let dragFrac = null;
+
+      const windowFrac = () => {
+        const start = cur.seekableStart;
+        const end = cur.seekableEnd;
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+        const t = audioEl.currentTime || start;
+        return Math.min(1, Math.max(0, (t - start) / (end - start)));
+      };
+
+      const paint = (frac) => {
+        const f = Math.min(1, Math.max(0, frac));
+        fill.style.width = `${f * 100}%`;
+        thumb.style.left = `${f * 100}%`;
+        bar.setAttribute('aria-valuenow', String(Math.round(f * 100)));
+        // Left label: clock time of the represented position (drag preview
+        // while dragging, otherwise the heard position).
+        const start = cur.seekableStart;
+        const end = cur.seekableEnd;
+        if (!Number.isFinite(start) || !Number.isFinite(end)) { timeLeft.textContent = ''; return; }
+        const pos = start + f * (end - start);
+        const d = dvrPositionToDate(pos);
+        timeLeft.textContent = d ? dvrClockLabel(d) : '';
+      };
+
+      const upd = () => {
+        if (dragging) return; // don't fight the finger
+        const f = windowFrac();
+        if (f === null) { timeLeft.textContent = ''; fill.style.width = '0%'; return; }
+        paint(f);
+        // Right label reflects reachability of live: dim when already there.
+        liveLabel.classList.toggle('at-live', cur.atLiveEdge !== false);
+      };
+      if (audioEl._srDvrUpd) audioEl.removeEventListener('timeupdate', audioEl._srDvrUpd);
+      audioEl._srDvrUpd = upd;
+      audioEl.addEventListener('timeupdate', upd);
+      upd();
+
+      const fracFromEvent = (e) => {
+        const rect = bar.getBoundingClientRect();
+        return Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+      };
+
+      // Pointer events = unified touch/mouse dragging.
+      // Paint is rAF-throttled: pointermove can fire faster than frames on
+      // iOS; without throttling, paint floods the compositor and the fill/
+      // thumb feel spotty (BUG B, 2026-09-22 iPhone feedback).
+      let paintPending = false;
+      const paintThrottled = (frac) => {
+        dragFrac = frac;
+        if (paintPending) return;
+        paintPending = true;
+        requestAnimationFrame(() => {
+          paintPending = false;
+          if (dragging && dragFrac !== null) paint(dragFrac);
+        });
+      };
+
+      bar.addEventListener('pointerdown', (e) => {
+        dragging = true;
+        dragFrac = fracFromEvent(e);
+        paint(dragFrac);
+        try { bar.setPointerCapture(e.pointerId); } catch (err) { /* ok */ }
+        bar.classList.add('dragging');
+      });
+      bar.addEventListener('pointermove', (e) => {
+        if (!dragging) return;
+        paintThrottled(fracFromEvent(e));
+      });
+      const endDrag = (e) => {
+        if (!dragging) return;
+        dragging = false;
+        const frac = (e && Number.isFinite(e.clientX)) ? fracFromEvent(e) : dragFrac;
+        dragFrac = null;
+        bar.classList.remove('dragging');
+        if (e && Number.isFinite(e.pointerId)) {
+          try { bar.releasePointerCapture(e.pointerId); } catch (err) { /* released */ }
+        }
+        if (frac !== null) seekToWindowFraction(frac);
+        upd();
+      };
+      bar.addEventListener('pointerup', endDrag);
+      bar.addEventListener('pointercancel', endDrag);
+      // Safety net: if iOS never fires pointerup/cancel (observed failure
+      // mode), a pointer that LEAVES the bar while dragging ends the drag
+      // instead of leaving the slider stuck (BUG B).
+      bar.addEventListener('pointerleave', (e) => {
+        if (dragging && e.pointerType === 'touch') endDrag(e);
+      });
+      // Last-resort fallback: if dragging somehow stays true (no end event
+      // fired at all), a watchdog force-releases after 3 s without movement
+      // so the slider never "dies". The interval is cleared when this bar is
+      // replaced (renderPlayer rebuilds the row; the old bar is garbage once
+      // its guard is cleared).
+      let lastDragMove = Date.now();
+      bar.addEventListener('pointermove', () => { lastDragMove = Date.now(); });
+      bar.addEventListener('pointerdown', () => { lastDragMove = Date.now(); });
+      const stuckGuard = setInterval(() => {
+        if (!dragging) return;
+        // A real drag produces pointermove; if none arrived for 3 s while
+        // dragging, force-release.
+        if (Date.now() - lastDragMove > 3000) endDrag(null);
+      }, 1000);
+      const prevGuard = audioEl._srStuckGuard;
+      if (prevGuard) clearInterval(prevGuard);
+      audioEl._srStuckGuard = stuckGuard;
+
+      // Keyboard support (desktop): arrows move within the window.
+      bar.addEventListener('keydown', (e) => {
+        const step = e.shiftKey ? 0.1 : 0.02; // shift = 10 %, normal = 2 %
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+          e.preventDefault();
+          const dir = e.key === 'ArrowLeft' ? -1 : 1;
+          const f = windowFrac();
+          if (f === null) return;
+          seekToWindowFraction(Math.min(1, Math.max(0, f + dir * step)));
+          upd();
+        }
       });
     }
 
@@ -464,7 +1304,7 @@
 
     const closeBtn = el('button', {
       class: 'player-btn player-btn-close', type: 'button', 'aria-label': 'Stäng spelaren',
-      text: '✕',
+      html: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>',
       onclick: stopAndClosePlayer,
     });
 
@@ -476,6 +1316,11 @@
     $player.appendChild(closeBtn);
     $player.appendChild(el('div', { class: 'player-row' }, thumb, meta, controls));
     if (seekRow) $player.appendChild(seekRow);
+
+    // Swipe the player down to stop & close (same pattern as the settings
+    // sheet). The player itself is the panel; it springs back if the swipe
+    // is too short.
+    enableSwipeToClose($player, $player, stopAndClosePlayer, { axis: 'y' });
   }
 
   // ---------------- playback actions ----------------
@@ -632,7 +1477,7 @@
       body.appendChild(el('p', { class: 'reader-para', text: p }));
     }
     body.appendChild(el('a', {
-      class: 'reader-source', href: item.url, target: '_blank', rel: 'noopener',
+      class: 'reader-source', href: articleLinkFor(item), target: '_blank', rel: 'noopener',
       text: 'Läs hela artikeln på sverigesradio.se →',
     }));
   }
@@ -715,6 +1560,7 @@
           onclick: () => (isPod ? playPodcast(item.id) : toggleTrack({
             kind: 'live', id: item.id, title: item.name, subtitle: 'Direkt',
             audioUrl: item.liveaudioUrl, artwork: item.image,
+            candidates: liveCandidates(item),
           })),
         });
         if (item.image) {
@@ -855,6 +1701,12 @@
   // ---------------- bottom sheet (selection UI) ----------------
   function closeSheet() {
     $sheetRoot.textContent = '';
+    document.body.style.overflow = '';
+    // Remove the accumulated resize listener from the last openSheet.
+    if (window.__srSheetSync) {
+      window.removeEventListener('resize', window.__srSheetSync);
+      window.__srSheetSync = null;
+    }
   }
 
   function openSheet({ initialTab, onDone }) {
@@ -967,6 +1819,9 @@
       class: 'sheet-close', type: 'button', 'aria-label': 'Stäng',
       text: '✕', onclick: () => { closeSheet(); onDone?.(); },
     });
+    // BUG FIX (2026-09-22): closeBtn was created but never appended — the
+    // sheet had NO visible close button (verified live: .sheet-close missing
+    // from DOM). Users could only close via swipe or overlay tap.
 
     function setTitle() {
       title.textContent = 'Info och anpassningar';
@@ -1027,13 +1882,20 @@
         el('span', { class: 'setting-minmax', text: '4' }),
         el('div', { class: 'setting-slider-wrap' }, newsRange, thumbBubble),
         el('span', { class: 'setting-minmax', text: '20' })));
-    // position the bubble once the sheet is laid out
+    // position the bubble once the sheet is laid out. The resize listener is
+    // removed on close — openSheet runs on every open, and without removal
+    // listeners accumulate on window across opens (leak, verified 2026-09-22).
     requestAnimationFrame(syncBubble);
     window.addEventListener('resize', syncBubble);
+    const prevSync = window.__srSheetSync;
+    if (prevSync) window.removeEventListener('resize', prevSync);
+    window.__srSheetSync = syncBubble;
 
     // Structure: header → Info + Spara row → Antal nyheter → Välj favoriter
-    sheet.appendChild(el('div', { class: 'sheet-grab', 'aria-hidden': 'true' }));
-    sheet.appendChild(el('div', { class: 'sheet-header' }, title));
+    const grab = el('div', { class: 'sheet-grab', 'aria-hidden': 'true' });
+    sheet.appendChild(el('div', { class: 'sheet-grab-zone', 'aria-hidden': 'true' },
+      el('div', { class: 'sheet-grab', 'aria-hidden': 'true' })));
+    sheet.appendChild(el('div', { class: 'sheet-header' }, title, closeBtn));
     sheet.appendChild(el('div', { class: 'sheet-actions' },
       el('button', {
         class: 'sheet-action sheet-action-info', type: 'button',
@@ -1222,10 +2084,17 @@
     overlay.appendChild(sheet);
     $sheetRoot.textContent = '';
     $sheetRoot.appendChild(overlay);
+    document.body.style.overflow = 'hidden'; // no page scroll behind the sheet
 
-    // Swipe down on the grab handle/header closes the sheet (the grab line
-    // indicates this). Horizontal intent is ignored so the list still scrolls.
-    enableSwipeToClose(overlay, sheet, () => { closeSheet(); onDone?.(); }, { axis: 'y' });
+    // BUG 1 FIX (2026-09-22, user lead: "scrolling works first time, fails
+    // after"): swipe-to-close was attached to the ENTIRE sheet, so vertical
+    // touches ANYWHERE — including on the scrollable pick list — ran the drag
+    // logic and set transform on the sheet during scroll (finger-down = d>0 =
+    // sheet drags). On iOS this fights the native scroll and can leave the
+    // sheet unscrollable. Fix: scope the swipe surface to the grab handle +
+    // header zone only; list touches never reach the swipe logic.
+    const swipeSurface = sheet.querySelector('.sheet-grab-zone');
+    enableSwipeToClose(overlay, swipeSurface, () => { closeSheet(); onDone?.(); }, { axis: 'y' });
 
     overlay.addEventListener('click', (e) => {
       if (e.target === overlay) { closeSheet(); onDone?.(); }

@@ -275,6 +275,30 @@
       .slice(0, 6);
   }
 
+  // ---- BUG 2 fix (2026-09-22): news links open a 404 ----
+  // ROOT CAUSE (verified with browser-perfect iOS Safari headers):
+  //   1. The Ekot feed's <link> is /artikel/<id> — SR's own site returns 404
+  //      for ALL id URLs (SR migrated to slug URLs; the feed was not updated).
+  //   2. Working URLs are /artikel/<slug> on the www host (non-www 403s).
+  //   3. Slugs CANNOT be fetched cross-origin (sverigesradio.se sends no CORS
+  //      headers), so the browser cannot resolve id→slug at runtime.
+  //   4. Slugify-from-title matches ~half of articles; editorial slugs differ
+  //      for the rest (e.g. "Vill bygga stängsel runt Israels ambassad" →
+  //      "stangsel-kring-israels-ambassad-utreds-i-stockholm") — and a wrong
+  //      slug 404s exactly like the id URL, so slug-guessing is not viable.
+  // FIX: link to SR's search page for the title (www.sverigesradio.se/sok?
+  // query=… — verified 200, article is the top result). Never open the dead
+  // id URL.
+  function articleLinkFor(item) {
+    // ALWAYS the SR search page for the title. Slug-guessing from the title
+    // matches only ~half of articles (SR uses editorial slugs for the rest —
+    // e.g. "Vill bygga stängsel runt Israels ambassad" →
+    // "stangsel-kring-israels-ambassad-utreds-i-stockholm"), and a wrong
+    // slug 404s exactly like the dead id URL. The search page always loads
+    // (verified 200) and shows the article as the top result.
+    return `https://www.sverigesradio.se/sok?query=${encodeURIComponent(item.title || '')}`;
+  }
+
   function formatTime(ms) {
     if (!Number.isFinite(ms)) return '';
     const d = new Date(ms);
@@ -642,15 +666,24 @@
     return null;
   }
 
-  // Seekable DVR window → application state (engine only; no DVR UI yet).
-  // Reads audio.seekable — the browser's actual window, never an assumption
-  // about SR's playlist length. Updates state.current so the future DVR UI
-  // can read: seekableStart/End/Duration, currentTime, distanceFromLiveEdge,
-  // atLiveEdge, dvrAvailable. Threshold: window must exceed DVR_MIN_WINDOW_S.
+  // Seekable DVR window → application state. Reads audio.seekable — the
+  // browser's actual window, never an assumption about SR's playlist length.
+  // Updates state.current so the DVR UI can read: seekableStart/End/Duration,
+  // currentTime, distanceFromLiveEdge, atLiveEdge, dvrAvailable. Threshold:
+  // window must exceed DVR_MIN_WINDOW_S.
+  //
+  // RENDER TRIGGER (iPhone bug fix 2026-09-22): the DVR row is built once per
+  // renderPlayer(). On native HLS (iPhone Safari) seekable is EMPTY when
+  // playback starts and grows later — so at the initial render dvrAvailable
+  // is false and the row is never built. Without a render on the flip, the
+  // DVR row never appears on iPhone (observed). So: when dvrAvailable or
+  // atLiveEdge CHANGES, re-render so the UI follows the state.
   const LIVE_EDGE_TOLERANCE_S = 10;
   function updateSeekableState() {
     const cur = state.current;
     if (!cur || cur.kind !== 'live') return;
+    const prevDvr = cur.dvrAvailable;
+    const prevAtLive = cur.atLiveEdge;
     const s = audioEl.seekable;
     if (!s || !s.length) {
       cur.dvrAvailable = false;
@@ -659,26 +692,31 @@
       cur.seekableDuration = null;
       cur.distanceFromLiveEdge = null;
       cur.atLiveEdge = true;
-      return;
+    } else {
+      const start = s.start(0);
+      const end = s.end(s.length - 1);
+      const size = end - start;
+      const usable = Number.isFinite(size) && size >= DVR_MIN_WINDOW_S;
+      cur.dvrAvailable = usable;
+      cur.seekableStart = usable ? start : null;
+      cur.seekableEnd = usable ? end : null;
+      cur.seekableDuration = usable ? size : null;
+      cur.currentTime = audioEl.currentTime;
+      cur.distanceFromLiveEdge = usable ? Math.max(0, end - audioEl.currentTime) : 0;
+      cur.atLiveEdge = !usable || cur.distanceFromLiveEdge <= LIVE_EDGE_TOLERANCE_S;
+      if (console.debug && usable) {
+        console.debug('[stream] seekable', {
+          start: Math.round(start), end: Math.round(end),
+          windowMin: Math.round(size / 60),
+          behindLiveS: Math.round(cur.distanceFromLiveEdge),
+          atLiveEdge: cur.atLiveEdge,
+        });
+      }
     }
-    const start = s.start(0);
-    const end = s.end(s.length - 1);
-    const size = end - start;
-    const usable = Number.isFinite(size) && size >= DVR_MIN_WINDOW_S;
-    cur.dvrAvailable = usable;
-    cur.seekableStart = usable ? start : null;
-    cur.seekableEnd = usable ? end : null;
-    cur.seekableDuration = usable ? size : null;
-    cur.currentTime = audioEl.currentTime;
-    cur.distanceFromLiveEdge = usable ? Math.max(0, end - audioEl.currentTime) : 0;
-    cur.atLiveEdge = !usable || cur.distanceFromLiveEdge <= LIVE_EDGE_TOLERANCE_S;
-    if (console.debug && usable) {
-      console.debug('[stream] seekable', {
-        start: Math.round(start), end: Math.round(end),
-        windowMin: Math.round(size / 60),
-        behindLiveS: Math.round(cur.distanceFromLiveEdge),
-        atLiveEdge: cur.atLiveEdge,
-      });
+    // Re-render only on meaningful flips — not on every timeupdate (the DVR
+    // bar's own updater handles continuous position changes).
+    if (cur.dvrAvailable !== prevDvr || cur.atLiveEdge !== prevAtLive) {
+      renderPlayer();
     }
   }
 
@@ -837,6 +875,7 @@
 
   function stopAndClosePlayer() {
     clearPlaybackWatchdog();
+    if (audioEl._srStuckGuard) { clearInterval(audioEl._srStuckGuard); audioEl._srStuckGuard = null; }
     hlsDetach(); // no HLS instance may outlive the player
     audioEl.pause();
     audioEl.removeAttribute('src');
@@ -920,6 +959,71 @@
     return known ? `${codec.toUpperCase()} ${cur.bitrate}` : codec.toUpperCase();
   }
 
+  // ---- DVR UI helpers (Phase 3, UX rev 2026-09-22) ----
+  // All DVR UI reads the Phase 2A seekable state (dvrAvailable, seekableStart,
+  // seekableEnd, distanceFromLiveEdge, atLiveEdge) — never HLS/hls.js/URLs.
+
+  // Clock time (Swedish timezone) for a position inside the DVR window.
+  // The live edge ≈ now, so a position p maps to now − (seekableEnd − p).
+  // This stays correct as the window rolls. Shown as HH:MM.
+  function dvrPositionToDate(position) {
+    const cur = state.current;
+    if (!cur || !Number.isFinite(position)) return null;
+    const end = cur.seekableEnd;
+    if (!Number.isFinite(end)) return null;
+    const behindMs = (end - position) * 1000;
+    const d = new Date(Date.now() - behindMs);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  function dvrClockLabel(date) {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+    return date.toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  // Relative offset label: "−12 min", "−1 h 5 min". Sensible rounding per the
+  // approved spec: under 60 s behind → LIVE (effectively live), minutes
+  // rounded down, hours + minutes above an hour. No unnecessary precision.
+  // (The mechanical atLiveEdge tolerance stays 10 s; this label threshold is
+  // the user-facing "effectively live" rule.)
+  function dvrOffsetLabel(secondsBehind) {
+    if (!Number.isFinite(secondsBehind) || secondsBehind < 60) return 'LIVE';
+    const totalMin = Math.floor(secondsBehind / 60);
+    if (totalMin < 1) return 'LIVE';
+    if (totalMin < 60) return `−${totalMin} min`;
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    return m > 0 ? `−${h} h ${m} min` : `−${h} h`;
+  }
+
+  // Seek to a fraction (0..1) of the CURRENT seekable window. Uses the live
+  // values from state — never a hard-coded window size. Clamps safely and
+  // does not touch playback state (no pause, no reload, no new session).
+  function seekToWindowFraction(frac) {
+    const cur = state.current;
+    if (!cur || !cur.dvrAvailable) return;
+    const start = cur.seekableStart;
+    const end = cur.seekableEnd;
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
+    const clamped = Math.min(1, Math.max(0, frac));
+    const target = start + clamped * (end - start);
+    if (!Number.isFinite(target)) return;
+    audioEl.currentTime = target;
+  }
+
+  // "Till Direkt": seek to the current seekable end (the live edge). Does
+  // NOT reload the stream, does NOT create a new HLS session, and preserves
+  // the current paused/playing state.
+  function seekToLive() {
+    const cur = state.current;
+    if (!cur || !cur.dvrAvailable) return;
+    const end = cur.seekableEnd;
+    if (!Number.isFinite(end)) return;
+    audioEl.currentTime = end;
+    updateSeekableState();
+    renderPlayer();
+  }
+
   ['waiting', 'stalled'].forEach((ev) => audioEl.addEventListener(ev, () => {
     if (state.current && audioEl.paused === false) setBadgeBuffering(true);
   }));
@@ -946,13 +1050,27 @@
 
     // Two pills (approved Appendix A design):
     //   .player-quality — WHAT am I listening to (codec + honest bitrate)
-    //   .player-mode    — WHERE am I in time (LIVE / future DVR states)
+    //   .player-mode    — WHERE am I in time (LIVE / relative DVR offset)
     const qLabel = qualityLabel(cur);
     const quality = qLabel
       ? el('span', { class: 'player-quality', text: qLabel, 'data-format': qLabel })
       : null;
+    // Mode pill: WHERE am I in time. At the live edge → "LIVE". Behind live →
+    // the RELATIVE OFFSET ("−12 min") per user preference (2026-09-22 iPhone
+    // feedback): the pill is the minus-time surface; the clock time lives on
+    // the seek row's left label (drag preview + heard position). No duplication:
+    // pill = minus-time, slider-left = clock time.
+    const behind = live && cur.atLiveEdge === false && cur.distanceFromLiveEdge;
+    let modeText = 'LIVE';
+    if (behind) {
+      modeText = dvrOffsetLabel(cur.distanceFromLiveEdge);
+    }
     const mode = live
-      ? el('span', { class: 'player-mode', text: 'LIVE' })
+      ? el('span', {
+          class: `player-mode${behind ? ' behind' : ''}`,
+          text: modeText,
+          'aria-live': 'polite',
+        })
       : null;
 
     const meta = el('div', { class: 'player-meta' },
@@ -1006,6 +1124,152 @@
         const rect = bar.getBoundingClientRect();
         const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
         audioEl.currentTime = frac * d;
+      });
+    } else if (cur.dvrAvailable) {
+      // DVR seek row (Phase 3, UX rev): a REAL draggable slider (pointer
+      // events — touch + mouse), mapped to the actual seekable range. Left
+      // label = clock time of the heard position; right label = "LIVE",
+      // clickable to return to the live edge (replaces the separate button —
+      // no duplicated LIVE state, no extra button when already live).
+      const bar = el('div', {
+        class: 'seek-bar dvr-bar', role: 'slider',
+        'aria-label': 'Spola i direktinspelningen',
+        'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': 100,
+        tabindex: '0',
+      }, el('div', { class: 'seek-fill' }), el('div', { class: 'seek-thumb' }));
+      const timeLeft = el('div', { class: 'player-time', text: '' });
+      const liveLabel = el('button', {
+        class: 'player-live-label', type: 'button',
+        'aria-label': 'Tillbaka till Direkt',
+        text: 'LIVE',
+        onclick: seekToLive,
+      });
+      seekRow = el('div', { class: 'seek-row dvr-row' }, timeLeft, bar, liveLabel);
+      const fill = bar.querySelector('.seek-fill');
+      const thumb = bar.querySelector('.seek-thumb');
+
+      // Drag state: while dragging, the UI previews the target position and
+      // does NOT fight the rolling window; the seek is committed on release
+      // (feels native on touch, avoids seek-storms while sliding).
+      let dragging = false;
+      let dragFrac = null;
+
+      const windowFrac = () => {
+        const start = cur.seekableStart;
+        const end = cur.seekableEnd;
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+        const t = audioEl.currentTime || start;
+        return Math.min(1, Math.max(0, (t - start) / (end - start)));
+      };
+
+      const paint = (frac) => {
+        const f = Math.min(1, Math.max(0, frac));
+        fill.style.width = `${f * 100}%`;
+        thumb.style.left = `${f * 100}%`;
+        bar.setAttribute('aria-valuenow', String(Math.round(f * 100)));
+        // Left label: clock time of the represented position (drag preview
+        // while dragging, otherwise the heard position).
+        const start = cur.seekableStart;
+        const end = cur.seekableEnd;
+        if (!Number.isFinite(start) || !Number.isFinite(end)) { timeLeft.textContent = ''; return; }
+        const pos = start + f * (end - start);
+        const d = dvrPositionToDate(pos);
+        timeLeft.textContent = d ? dvrClockLabel(d) : '';
+      };
+
+      const upd = () => {
+        if (dragging) return; // don't fight the finger
+        const f = windowFrac();
+        if (f === null) { timeLeft.textContent = ''; fill.style.width = '0%'; return; }
+        paint(f);
+        // Right label reflects reachability of live: dim when already there.
+        liveLabel.classList.toggle('at-live', cur.atLiveEdge !== false);
+      };
+      if (audioEl._srDvrUpd) audioEl.removeEventListener('timeupdate', audioEl._srDvrUpd);
+      audioEl._srDvrUpd = upd;
+      audioEl.addEventListener('timeupdate', upd);
+      upd();
+
+      const fracFromEvent = (e) => {
+        const rect = bar.getBoundingClientRect();
+        return Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+      };
+
+      // Pointer events = unified touch/mouse dragging.
+      // Paint is rAF-throttled: pointermove can fire faster than frames on
+      // iOS; without throttling, paint floods the compositor and the fill/
+      // thumb feel spotty (BUG B, 2026-09-22 iPhone feedback).
+      let paintPending = false;
+      const paintThrottled = (frac) => {
+        dragFrac = frac;
+        if (paintPending) return;
+        paintPending = true;
+        requestAnimationFrame(() => {
+          paintPending = false;
+          if (dragging && dragFrac !== null) paint(dragFrac);
+        });
+      };
+
+      bar.addEventListener('pointerdown', (e) => {
+        dragging = true;
+        dragFrac = fracFromEvent(e);
+        paint(dragFrac);
+        try { bar.setPointerCapture(e.pointerId); } catch (err) { /* ok */ }
+        bar.classList.add('dragging');
+      });
+      bar.addEventListener('pointermove', (e) => {
+        if (!dragging) return;
+        paintThrottled(fracFromEvent(e));
+      });
+      const endDrag = (e) => {
+        if (!dragging) return;
+        dragging = false;
+        const frac = (e && Number.isFinite(e.clientX)) ? fracFromEvent(e) : dragFrac;
+        dragFrac = null;
+        bar.classList.remove('dragging');
+        if (e && Number.isFinite(e.pointerId)) {
+          try { bar.releasePointerCapture(e.pointerId); } catch (err) { /* released */ }
+        }
+        if (frac !== null) seekToWindowFraction(frac);
+        upd();
+      };
+      bar.addEventListener('pointerup', endDrag);
+      bar.addEventListener('pointercancel', endDrag);
+      // Safety net: if iOS never fires pointerup/cancel (observed failure
+      // mode), a pointer that LEAVES the bar while dragging ends the drag
+      // instead of leaving the slider stuck (BUG B).
+      bar.addEventListener('pointerleave', (e) => {
+        if (dragging && e.pointerType === 'touch') endDrag(e);
+      });
+      // Last-resort fallback: if dragging somehow stays true (no end event
+      // fired at all), a watchdog force-releases after 3 s without movement
+      // so the slider never "dies". The interval is cleared when this bar is
+      // replaced (renderPlayer rebuilds the row; the old bar is garbage once
+      // its guard is cleared).
+      let lastDragMove = Date.now();
+      bar.addEventListener('pointermove', () => { lastDragMove = Date.now(); });
+      bar.addEventListener('pointerdown', () => { lastDragMove = Date.now(); });
+      const stuckGuard = setInterval(() => {
+        if (!dragging) return;
+        // A real drag produces pointermove; if none arrived for 3 s while
+        // dragging, force-release.
+        if (Date.now() - lastDragMove > 3000) endDrag(null);
+      }, 1000);
+      const prevGuard = audioEl._srStuckGuard;
+      if (prevGuard) clearInterval(prevGuard);
+      audioEl._srStuckGuard = stuckGuard;
+
+      // Keyboard support (desktop): arrows move within the window.
+      bar.addEventListener('keydown', (e) => {
+        const step = e.shiftKey ? 0.1 : 0.02; // shift = 10 %, normal = 2 %
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+          e.preventDefault();
+          const dir = e.key === 'ArrowLeft' ? -1 : 1;
+          const f = windowFrac();
+          if (f === null) return;
+          seekToWindowFraction(Math.min(1, Math.max(0, f + dir * step)));
+          upd();
+        }
       });
     }
 
@@ -1213,7 +1477,7 @@
       body.appendChild(el('p', { class: 'reader-para', text: p }));
     }
     body.appendChild(el('a', {
-      class: 'reader-source', href: item.url, target: '_blank', rel: 'noopener',
+      class: 'reader-source', href: articleLinkFor(item), target: '_blank', rel: 'noopener',
       text: 'Läs hela artikeln på sverigesradio.se →',
     }));
   }
@@ -1438,6 +1702,11 @@
   function closeSheet() {
     $sheetRoot.textContent = '';
     document.body.style.overflow = '';
+    // Remove the accumulated resize listener from the last openSheet.
+    if (window.__srSheetSync) {
+      window.removeEventListener('resize', window.__srSheetSync);
+      window.__srSheetSync = null;
+    }
   }
 
   function openSheet({ initialTab, onDone }) {
@@ -1550,6 +1819,9 @@
       class: 'sheet-close', type: 'button', 'aria-label': 'Stäng',
       text: '✕', onclick: () => { closeSheet(); onDone?.(); },
     });
+    // BUG FIX (2026-09-22): closeBtn was created but never appended — the
+    // sheet had NO visible close button (verified live: .sheet-close missing
+    // from DOM). Users could only close via swipe or overlay tap.
 
     function setTitle() {
       title.textContent = 'Info och anpassningar';
@@ -1610,13 +1882,20 @@
         el('span', { class: 'setting-minmax', text: '4' }),
         el('div', { class: 'setting-slider-wrap' }, newsRange, thumbBubble),
         el('span', { class: 'setting-minmax', text: '20' })));
-    // position the bubble once the sheet is laid out
+    // position the bubble once the sheet is laid out. The resize listener is
+    // removed on close — openSheet runs on every open, and without removal
+    // listeners accumulate on window across opens (leak, verified 2026-09-22).
     requestAnimationFrame(syncBubble);
     window.addEventListener('resize', syncBubble);
+    const prevSync = window.__srSheetSync;
+    if (prevSync) window.removeEventListener('resize', prevSync);
+    window.__srSheetSync = syncBubble;
 
     // Structure: header → Info + Spara row → Antal nyheter → Välj favoriter
-    sheet.appendChild(el('div', { class: 'sheet-grab', 'aria-hidden': 'true' }));
-    sheet.appendChild(el('div', { class: 'sheet-header' }, title));
+    const grab = el('div', { class: 'sheet-grab', 'aria-hidden': 'true' });
+    sheet.appendChild(el('div', { class: 'sheet-grab-zone', 'aria-hidden': 'true' },
+      el('div', { class: 'sheet-grab', 'aria-hidden': 'true' })));
+    sheet.appendChild(el('div', { class: 'sheet-header' }, title, closeBtn));
     sheet.appendChild(el('div', { class: 'sheet-actions' },
       el('button', {
         class: 'sheet-action sheet-action-info', type: 'button',
@@ -1807,9 +2086,15 @@
     $sheetRoot.appendChild(overlay);
     document.body.style.overflow = 'hidden'; // no page scroll behind the sheet
 
-    // Swipe down on the grab handle/header closes the sheet (the grab line
-    // indicates this). Horizontal intent is ignored so the list still scrolls.
-    enableSwipeToClose(overlay, sheet, () => { closeSheet(); onDone?.(); }, { axis: 'y' });
+    // BUG 1 FIX (2026-09-22, user lead: "scrolling works first time, fails
+    // after"): swipe-to-close was attached to the ENTIRE sheet, so vertical
+    // touches ANYWHERE — including on the scrollable pick list — ran the drag
+    // logic and set transform on the sheet during scroll (finger-down = d>0 =
+    // sheet drags). On iOS this fights the native scroll and can leave the
+    // sheet unscrollable. Fix: scope the swipe surface to the grab handle +
+    // header zone only; list touches never reach the swipe logic.
+    const swipeSurface = sheet.querySelector('.sheet-grab-zone');
+    enableSwipeToClose(overlay, swipeSurface, () => { closeSheet(); onDone?.(); }, { axis: 'y' });
 
     overlay.addEventListener('click', (e) => {
       if (e.target === overlay) { closeSheet(); onDone?.(); }

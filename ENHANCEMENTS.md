@@ -4,6 +4,102 @@ Pågående anteckningar för förbättringar att ta itu med senare. Nyast övers
 
 ---
 
+## 2026-09-22 — FIXPASS: BUG A + BUG B + BUG 1 + BUG 2 (implementerat & verifierat)
+
+Alla fyra öppna buggar från pass 1–2-planen är åtgärdade i en pass. 64/64
+tester (49 gamla + 15 nya regressionstester i `tests/fixpass.test.mjs`).
+Live-verifierad i riktig Edge 153 headless via CDP mot lokal build
+(`scripts/cdp-eval.mjs` = ny zero-dep CDP-klient). **iPhone ej verifierad —
+användaren får testa** (BUG B och BUG 1 är touch-specifika).
+
+### BUG A — pillen visar minus-tid (FIXAD)
+- `renderPlayer` mode-pill använder nu `dvrOffsetLabel()` ("−3 h 1 min")
+  i stället för klocktid. Klocktiden bor kvar i seekradens vänsterlabel
+  (drag-förhandsvisning + hörd position). Icke-duplicerad komposition:
+  pill = minus-tid, slider-vänster = klocktid.
+- **Verifierat live:** P3 HLS → seek 25 % → pill "−3 h 1 min", vänsterlabel
+  "07:48" (klocktid). LIVE-etikett-klick → pill "LIVE".
+
+### BUG B — slider-stabilitet + LIVE-avstånd (FIXAD)
+- `touch-action: none` på `.dvr-bar` (saknades — Safari gest-konflikt var
+  trolig huvudorsak till "fläckig" känsla).
+- rAF-throttling av drag-paint (`paintThrottled`) — pointermove flödar på
+  iOS snabbare än frames; utan throttling floodas paint.
+- Robust drag-slut: `pointercancel` + `pointerleave`-säkerhetsnät (touch) +
+  stuck-drag-watchdog (`_srStuckGuard`, force-release efter 3 s utan rörelse,
+  cleansas vid render-byte och stopAndClosePlayer) — slidern kan aldrig
+  "dö" längre.
+- **Användarnotat (LIVE för nära tummen):** `.dvr-bar` har nu
+  `padding-right: 14px` (thumben kan aldrig nå LIVE-zonen) +
+  `.player-live-label` fick margin/padding (10 px sidopadding).
+- **Verifierat live:** drag 50 % → currentTime 5440 = 0,5 × 10880, pill
+  "−3 h 1 min", dragging-klass rensad. Computed `touch-action: none` ✅.
+
+### BUG 1 — Inställningar: scroll funkar bara första gången (FIXAD, mekanism etablerad)
+**Användarens lead var nyckeln:** "fungerar första gången efter PWA-öppning,
+failar sedan varje gång" → touch-specifik, inte logik-specifik. Desktop-Edge
+repro (programmatisk scroll) fungerade på ALLA öppningar — felet är i
+touch-vägen.
+
+Rotorsaker (etablerade via live-probing):
+1. **BEKRÄFTAT:** `enableSwipeToClose` satt på HELA sheeten — vertikala
+   touches NÅGONSTANS (inkl. rullningslistan) körde drag-logiken och satte
+   `transform` på sheeten under scroll (finger-ned = d>0 = sheet drar). På
+   iOS krockar det med native scroll. **Fix:** swipe-ytan är nu scoped till
+   `.sheet-grab-zone` (grab-handtag + header-zon, `touch-action: none`);
+   list-touches når aldrig swipe-logiken.
+2. **BEKRÄFTAT (död kod):** sheetens ✕-knapp skapades men **aldrig appendad**
+   — sheeten hade ingen synlig stängknapp (verifierat: `.sheet-close` saknades
+   i DOM). Nu appendad i headern.
+3. **BEKRÄFTAT (läckage):** `window.addEventListener('resize', syncBubble)`
+   ackumulerades vid varje openSheet. Nu tas den bort i closeSheet.
+4. **HYPOTES (iOS, otestad här):** body-overflow-växling + transform-under-
+   scroll kan lämna iOS touch-scroll i låst läge efter första öppningen.
+   Fix 1 täcker den troliga mekanismen (transform sätts inte längre vid
+   list-scroll). iPhone-verifiering krävs.
+
+**Verifierat live (Edge):** grab-zon finns, ✕-knapp i headern, scroll funkar
+på 1:a och 2:a öppningen (500/600 px), stäng via ✕ och overlay-tap, body-
+overflow återställs, inga JS-fel.
+
+### BUG 2 — Nyhetslänkar öppnas inte (FIXAD, rotorsak etablerad)
+**Rotorsak (verifierad med browser-perfekta iOS Safari-headers via curl):**
+1. Ekot-flödets `<link>` är `/artikel/<id>` — SR:s egen site returnerar **404
+   för ALLA id-URL:er** (SR migrerade till slug-URL:ar; flödet uppdaterades
+   aldrig). Det är därför länkarna "inte öppnas korrekt" — de öppnar en
+   SR 404-sida.
+2. Fungerande URL:ar är `/artikel/<slug>` på **www**-host (non-www 403:ar).
+3. Slug kan INTE slås upp cross-origin (sverigesradio.se skickar inga
+   CORS-headers) — webbläsaren kan inte resa id→slug vid runtime.
+4. Slug-gissning från titel matchar bara ~halva artiklarna (SR använder
+   redaktionella slugs, t.ex. "Vill bygga stängsel runt Israels ambassad" →
+   "stangsel-kring-israels-ambassad-utreds-i-stockholm") — och en fel slug
+   404:ar precis som id-URL:en. **Slug-gissning är därför inte via-bar.**
+
+**Fix:** läsarens "Läs hela artikeln"-länk pekar nu ALWAYS på SR:s söksida
+för titeln (`www.sverigesradio.se/sok?query=<titel>` — verifierad 200,
+artikeln är toppresultat). Aldrig den döda id-URL:en. Trade-off dokumenterad:
+ett extra klick för användaren, men länken fungerar alltid.
+
+**Verifierat live:** reader-länk = `sok?query=Miljödata tvingas betala…`,
+inte `/artikel/<id>`.
+
+### Deploy
+- `npm run build` → dist/ → kopierad till root (GitHub Pages-flödet).
+- Ny bundle: `app.4a874f05.js` + `styles.970c8cdb.css`, SW-cache
+  `minradio-2a7b0c3b`. Fixarna verifierade i den serverade bundlen
+  (grep: paintThrottled/stuckGuard/sheet-grab-zone/sok?query/touch-action).
+- Nytt verktyg: `scripts/cdp-eval.mjs` (zero-dep CDP-klient för
+  Edge-headless-verifiering — ersätter /tmp/ux-verify.js-mönstret).
+
+### Kvar
+- iPhone-verifiering av BUG A/B (DVR-pill + slider) och BUG 1 (sheet-scroll
+  efter andra öppningen) — användaren har enheten.
+- Android Chrome-validering (Fas 3-kvarvarande).
+- Fas 4/5 (PLANNED) oförändrat.
+
+---
+
 ## 2026-09-22 — iPhone-feedback på DVR-UX-revisionen (buggar att fixa nästa session)
 
 **Användaren testade nya UX:n på riktig iPhone.** Funktionellt fungerar DVR

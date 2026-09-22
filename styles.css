@@ -643,6 +643,46 @@ a:focus-visible {
   text-overflow: ellipsis;
 }
 
+.player-quality {
+  display: inline-block;
+  margin-top: 3px;
+  margin-right: 5px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.5;
+}
+
+/* Mode pill: where in time am I (LIVE now; DVR states in Phase 3) */
+.player-mode {
+  display: inline-block;
+  margin-top: 3px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--border);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.5;
+}
+
+/* Buffering: badge pulses while audio loads or re-buffers */
+.player-quality.buffering {
+  animation: badge-pulse 1.1s ease-in-out infinite;
+}
+@keyframes badge-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .player-quality.buffering { animation: none; }
+}
+
 .player-controls {
   display: flex;
   align-items: center;
@@ -669,13 +709,13 @@ a:focus-visible {
 }
 .player-btn-main svg { width: 24px; height: 24px; }
 .player-btn-close {
-  font-size: 14px;
-  color: var(--text-secondary);
+  color: var(--text);
   background: var(--border);
   width: 32px;
   height: 32px;
   border-radius: 50%;
 }
+.player-btn-close svg { width: 16px; height: 16px; }
 
 .seek-row {
   display: flex;
@@ -720,6 +760,70 @@ a:focus-visible {
   border-radius: 2px;
   background: var(--accent);
   z-index: 1;
+}
+
+/* ---------- DVR seek row (Phase 3, UX rev) ---------- */
+/* Real draggable slider: thumb follows the fill; left label = clock time of
+   the heard position; right = clickable LIVE label (returns to live edge). */
+.dvr-row { gap: 8px; }
+
+/* BUG B (2026-09-22 iPhone feedback): the bar must own all touch gestures —
+   without touch-action:none, Safari's touch scroll/gesture recognition fights
+   the pointer drag and the slider feels spotty/unstable. */
+.dvr-bar { touch-action: none; -webkit-user-select: none; user-select: none; }
+
+/* User note 2026-09-22: the LIVE label sits too close to the thumb for a
+   finger — give the right side real breathing room. The bar gets an inner
+   right padding so the thumb can never reach the LIVE label's touch zone. */
+.dvr-bar { padding-right: 14px; }
+.player-live-label { margin-left: 6px; padding-left: 10px; padding-right: 10px; }
+
+.seek-thumb {
+  position: absolute;
+  top: 50%;
+  left: 100%;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--surface);
+  box-shadow: 0 1px 4px rgba(28, 28, 30, 0.35);
+  transform: translate(-50%, -50%);
+  z-index: 2;
+  pointer-events: none; /* the bar handles the pointer */
+  transition: transform 0.12s ease;
+}
+.dvr-bar.dragging .seek-thumb { transform: translate(-50%, -50%) scale(1.25); }
+@media (prefers-reduced-motion: reduce) {
+  .seek-thumb { transition: none; }
+}
+
+/* Clickable LIVE label — replaces the separate "Till Direkt" button. */
+.player-live-label {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 6px 4px;
+  cursor: pointer;
+  flex: none;
+  white-space: nowrap;
+  min-height: 44px; /* touch target */
+  min-width: 44px;
+}
+.player-live-label.at-live {
+  color: var(--text-secondary); /* already at live — dim, still clickable */
+  cursor: default;
+}
+
+/* Mode pill when behind live: accent tint + shows the clock time of the
+   heard position (not color-only — the text changes from LIVE to HH:MM). */
+.player-mode.behind {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ---------- skeletons ---------- */
@@ -790,6 +894,16 @@ a:focus-visible {
   padding: 12px 20px calc(var(--safe-bottom) + 20px);
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain; /* keep scroll inside the sheet — no bleed-through to the page behind */
+}
+
+.sheet-grab-zone {
+  /* BUG 1 fix: the swipe-to-close surface. Covers the grab handle + a bit of
+     the header so the swipe-down gesture has a comfortable target, while the
+     scrollable content below is untouched by the swipe logic. */
+  padding: 4px 0 6px;
+  touch-action: none; /* the zone owns vertical gestures */
+  cursor: grab;
 }
 
 .sheet-grab {
