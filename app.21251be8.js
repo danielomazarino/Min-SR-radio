@@ -802,6 +802,7 @@
       });
     }
     armPlaybackWatchdog();
+    updateMediaSession();
     renderPlayer();
     updatePlayingMarks();
   }
@@ -881,6 +882,7 @@
     audioEl.removeAttribute('src');
     state.current = null;
     lastPlayingKey = null;
+    updateMediaSession(); // clears lock-screen now-playing immediately
     $player.classList.remove('visible');
     $player.textContent = '';
     updatePlayingMarks();
@@ -917,7 +919,10 @@
       clearPlaybackWatchdog();
     }
     updatePlayingMarks();
-    if (ev === 'pause' || ev === 'play') renderPlayer();
+    if (ev === 'pause' || ev === 'play') {
+      renderPlayer();
+      updateMediaSession(); // keep lock-screen play/pause state in sync
+    }
   }));
 
   // Once audio is actually flowing, remember the working candidate and stop
@@ -932,6 +937,47 @@
     setBadgeBuffering(false);
     renderPlayer();
   });
+
+  // ---- MediaSession (låsskärm / kontrollcenter) ----
+  // Utan explicit metadata kan iOS binda låsskärmsspelaren till fel installerad
+  // PWA (observerat 2026-09-22: tryck på låsskärmsspelaren öppnade en annan
+  // PWA, och att stänga den dödade ljudet). Metadata + artwork knyter
+  // sessionen till DEN HÄR appen och ger riktiga kontroller.
+  const mediaSession = ('mediaSession' in navigator) ? navigator.mediaSession : null;
+
+  if (mediaSession) {
+    const safeSeek = (fn) => { try { fn(); } catch { /* live streams may reject */ } };
+    try {
+      mediaSession.setActionHandler('play', () => audioEl.play().catch(() => {}));
+      mediaSession.setActionHandler('pause', () => audioEl.pause());
+      mediaSession.setActionHandler('stop', () => stopAndClosePlayer());
+      mediaSession.setActionHandler('seekbackward', () => safeSeek(() => { audioEl.currentTime = Math.max(0, audioEl.currentTime - 10); }));
+      mediaSession.setActionHandler('seekforward', () => safeSeek(() => { audioEl.currentTime = audioEl.currentTime + 10; }));
+    } catch { /* unsupported action — ignore */ }
+  }
+
+  function updateMediaSession() {
+    if (!mediaSession) return;
+    const cur = state.current;
+    if (!cur) {
+      mediaSession.metadata = null;
+      try { mediaSession.playbackState = 'none'; } catch { /* ignore */ }
+      return;
+    }
+    try {
+      mediaSession.metadata = new MediaMetadata({
+        title: cur.title || 'Min Radio',
+        artist: cur.subtitle || (cur.kind === 'live' ? 'Sveriges Radio – direkt' : 'Sveriges Radio'),
+        album: 'Min Radio',
+        artwork: [{
+          src: cur.artwork || 'icons/icon-512.png',
+          sizes: '512x512',
+          type: 'image/png',
+        }],
+      });
+      mediaSession.playbackState = audioEl.paused ? 'paused' : 'playing';
+    } catch { /* never let metadata break playback */ }
+  }
 
   // ---- buffering indicator ----
   // While audio is loading (no playback yet, or re-buffering mid-play) the
