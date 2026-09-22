@@ -33,10 +33,57 @@ programnavigering, medan våra programhopp-knappar inte syns. Utredt varför.
   syns först när `scheduledevents` svarar 200 igen. Ingen app-ändring kan
   komma åt tablå-data medan SR:s schemabackend är nere — SR:s egen app går
   via interna API:er som inte är publikt nåbara.
-- **Åtgärd: vänta ut SR:s API-fix.** Knapparna dyker upp automatiskt (10-min
-  cache, ingen kodändring behövs). Alternativ på sikt: en minimal CORS-proxy
-  mot kanalsidans inbäddade schema — men det bryter mot "ingen backend"-
-  principen och kräver användarbeslut.
+- ~~**Åtgärd: vänta ut SR:s API-fix.**~~ (REVIDERAD, se nedan.)
+
+### UPPDATERING 2026-09-22: SR bekräftar avveckling — 500:an kommer INTE att fixas
+
+Källa: SR:s officiella tekniksupportforum,
+[tråden "Sveriges Radios API"](https://teknisk-support.sverigesradio.se/org/teknisk-support/d/sveriges-radios-apier/)
+(svar från "Annika Webbmaster", SR Lyssnarservice, nov 2025 – jun 2026):
+
+- **"Det öppna API:t avvecklas."** Explicit uttalande. Regeringens
+  public service-proposition 2026–2033 kräver att SR "undviker att
+  tillgängliggöra innehåll på externa internetplattformar"; SR avsätter
+  därför inga resurser på det öppna API:t.
+- **"API:t går fortfarande att använda, men kända problem åtgärdas inte.
+  Det kommer dessutom att uppstå fler problem framöver … Förr eller senare
+  kommer API:t att funka så pass dåligt att vi väljer att ta bort det helt.
+  Möjligen tar vi av strategiska skäl ned detta API 'i förtid'."**
+  → Vår tidigare hypotes "tillfällig outage, vänta på fix" är FÖRKASTAD.
+  scheduledevents/rightnow/RSS-tablå är sannolikt permanent borta.
+- **Orsak till att det slutar fungera:** "Vi förnyar vår dataförsörjning och
+  det nuvarande öppna API:t använder metoder som vi snart inte längre
+  använder. Därmed kommer det nuvarande API:t att sluta fungera."
+- **Jun 2026-uppdatering i tråden:** "API:t i sin nuvarande form kommer att
+  upphöra. Delar ersätts inte alls (t.ex. topplistor och grupper). Andra
+  delar, som poddflöden (api.sr.se/api/rss/pod/…), kommer att få ny URL."
+  → Även våra poddkällor kan bryta framöver; kanaler/episoder/programs
+  fungerar tills vidare men är inte garanterade.
+- **SR:s egen app:** backend-API:t (app-api.sr.se) är "inte för publik
+  användning", saknar dokumentation och är inte dimensionerad för extern
+  last. Ingen väg in där.
+- **SR:s sanktionerade väg för strömmar:** artikel med direktlänkar till
+  ljudströmmar för alla kanaler
+  (sverigesradio.se/artikel/lankar-till-ljudstrommar-for-alla-kanaler) —
+  våra stream-URL:er är alltså den del som SR aktivt stödjer.
+- SR uppmanar API-användare att beskriva sina tjänster i tråden (de samlar
+  underlag för ett internt beslut). Min Radio är ett konkret exempel.
+
+### Reviderad åtgärd
+
+1. **Programhopp:** knappen förblir dold (graceful degradation redan
+   implementerad). Ingen kodändring — men vi väntar inte längre på någon
+   fix; den kommer sannolikt aldrig. Om tablå-funktionen ska överleva krävs
+   en CORS-proxy mot kanalsidans inbäddade schema (användarbeslut, bryter
+   mot "ingen backend"-principen).
+2. **Överlevnadsplan för appen (ny prioritet):** (a) kanalströmmar via SR:s
+   officiella direktlänksartikel är den stabila grunden — redan vår väg;
+   (b) poddar via api.sr.se/api/rss/pod/… får ny URL enligt SR — bevaka och
+   byt vid brytning; (c) episodes/programs-endpoints fungerar tills vidare
+   men planera fallback (RSS-poddflöden är SR:s egen ersättning).
+3. **Överväg att posta en kort beskrivning av Min Radio i forumtråden** —
+   SR ber uttryckligen om användningsexempel, och det är den enda kända
+   vägen att påverka beslutet.
 
 ### Firefox-observation (förklaring, ingen bugg)
 
@@ -104,7 +151,9 @@ Verifierade live: back/fwd ändrar currentTime med 15 s.
 ### Kvar
 - iPhone-test: gest-fixen (svep nedåt ska INTE längre seeka), ±15 s-knappar,
   programhopp (syns när SR:s tablå-API fungerar igen).
-- SR: rapportera/vänta ut scheduledevents-500:an.
+- ~~SR: rapportera/vänta ut scheduledevents-500:an.~~ → Se UPPDATERING
+  ovan: API:t avvecklas, 500:an fixas inte. Programhopp förblir dolt tills
+  vidare; överlevnadsplan (podd-URL:er, direktlänkar) är ny åtgärd.
 
 ---
 
