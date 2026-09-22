@@ -1173,3 +1173,43 @@ programhopp-knappar. Fix: toLocaleDateString('sv-SE'). Hittad live 01:02.
 - Långtryck på ikoner → kort (iOS-menyn ska vara borta)
 - Chevron-expansion uppåt + svep-ned-fällning
 - Låsskärm: fel-PWA-buggen (noterad öppen)
+
+## 2026-09-23 (natt 2) — Spelar-gester: fingerföljande expand/minimize (deployad)
+
+### Användarens krav
+1. "solid way of marking the finger on the player and swiping upwards for
+   expansion and then down to close" — fingerföljande gester, inte knappar.
+2. "background page never swipes with it — feels flaky when everything moves".
+3. "remove close player and stream when swiping down — instead minimise the
+   player so news and mainpage becomes visible while still playing".
+
+### Implementerat (bundle app.53c9d8c5.js)
+- **Svep UPP på spelaren** → expanderpanelen växer med fingret (0 → 40 dvh),
+  committar vid 22 % av skärmen (eller flick), fjädrar tillbaka om för kort.
+- **Svep NED på spelaren** → MINIMERA till mini-bar: artwork, titel, play/
+  paus, expand-knapp, stopp. **Ljudet fortsätter**, sidan bakom blir synlig
+  och rullbar. Tap på mini-baren (utom knappar) återställer full spelare.
+  ✕-knappen är nu ENDA sättet att stänga (medvetet — inga olyckor).
+- **Bakgrundssidan rör sig ALDRIG:** `.player { touch-action: none }` +
+  `e.preventDefault()` på vertikala drag + `body.player-gesture-lock`
+  (overflow:hidden) under pågående gest. Tre lager skydd.
+- Gest-disambiguering: horisontella drag på DVR-baren påverkas inte (baren
+  har egen touch-action:none och stoppar propagation via sin yta).
+- Chevron-knappen finns kvar som alternativ (tillgänglighet/desktop).
+
+### Verifierat live (simulerade touch-gester mot GitHub Pages)
+- Svep ned → minimized=true, mini-bar syns, ljudet spelar ✅
+- Tap på mini-bar → restored ✅
+- Svep upp → panel öppen, "Vaken" + "Nästa Ekot senaste nytt" ✅
+- Svep ned på expanderad panel → minimerar (gesten ägs av spelaren) ✅
+- 83/83 tester.
+
+### Låttitlar — slututredning (användaren bad om fördjupning)
+SR:s webbplayer visar "♪ Artist – Låt" och datan FINNS: sidan
+sverigesradio.se/kanaler/latlista/p3 är server-renderad med hela låtlistan
+(title/artist/composer, uppdateras live). MEN: sverigesradio.se skickar INGA
+CORS-headers (verifierat med Origin-header — servern ignorerar den), så PWA:n
+kan inte läsa svaret. SR:s egen spelare är same-origin och därför funkar det
+för dem. Alla api.sr.se-varianter (songs/playlist/music/latlista) är 500.
+**Slutsats: låttitlar kräver en proxy — användarbeslut.** Programnivån
+(Pågår nu/Nästa) som expanderpanelen visar är allt som går utan backend.
