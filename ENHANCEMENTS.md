@@ -1060,3 +1060,67 @@ fanns svaret direkt: **den använder `scheduledepisodes`, inte
 scheduledepisodes ger allt som behövs för långtryckskort: programnamn, tid,
 episodeId → episodes/get → listenpodfile (spelbar URL + duration). Ingen
 proxy behövs. Tablå-kortet kan byggas på denna endpoint.
+
+## 2026-09-23 — Fas 4 + Fas 5 IMPLEMENTERADE + UX-fixar (deployade)
+
+### 1. DVR-knappar omplacerade (användarens ursprungliga önskan — nu gjord)
+- **±15 s + programhopp flankerar nu play/paus** i huvudkontrollraden:
+  [prevProgram] [back15] [PLAY] [fwd15] [nextProgram]. Logisk placering —
+  transportknapparna är där tummen redan är.
+- **LIVE-knappen borttagen** från DVR-radens högersida (användaren: "det är
+  nog med pill och slide till höger"). Ersättare: tap på barens högra 12 %
+  → tillbaka till live (samma gestyta, ingen extra knapp att träffa fel).
+  Pillen visar LIVE/−tid som förut.
+- DVR-radens layout nu: [klocktid] [slider] — rent och luftigt.
+- Död CSS (.player-live-label) borttagen.
+
+### 2. Zoom-fix (dubbelklick zoomade oönskat)
+- `touch-action: manipulation` globalt (tillåter pan + pinch, blockerar
+  double-tap-zoom) + `maximum-scale=1` i viewport-metan.
+- Pinch-zoom (två fingrar) fungerar fortfarande — endast oönskad
+  dubbelklicks-zoom är avstängd.
+
+### 3. Fas 4 — Expanderad spelare (KLAR)
+- Tap på spelarens meta-yta (titel/undertitel) växlar ett infopanel:
+  omslagsbild, programnamn, beskrivning (4 rader clamp), längd.
+- Kompakt spelare förblir standard; panelen är ett tilläggslager.
+- Data: kanaler får tagline som description; poddar får programbeskrivning
+  (redan i katalogen); nyheter har programName sedan tidigare.
+- Keyboard-stöd (Enter/space) + aria.
+
+### 4. Fas 5 — Context cards via långtryck (KLAR)
+- **Långtryck (500 ms) på kanalikon → Tablå-kort:** dagens schema via
+  scheduledepisodes (den levande endpointen). Pågående program markerat ●,
+  spelbara poster (med episodeId) ▶ → episodes/get → listenpodfile →
+  spelas direkt. Framtida poster ⏳, ej spelbara dimmade.
+- **Långtryck på poddikon → Avsnittskort:** episodes/index (page 1+2 —
+  SR-quirk: page 1 tom för vissa program), tid + titel + längd, tap spelar.
+- Desktop-paritet: högerklick öppnar kortet.
+- Korten återanvänder sheet-visualspråket (grab-zon, swipe-ned stänger,
+  ✕, overlay-tap, Esc).
+
+### 5. KRITISK bugg fixad under vägen: el() + disabled
+- `el('button', {disabled: false})` → `setAttribute('disabled', false)` →
+  knappen BLEV disabled (attributets existens disable:ar, värdet spelar
+  ingen roll). Alla card-rader med ljud var klickade-av. Fix: boolean false
+  skippas i el(). Upptäckt via live-verifiering (81/93 rader spelbara efter
+  fix, 0 före).
+
+### 6. Ikonregressionen — rotorsak på build-nivå
+- build.mjs regenererade ikoner till dist/ med `renderIcon(180)` UTAN
+  square-option → skrev över den fixade ikonen vid VARJE build. Det är
+  därför vita hörn kom tillbaka live trots tidigare fix. Nu: build.mjs
+  använder `renderIcon(180, { square: true })` — permanent fix.
+- **PWA-låsskärmbuggen (fel PWA öppnas)** kvarstår enligt användaren —
+  MediaSession-metadata är deployad i bundlen; iOS kan behöva PWA-
+  ominstallation. Noterad som öppen.
+
+### Verifierat live (GitHub Pages, bundle app.94281c6d.js)
+- Kanalkort P1: 93 rader, 81 spelbara, pågående markerad ✅
+- Poddkort: 10 avsnitt, alla spelbara, tid + längd ✅
+- 83/83 tester. SW minradio-a0461639.
+
+### Kvar
+- iPhone-verifiering: knappplacering, zoom, långtryckskort, expanderad
+  spelare, låsskärm (fel-PWA-buggen).
+- Android Chrome-validering.
