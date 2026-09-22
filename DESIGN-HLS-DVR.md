@@ -1,8 +1,34 @@
 # Design: HLS live playback + ~3 h DVR/time-shift i Min Radio
 
-Status: **DESIGN — inte implementerad.** Väntar på godkännande.
-Datum: 2026-09-21. Grund: undersökningsresultat i ENHANCEMENTS.md
-(kompatibilitetsmatrisen) + curl-verifierade HLS-fakta.
+Status: **IMPLEMENTERAD (Fas 1–3) — verifierad på riktig Edge 153 + iPhone.**
+Ursprunglig design 2026-09-21; implementerad och utökad 2026-09-21/22.
+Grund: undersökningsresultat i ENHANCEMENTS.md (kompatibilitetsmatrisen)
++ curl-verifierade HLS-fakta.
+
+## Implementeringsstatus (2026-09-22)
+
+| Fas | Status | Not |
+|---|---|---|
+| Fas 1 — Stream descriptors + CAPS | **KLAR** | STREAM_TABLE, CAPS, resolveStreams; kandidatordningen identisk med gamla liveCandidates (8 enhetstester) |
+| Fas 1a — Livscykel-fix | **KLAR** | renderPlayer nollställer transform varje render; alla 5 övergångar verifierade live |
+| Fas 2A — HLS playback-engine | **KLAR** | hls.js lazy-load, stale-session-guard, SR-ladder-bitrate via LEVEL_SWITCHED, seekable-state |
+| Fas 2B — Validering riktiga webbläsare | **KLAR** | Edge 153: seekable 181 min, 5-min bakåtseek; Firefox: MP3-fallback som designat |
+| Fas 3 — DVR-UI | **KLAR** | mode-pill (minus-tid), DVR-seekrad, ±15 s-knappar, programhopp (väntar på SR:s tablå-API), gest-disambiguering |
+| Fas 4 — Bitrate/codec-state | **KLAR** (delvis) | LEVEL_SWITCHED-badge + icy-br HEAD; MediaSession-metadata ej utökad |
+| Fas 5 — Riktig enhetsvalidering | **PÅGÅR** | iPhone: DVR + ±15 s verifierade (användarskärdump); bakgrundsljud/låsskärm ej fullständigt testad |
+| Fas 6 — FLAC-auto-upptäckt + Firefox | **EJ PÅBÖRJAD** | frivillig |
+
+Avvikelser från designen (dokumenterade beslut):
+- **backBufferLength är 90, inte 11100** (§5/§6 föreslog hela fönstret) —
+  90 s räckte för bakåtseek i verifieringen; hls.js hämtar äldre segment
+  on-demand vid seek. ÄNDRA EJ utan ny verifiering.
+- **Mode-pill visar minus-tid** ("−12 min"), inte klocktid — användar-
+  preferens 2026-09-22 (klocktiden bor i seekradens vänsterlabel).
+- **±15 s-knappar + programhopp tillkom** (användarönskemål 2026-09-22,
+  utanför ursprunglig design). Programhopp läser SR:s scheduledevents-API
+  (var nere 500 under utredningen — knappar syns när API:t återkommer).
+- **Gest-disambiguering på DVR-baren:** vertikala svep avbryter drag utan
+  att seeka (fix för "hoppar till noll").
 
 **Bilaga A (nedan): Spelar-UX & livscykel-granskning** — inklusive
 rotorsaken till buggen "stängd spelare kommer inte tillbaka" (§A.3),
