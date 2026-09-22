@@ -1205,6 +1205,10 @@
     // fully visible and scrollable; audio keeps playing. Tap the mini-bar
     // (except buttons) restores the full player.
     if (playerMinimized) {
+      const miniThumb = el('div', { class: 'player-thumb', 'aria-hidden': 'true' },
+        cur.artwork
+          ? el('img', { src: cur.artwork, alt: '' })
+          : el('span', { class: 'player-thumb-letter', text: (cur.title || '?').slice(0, 1) }));
       const miniPlay = el('button', {
         class: 'player-btn player-btn-main', type: 'button',
         'aria-label': audioEl.paused ? 'Spela' : 'Pausa',
@@ -1228,7 +1232,7 @@
         onclick: () => { playerMinimized = false; stopAndClosePlayer(); },
       });
       const mini = el('div', { class: 'player-mini' },
-        thumb,
+        miniThumb,
         el('div', { class: 'player-meta', onclick: restorePlayer },
           el('div', { class: 'player-title', text: cur.title || '' }),
           el('div', { class: 'player-sub', text: cur.subtitle || (live ? 'Direkt' : '') })),
