@@ -4,6 +4,54 @@ Pågående anteckningar för förbättringar att ta itu med senare. Nyast övers
 
 ---
 
+## 2026-09-22 — Tablå-utredning: varför fungerar programhopp i SR:s app men inte hos oss?
+
+**Användarobservation:** SR:s officiella iPhone-app har fungerande tablå och
+programnavigering, medan våra programhopp-knappar inte syns. Utredt varför.
+
+### Fakta (curl-verifierat 2026-09-22, även med VPN av = svenskt nät)
+
+1. **SR:s publika tablå-API är nere — totalt.** `api.sr.se/api/v2/scheduledevents`
+   svarar 500 i ALLA varianter: med/utan channelid, med/utan date, alla
+   format, även `/api/v1/` och RSS-varianterna (`/api/rss/kanal/164`,
+   `/api/rss/tabla/164`). Även `channels/{id}/rightnow` är 500. Detta är en
+   server-side outage i SR:s schemabackend — inte geo-block, inte parametrar,
+   inte våra headers.
+2. **SR:s app/web använder INTE api.sr.se för tablå.** Kanalsidan
+   `sverigesradio.se/kanaler/p3` (Next.js SSR) inbäddar hela schemat
+   server-side i HTML: `scheduleItems` med `title`, `startTimeUtc`,
+   `endTimeUtc` (10 poster för P3, spanar in i nästa dag). Deras webb och
+   native-appar läser en intern tjänst (psapi-hosts löser sig inte publikt).
+3. **Kanalsidans data är CORS-blockerad för oss.** `sverigesradio.se` skickar
+   inga `access-control-allow-origin`-headers (verifierat med Origin-header) —
+   vår PWA kan inte hämta den inbäddade tablån från webbläsaren. Enda
+   CORS-öppna SR-värd är api.sr.se, vars schemabackend är 500.
+
+### Slutsats
+
+- Våra programhopp-knappar är korrekt byggda med graceful degradation: de
+  syns först när `scheduledevents` svarar 200 igen. Ingen app-ändring kan
+  komma åt tablå-data medan SR:s schemabackend är nere — SR:s egen app går
+  via interna API:er som inte är publikt nåbara.
+- **Åtgärd: vänta ut SR:s API-fix.** Knapparna dyker upp automatiskt (10-min
+  cache, ingen kodändring behövs). Alternativ på sikt: en minimal CORS-proxy
+  mot kanalsidans inbäddade schema — men det bryter mot "ingen backend"-
+  principen och kräver användarbeslut.
+
+### Firefox-observation (förklaring, ingen bugg)
+
+Firefox visar den enkla spelaren (ingen DVR-rad, inga ±15 s-knappar) eftersom
+Firefox medvetet är exkluderad från hls.js-vägen (TS-i-MSE opålitligt —
+dokumenterat i kompatibilitetsmatrisen). Firefox får MP3 96-fallback, som saknar
+seekable-fönster → ingen DVR-UI. Detta är designat beteende, inte ett fel.
+
+### Verifierat fungerande (användarens skärmdump, Edge + iPhone)
+
+DVR-rad med ±15 s-knappar + LIVE-etikett syns och fungerar på Edge och iPhone
+(P2, AAC 192, klocktid 23:04 i vänsterlabel). Fixpasset är live.
+
+---
+
 ## 2026-09-22 — DVR-transport: gest-fix + ±15 s + programhopp (implementerat, deployat)
 
 Användarfeedback efter iPhone-test: (1) slidern "hoppar till noll av sig själv"
