@@ -1019,3 +1019,44 @@ till `public/icons/`. Glömd kopiering → live-ikonen förblev gammal trots
 ikon-md5 `c79ae883…` på GitHub Pages. MediaSession-metadata sätts vid
 uppspelning (poddar/nyheter; kanaler följer samma kodväg). iPhone-verifiering
 av låsskärmsspelaren + ikonen återstår (användaren).
+
+## 2026-09-23 — TABLÅ FIXAD: scheduledepisodes (upptäckt via srtableau.se)
+
+**Genombrott:** användaren pekade på servicenoden.se/srtableau — en fungerande
+tablå-app från forumtråden. Genom att fånga dess nätverkstrafik i webbläsaren
+fanns svaret direkt: **den använder `scheduledepisodes`, inte
+`scheduledevents`.**
+
+### Rotorsak till "SR:s tablå-API är nere"
+- `scheduledevents` är död (500 permanent — del av API-avvecklingen).
+- **`scheduledepisodes` lever och svarar 200** — verifierat för idag, imorgon
+  OCH igår (61–97 poster per kanal). Samma svarsform (`schedule[]` med
+  `starttimeutc`/`endtimeutc`) PLUS rikare metadata:
+  - `program: {id, name}` — programidentitet (grund för Fas 5-kort)
+  - `episodeid` — 41/61 poster för P3 har spelbara avsnitt
+  - `description`, `imageurl`
+- Uppspelning av tablåposter (srtableaus mönster): `episodes/get?id=<episodeid>`
+  → `listenpodfile.url` (verifierat: Talkshow i P1, 3293 s, podradio-CDN).
+
+### Fix (implementerad, deployad)
+- `fetchSchedule()` bytt till `scheduledepisodes?channelid=X&date=Y&format=json
+  &pagination=false`.
+- Schema-poster berikade med `programId`, `programName`, `episodeId`.
+- **Programhopp-knapparna aktiveras nu automatiskt** (graceful degradation
+  redan på plats — schemat löser sig nu).
+- Test uppdaterad: endpoint + död-endpoint-förbud + pagination-param.
+  82/82 tester.
+
+### Verifierat
+- LIVE-bundle `app.7f963167.js` serverar scheduledepisodes (grep mot serverad
+  JS), döda endpointen borta.
+- API-svar verifierat i appkontext: 61 poster, 41 med episodeId,
+  programgränser korrekta (prev/next vid 06:00 = Morgonpasset i P3).
+- DVR-rad kunde ej verifieras härifrån (HLS geo-blockat från detta nät —
+  MP3-fallback utan DVR-rad, som designat). iPhone med svenskt nät bör nu se
+  programhopp-knapparna.
+
+### Fas 5-implication (context cards)
+scheduledepisodes ger allt som behövs för långtryckskort: programnamn, tid,
+episodeId → episodes/get → listenpodfile (spelbar URL + duration). Ingen
+proxy behövs. Tablå-kortet kan byggas på denna endpoint.
