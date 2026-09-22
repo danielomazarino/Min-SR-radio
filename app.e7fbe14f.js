@@ -1269,8 +1269,6 @@
             return;
           }
           const now = Date.now();
-          const currentEv = schedule.find((ev) => now >= ev.startMs && now < ev.endMs);
-          const nextEv = schedule.find((ev) => ev.startMs > now);
           const row = (ev, label) => el('div', { class: 'expand-row' },
             ev.image ? el('img', { class: 'expand-img', src: ev.image, alt: '' }) : null,
             el('div', { class: 'expand-text' },
