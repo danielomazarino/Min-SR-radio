@@ -1100,14 +1100,20 @@
   // shape (schedule[] with starttimeutc/endtimeutc) plus program metadata
   // and episodeid (playable on-demand via episodes/get?id=...).
   const scheduleCache = new Map();
+  // SR's date param is LOCAL-day based (verified 2026-09-23: date=2026-09-23
+  // returns events from local midnight). toISOString() gives the UTC date —
+  // after local midnight but before UTC midnight that's YESTERDAY, and the
+  // expand panel showed "Ingen programinfo" (bug found live at 01:02 local).
+  // Use the Swedish local date instead.
+  const localDateStr = () => new Date().toLocaleDateString('sv-SE'); // YYYY-MM-DD
   async function fetchSchedule(channelId) {
-    const key = `${channelId}:${new Date().toISOString().slice(0, 10)}`;
+    const key = `${channelId}:${localDateStr()}`;
     const cached = scheduleCache.get(key);
     if (cached && Date.now() - cached.at < 10 * 60 * 1000) return cached.value;
     let value = null;
     try {
       const data = await apiFetch(
-        `${SR_API}/scheduledepisodes?channelid=${channelId}&date=${new Date().toISOString().slice(0, 10)}&format=json&pagination=false`
+        `${SR_API}/scheduledepisodes?channelid=${channelId}&date=${localDateStr()}&format=json&pagination=false`
       );
       const events = Array.isArray(data?.schedule) ? data.schedule : [];
       const parsed = events
