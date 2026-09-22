@@ -4,6 +4,62 @@ Pågående anteckningar för förbättringar att ta itu med senare. Nyast övers
 
 ---
 
+## 2026-09-22 — DVR-transport: gest-fix + ±15 s + programhopp (implementerat, deployat)
+
+Användarfeedback efter iPhone-test: (1) slidern "hoppar till noll av sig själv"
+när man sveper spelaren nedåt, (2) ±15 s-knappar behövs — slidern täcker 3 h
+och är för grov, (3) önskemål om programhopp (föregående/nästa program).
+
+### 1. "Hoppar till noll"-buggen (FIXAD — rotorsak etablerad)
+**Rotorsak:** svep-ned-gesten på spelaren som *börjar på DVR-baren* tolkades
+som horisontell drag → vid släpp committades seek till fingrets x-position
+(ofta nära noll). Bara `touch-action: none` skyddade inte mot detta — baren
+äger alla pekare på sig.
+
+**Fix (gest-disambiguering):** drag-axeln avgörs nu av första signifikanta
+rörelsen (dx ≥ dy och dx ≥ 8 px = horisontell). Vertikal-dominanta gester
+avbryter draget UTAN att committa något — svep-ned-hanteraren äger dem.
+Horisontella drag och vanliga tryck committar seek som förut.
+
+**Verifierat (Edge CDP, HLS P3):** seek till 50 % (5440 s) → vertikal svep på
+baren → position OFÖRÄNDRAD (5440). Horisontell drag → seek fungerar (→ 10925).
+82/82 tester.
+
+### 2. ±15 s-knappar (implementerat)
+`seekBy(±15)`-knappar (ikon: pil-cirkel) på vardera sidan om DVR-baren,
+clampade till fönstrets start. Samma visuella språk som LIVE-etiketten.
+Verifierade live: back/fwd ändrar currentTime med 15 s.
+
+### 3. Programhopp — föregående/nästa program (implementerat, beroende av SR:s API)
+- **Datakälla:** SR:s `scheduledevents?channelid=X&date=YYYY-MM-DD` (tablå).
+  **VIKTIGT: endpointen svarar 500 just nu (SR-serverfel, verifierat 2026-09-22
+  med alla parametervarianter).** Implementeringen är därför byggd med graceful
+  degradation: knappen "föregående program" renderas först när schemat hämtats
+  framgångsrikt; API-nedtid = knappen syns inte. När SR fixar sin API dyker
+  funktionen upp automatiskt.
+- **Semantik:** "föregående" = starttiden för programmet vid den hörda
+  positionen (30 min in i program A → tryck = börja om A; tryck igen =
+  Morgonpasset). "nästa" = första programmet som startar efter positionen —
+  knappen tänds ENDAST när man lyssnar bakom live OCH ett senare program finns.
+- **Fönster-mappning:** wall-clock → position via `end − (now − startMs)`;
+  program äldre än 3 h ger en svensk toast i stället för tyst misslyckande.
+- Cache per kanal+dag, 10 min TTL.
+
+### Deploy
+- Commit feef041, pushad. Pages serverar `app.92d1e4b6.js` +
+  `styles.3548e122.css` (verifierat via curl + inbyggd webbläsare mot LIVE-URL:
+  dragAxis/seekBy/programBoundary/±15-labels finns i serverad bundle).
+- HLS är geo-blockat från Linux-maskinens nätverk (cc=US) — DVR-rad kunde ej
+  verifieras mot LIVE-URL härifrån, men allt verifierat i lokal Edge där HLS
+  spelar. iPhone (svenskt nät) bör se DVR-rad + knappar.
+
+### Kvar
+- iPhone-test: gest-fixen (svep nedåt ska INTE längre seeka), ±15 s-knappar,
+  programhopp (syns när SR:s tablå-API fungerar igen).
+- SR: rapportera/vänta ut scheduledevents-500:an.
+
+---
+
 ## 2026-09-22 — FIXPASS: BUG A + BUG B + BUG 1 + BUG 2 (implementerat & verifierat)
 
 Alla fyra öppna buggar från pass 1–2-planen är åtgärdade i en pass. 64/64
