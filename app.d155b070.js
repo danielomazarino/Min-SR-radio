@@ -1121,6 +1121,8 @@
             programId: ev.program?.id ?? null,
             programName: ev.program?.name || '',
             episodeId: ev.episodeid ?? null,
+            image: ev.imageurl || null,
+            description: ev.description || null,
           };
         })
         .filter(Boolean)
@@ -1222,32 +1224,100 @@
       el('div', { class: 'player-sub', text: cur.subtitle || (live ? 'Direkt' : '') }),
       quality, mode);
 
-    // Fas 4: expanded player. Tap on the meta area toggles an info panel
-    // (program description / episode info). Compact remains the default;
-    // the panel is an additive layer, never a replacement.
-    let expandPanel = null;
-    if (cur.description || cur.programName || cur.duration) {
-      meta.classList.add('tappable');
-      meta.setAttribute('role', 'button');
-      meta.setAttribute('tabindex', '0');
-      meta.setAttribute('aria-label', 'Visa programinformation');
-      const toggleExpand = () => {
-        const existing = $player.querySelector('.player-expand');
-        if (existing) { existing.remove(); return; }
-        expandPanel = el('div', { class: 'player-expand' },
+    // Fas 4 (redesign 2026-09-23): NO one-click expansion — accidental taps
+    // opened it. Instead: a dedicated chevron handle in the player header
+    // expands an info panel UPWARD above the player. The bottom part
+    // (controls + seek row) does not move. Fold = swipe down on the panel
+    // or tap the chevron again.
+    //
+    // LIVE metadata (what SR actually offers — verified 2026-09-23):
+    // - Live channels: CURRENT + NEXT programme from scheduledepisodes
+    //   (title, description, image, start/end times). Song titles are NOT
+    //   available: rightnow endpoint is dead (500), HLS playlists carry no
+    //   EXT-X-DATERANGE metadata, and sverigesradio.se's SSR page only has
+    //   programme-level data (CORS-blocked anyway).
+    // - Episodes/podcasts: their own title/description/image (static but
+    //   episode-specific).
+    const expandBtn = el('button', {
+      class: 'player-btn player-expand-btn', type: 'button',
+      'aria-label': 'Visa programinformation',
+      'aria-expanded': 'false',
+      html: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>',
+    });
+
+    const buildExpandPanel = () => {
+      const panel = el('div', { class: 'player-expand', role: 'region', 'aria-label': 'Programinformation' });
+      const content = el('div', { class: 'expand-content' });
+      panel.appendChild(content);
+      // Static content first (episode info / channel tagline) — instant.
+      if (cur.kind === 'episode') {
+        content.appendChild(el('div', { class: 'expand-row' },
           cur.image ? el('img', { class: 'expand-img', src: cur.image, alt: '' }) : null,
           el('div', { class: 'expand-text' },
             el('div', { class: 'expand-title', text: cur.title || '' }),
             cur.programName ? el('div', { class: 'expand-sub', text: cur.programName }) : null,
             cur.description ? el('div', { class: 'expand-desc', text: cur.description }) : null,
-            cur.duration ? el('div', { class: 'expand-meta', text: `Längd: ${fmtDur(cur.duration)}` }) : null));
-        $player.appendChild(expandPanel);
+            cur.duration ? el('div', { class: 'expand-meta', text: `Längd: ${fmtDur(cur.duration)}` }) : null)));
+      } else {
+        // Live: fetch the schedule and show current + next programme.
+        content.appendChild(el('div', { class: 'card-loading', text: 'Hämtar programinfo…' }));
+        fetchSchedule(cur.id).then((schedule) => {
+          if (!document.contains(content)) return; // player closed meanwhile
+          content.textContent = '';
+          if (!schedule || !schedule.length) {
+            content.appendChild(el('div', { class: 'state-msg', text: 'Programinfo kunde inte hämtas.' }));
+            return;
+          }
+          const now = Date.now();
+          const currentEv = schedule.find((ev) => now >= ev.startMs && now < ev.endMs);
+          const nextEv = schedule.find((ev) => ev.startMs > now);
+          const row = (ev, label) => el('div', { class: 'expand-row' },
+            ev.image ? el('img', { class: 'expand-img', src: ev.image, alt: '' }) : null,
+            el('div', { class: 'expand-text' },
+              el('div', { class: 'expand-label', text: label }),
+              el('div', { class: 'expand-title', text: ev.title || '' }),
+              ev.programName && ev.programName !== ev.title ? el('div', { class: 'expand-sub', text: ev.programName }) : null,
+              el('div', { class: 'expand-meta', text: `${dvrClockLabel(new Date(ev.startMs))}–${dvrClockLabel(new Date(ev.endMs))}` }),
+              ev.description ? el('div', { class: 'expand-desc', text: ev.description }) : null));
+          const curEv = schedule.find((ev) => now >= ev.startMs && now < ev.endMs);
+          if (curEv) content.appendChild(row(curEv, 'Pågår nu'));
+          const nextEv = schedule.find((ev) => ev.startMs > now);
+          if (nextEv) content.appendChild(row(nextEv, 'Nästa'));
+          if (!curEv && !nextEv) content.appendChild(el('div', { class: 'state-msg', text: 'Ingen programinfo.' }));
+        }).catch(() => {
+          if (document.contains(content)) content.textContent = '';
+          if (document.contains(content)) content.appendChild(el('div', { class: 'state-msg', text: 'Programinfo kunde inte hämtas.' }));
+        });
+      }
+      return panel;
+    };
+
+    expandBtn.addEventListener('click', () => {
+      const existing = $player.querySelector('.player-expand');
+      if (existing) {
+        existing.remove();
+        expandBtn.setAttribute('aria-expanded', 'false');
+        expandBtn.classList.remove('open');
+        return;
+      }
+      const panel = buildExpandPanel();
+      // Grab zone at the panel top owns the swipe-down-to-fold gesture
+      // (BUG 1 lesson: never attach swipe logic to a scrollable surface —
+      // it kills touch scrolling on iOS). The content below scrolls freely.
+      const grabZone = el('div', { class: 'expand-grab-zone' }, el('div', { class: 'sheet-grab' }));
+      panel.insertBefore(grabZone, panel.firstChild);
+      $player.insertBefore(panel, $player.firstChild); // grows UPWARD — bottom stays put
+      expandBtn.setAttribute('aria-expanded', 'true');
+      expandBtn.classList.add('open');
+      const fold = () => {
+        panel.remove();
+        expandBtn.setAttribute('aria-expanded', 'false');
+        expandBtn.classList.remove('open');
       };
-      meta.addEventListener('click', toggleExpand);
-      meta.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpand(); }
-      });
-    }
+      enableSwipeToClose(panel, panel, fold, { axis: 'y' });
+      // The grab zone must not scroll — it owns the vertical gesture.
+      grabZone.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+    });
 
     // Direct AAC streams: confirm bitrate via icy-br HEAD (edge hosts only).
     // Only overrides the descriptor when the header gives a real value —
@@ -1596,6 +1666,9 @@
     $player.appendChild(closeBtn);
     $player.appendChild(el('div', { class: 'player-row' }, thumb, meta, controls));
     if (seekRow) $player.appendChild(seekRow);
+    // Expand handle sits in the header row (next to close) — deliberate
+    // target, no accidental one-click expansion.
+    $player.insertBefore(expandBtn, closeBtn.nextSibling);
 
     // Swipe the player down to stop & close (same pattern as the settings
     // sheet). The player itself is the panel; it springs back if the swipe
