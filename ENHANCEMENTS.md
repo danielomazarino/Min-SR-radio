@@ -945,3 +945,28 @@ Diagnostik genomförd 2026-09-21 enligt checklistan. Resultat: se avsnittet "Lju
 
 - 2026-09-21: Ikonrader med kontinuerlig rullning (exakt 4 syns, stopp vid sista ikonen); Valda favoriter + drag-and-drop-sortering i Inställningar; fler än 4 val möjliga (cap 16); svep nedåt stänger Inställningar; svep åt sidan stänger läsare/Info; Info/Spara 50/50; kugghjul; reglage med värde i bollen.
 - 2026-09-20: Statisk arkitektur (GitHub Pages), nyhetsläsare i appen, rullbar nyhetslista med inställbart antal, poddsökning klientsidigt, PWA-ikoner, service worker.
+
+## Låsskärm-fixar (2026-09-22)
+
+**1. Fel PWA öppnades från låsskärmsspelaren.** Utan `navigator.mediaSession`-
+metadata kunde iOS binda now-playing-sessionen till fel installerad PWA (tryck
+på låsskärmsspelaren öppnade en annan PWA; att stänga den dödade Min Radio:s
+ljud). Fix: explicit MediaSession-metadata (title/artist/album/artwork) +
+action handlers (play/pause/stop/seekbackward/seekforward), uppkopplad i
+`playTrack`, `stopAndClosePlayer` och play/pause-händelser. Bonus: riktiga
+kontroller på låsskrmen istället för generiska ±10 s.
+
+**2. Vita hörn på ikonen (iOS 27 låsskärm).** `apple-touch-icon.png` var
+renderad med rundade hörn + transparent utanför — iOS maskar själv och
+renderade transparensen vitt. Fix: ny `square: true`-option i
+`generate-icons.mjs`; apple-touch-icon nu full-bleed (hörnpixel verifierad
+opak teal [0,80,78,255] både lokalt och LIVE).
+
+**Fällgrupp upptäckt:** `icons/` i roten är deploy-kopian; generatorn skriver
+till `public/icons/`. Glömd kopiering → live-ikonen förblev gammal trots
+"lyckad" build. Nu verifierad byte-for-byte via md5 mot live-URL.
+
+**Verifierat live:** bundle `app.21251be8.js`, SW `minradio-2265a6ae`,
+ikon-md5 `c79ae883…` på GitHub Pages. MediaSession-metadata sätts vid
+uppspelning (poddar/nyheter; kanaler följer samma kodväg). iPhone-verifiering
+av låsskärmsspelaren + ikonen återstår (användaren).
