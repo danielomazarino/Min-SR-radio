@@ -1124,3 +1124,52 @@ proxy behövs. Tablå-kortet kan byggas på denna endpoint.
 - iPhone-verifiering: knappplacering, zoom, långtryckskort, expanderad
   spelare, låsskärm (fel-PWA-buggen).
 - Android Chrome-validering.
+
+## 2026-09-23 (natt) — Fas 4 redesign + iOS långtrycks-fix + 2 kritiska buggar
+
+### 1. iOS långtryck kapades av systemmenyn (FIXAD)
+Användaren: långtryck på podd-ikon fungerade EN gång, sedan visade iOS
+"Spara i Bilder/Copy"-menyn på alla ikoner. Orsak: iOS visar native
+touch-callout för bilder vid långtryck om inte callouten är avstängd.
+Fix: `-webkit-touch-callout: none` + `user-select: none` + `-webkit-user-drag:
+none` på `.stream-icon`, och `pointer-events: none` på `.stream-icon img`
+(knappen äger gesten, inte bilden).
+
+### 2. Expanderad spelare — HELT om designad (användarens feedback)
+- **Ingen one-click längre** (oavsiktliga tapar öppnade den). Ny: dedikerad
+  chevron-knapp i spelarheadern (bredvid ✕).
+- **Panelen expanderar UPPÅT** ovanför spelaren — nederdelen (kontroller +
+  seekrad) står STILLA. Panelen är spelarens första child.
+- **Fälls genom svep ned** på grab-zonen i panelens topp (eller chevron igen).
+  Grab-zon äger gesten — scrollbart innehåll nedanför påverkas inte (BUG 1-
+  lärdom: aldrig swipe-logik på scrollbar yta).
+- **LIVE-metadata:** "Pågår nu" + "Nästa" med titel, programnamn, tidsinter-
+  vall, bild och beskrivning från scheduledepisodes. Verifierat live:
+  P3 01:02 → "Vaken (Vaken med P3 & P4) 01:02–02:00" + "Nästa: Ekot senaste
+  nytt 02:00–02:02", båda med bilder + beskrivningar.
+- **Låttitlar finns INTE i någon nåbar SR-källa** (utrett 2026-09-23):
+  rightnow-endpointen är död (500), HLS-playlistorna saknar
+  EXT-X-DATERANGE-metadata (verifierat mot ljud1-cdn), och sverigesradio.se
+  SSR-sida har bara programnivå (CORS-blockerad). Programnivå är det bästa
+  möjliga — och det är exakt vad SR:s egen app visar i tablåvyn.
+
+### 3. Kritisk bugg A: duplicerad const nextEv (FIXAD)
+SyntaxError "Identifier 'nextEv' has already been declared" kraschade HELA
+appen vid load (vit skärm). Hittad via pageerror vid live-verifiering.
+
+### 4. Kritisk bugg B: UTC vs lokal datum i fetchSchedule (FIXAD)
+fetchSchedule använde toISOString() (UTC-datum) men SR:s date-param är LOKAL
+dag. Efter lokal midnatt men före UTC-midnatt (t.ex. 01:02 svensk tid)
+hämtades GÅRDAGENS schema → "Ingen programinfo" i expanderpanelen och inga
+programhopp-knappar. Fix: toLocaleDateString('sv-SE'). Hittad live 01:02.
+
+### Verifierat live (bundle app.e918fec1.js)
+- Ikoner: callout av, img pointer-events none ✅
+- Expand-knapp + panel uppåt + grab-zon ✅
+- Pågår nu/Nästa med bilder, tider, beskrivningar ✅
+- 83/83 tester.
+
+### Kvar (iPhone)
+- Långtryck på ikoner → kort (iOS-menyn ska vara borta)
+- Chevron-expansion uppåt + svep-ned-fällning
+- Låsskärm: fel-PWA-buggen (noterad öppen)
