@@ -4,6 +4,150 @@ Pågående anteckningar för förbättringar att ta itu med senare. Nyast övers
 
 ---
 
+## AKTIV ARBETSKÖ (uppdaterad 2026-09-23 kväll — dokumentationspass)
+
+Historiken nedan är oförändrad (bevarad som referens). Denna sektion är
+**den aktuella arbetsköen** — allt annat nedan är antingen historik med
+status i rubriken eller äldre poster som har rullats in hit.
+
+### Statusrekonciliering 2026-09-23 (dokumentationspass)
+
+Följande äldre poster har justerats så att loggen inte visar färdigt arbete
+som öppet (detaljer i respektive historisk post):
+
+| Post | Tidigare status | Nuvarande status |
+|---|---|---|
+| ROADMAP: Fas 4 (expanderbar player) | PLANNED | **DONE** (Fas 4 redesign + gester + låt/artist/artwork + fallback, verifierat live) |
+| ROADMAP Fas 5 (context cards) | PLANNED | **DONE** (långtryckskort: tablå igår+idag, poddavsnitt; verifierat live) |
+| ROADMAP BUG 1 (Inställningar-krasch vid scroll) | OPEN | **DONE** (rotorsak: swipe-to-close på hela sheeten; fixad i BUG 1-fixpasset, verifierat) |
+| ROADMAP BUG 2 (nyhetslänkar öppnas inte) | OPEN | **DONE** (rotorsak: döda /artikel/<id>-URL:er; fixad i BUG 2-fixpasset, verifierat) |
+| BUG A (pill minus-tid) | OPEN i iPhone-feedback-posten | **DONE** (fixpass 2026-09-22, verifierat live Edge; iPhone-verifiering återstår enbart som enhetstest) |
+| BUG B (slider-instabilitet) | OPEN i iPhone-feedback-posten | **DONE** (touch-action + pointer-robusthet, verifierat live; iPhone-känsla ej återrapporterad) |
+| Öppna punkter 2026-09-21 (buffringsindikator, svep-ned-stäng, sheet-bleed) | öppna | **DONE** (implementerade + verifierade samma dag) |
+| Ljud-diagnostik "Missing functionality" 1–3, 5 | öppna rekommendationer | **DONE** (retry/fallback = advanceCandidate + watchdog; stall-detektering = buffrings-badge; canPlayType = CAPS; HLS = Fas 2A) |
+| Ljud-diagnostik 4 (kvalitetsval) + 6 (nätverksmedvetenhet) | öppna | **OPEN → ny förstärkningspost "Högsta ljudkvalitet" (nedan)** |
+| Låsskärm fel-PWA | öppen | **OPEN — diagnostik deployad, rotorsaksdata väntas från iPhone** (se PWA-ljudlivscykel nedan) |
+| iPhone/Android-validering | NOT YET VALIDATED | **PARTIAL** (iPhone: DVR/±15 s/gester/knappplacering/zoom/långtryck verifierade via användarskärmdumpar; bakgrund/låsskärm + Android Chrome fortfarande öppna) |
+
+---
+
+## ARBETSKÖ — FYRA NYA FÖRSTÄRKNINGAR (registrerade 2026-09-23, EJ implementerade)
+
+### E1 — Högsta möjliga ljudkvalitet (HÖGSTA PRIORITET)
+**Mål:** appen ska alltid använda den bästa ljudkvalitet som är tekniskt
+tillgänglig och pålitligt spelbar, med robust fallback till lägre kvalitet.
+
+**Bakgrund:** utredningen av arkiverade avsnitt upptäckte att
+`web-api.sr.se/v1/player/ondemand?id=<id>&type=episode` returnerar
+`item.audio.src` med FLERA M4A-varianter (32/96/192 kbps). Appen spelar idag
+via `episodes/get` → `listenpodfile.url` (MP3) / `broadcastfiles[0].url`
+(M4A) — dvs. ofta INTE högsta kvalitet. Live-radio använder HLS-laddern
+(32/128/192/320 AAC) via STREAM_TABLE + MP3-fallback.
+
+**Att utreda och dokumentera (innan kod ändras):**
+- Aktuell kvalitet för live-radio (per kanal, verifiera STREAM_TABLE mot
+  SR:s aktuella ladder).
+- Aktuell kvalitet för arkiverade avsnitt/poddar (episodeAudioFields-kedjan).
+- Alla kvalitetsvarianter SR erbjuder per uppspelningstyp (HLS-ladder,
+  M4A-varianter, MP3, FLAC på P2 Musik).
+- Browser/iOS PWA-stöd för formaten (AAC-HE, AAC-LC, M4A-container).
+- Är högsta kvaliteten faktiskt spelbar och stabil på iPhone/PWA?
+- Ska appen välja högsta tillgängliga kvalitet automatiskt?
+- Lämplig fallback om högsta kvalitet misslyckas (befintlig
+  advanceCandidate-mekanism kan återanvändas).
+- Ska nätverksförhållanden (Wi-Fi/cellulärt) påverka i framtiden? Utred först
+  — anta INTE adaptiv kvalitet utan stöd i utredningen.
+- Praktiska skillnader HLS vs AAC vs MP3 vs FLAC vs M4A för denna app.
+
+**Viktigt:** ändra inte den fungerande uppspelningsvägen utan verifiering.
+Målet är maximal praktisk kvalitet utan att offra uppspelningspålitlighet.
+
+### E2 — Spotify + YouTube-ikoner i expanderade spelaren
+**Mål:** när artist/låt-information finns, visa små klickbara Spotify- och
+YouTube-ikoner i expanderade spelaren.
+- Endast ikoner — inga stora knappar eller textlabels.
+- Visuellt diskreta.
+- Klick öppnar relevant Spotify/YouTube-destination med plattformslämplig
+  öppning (app/browser) på iPhone/PWA.
+- Utred: kan tillförlitliga sök-URL:er genereras från artist + titel utan
+  backend? (`open.spotify.com/search/...`, `youtube.com/results?search_query=...`
+  är kandidater; exakt matchning kan INTE garanteras — dokumentera denna
+  begränsning.)
+- Datakälla finns redan: live = rightnow (artist/title), episoder =
+  ondemand-tracks (artist/title). Spotify-id finns redan i ondemand-tracks
+  (`spotifyId`) — kan ge EXAKTA Spotify-länkar för arkiverade avsnitt.
+- UI minimal eftersom funktionen används sällan.
+
+### E3 — Nyheter: utred uppspelningsbarhet / play-pill
+**Mål:** nyhetsobjekt ska i framtiden ha en synlig play-pill direkt på
+raden, integrerad i befintlig radio/podd-spelararkitektur.
+
+**Viktigt:** tidigare slutsats ("nyheter kan bara visa preview/bild/text/
+URL") ska INTE antas vara en teknisk gräns. Använd discovery-regeln: en
+ofullständig endpoint-utredning bevisar INTE att förmågan saknas.
+
+**Att utreda (innan någon UI ändras):**
+- Vilken datakälla levererar Nyheter idag? (Ekot Atom-flöde — verifiera.)
+- Vad ger underliggande SR-API per nyhetsobjekt: audio, episode-id,
+  media-URL, annan spelbar referens?
+- Har SR:s nyhets-/ekot-sidor nätverksrequest eller spelare kopplad till
+  objektet? (Fånga trafik enligt discovery-regeln.)
+- Kan webbläsaren nå källan direkt från GitHub Pages (CORS)?
+- Är begränsningen teknisk — eller var den tidigare utredningen ofullständig?
+- Kan befintlig spelare spela källan utan backend?
+
+**UX-krav för framtida implementation:** synlig play-pill från början;
+ren hantering när objekt inte är spelbart (ingen missvisande play-knapp);
+integrerad med befintlig spelare.
+
+### E4 — App-information: INFO-ikon på startsidan + uppdaterad hjälpinnehåll
+**Mål:** appen ska förklara sig själv via en tydlig INFO-ikon överst på
+startsidan — inte via Inställningar.
+- Lägg till Info-ikon i toppen av startsidan.
+- Öppna en ren informations-/hjälpvy.
+- Förklara på användarspråk: vad appen är till för; radio; poddar/program;
+  Nyheter; favoriter; relevant uppspelningsbeteende; bakgrundsljud/PWA om
+  lämpligt.
+- Nuvarande Info-vy (openAbout) är föråldrad — behandla som legacy-innehåll
+  som behöver genomgripande omarbetning.
+- Håll tekniska detaljer borta från den primära användarförklaringen.
+- Gör innehållet konsistent med dagens app, inte den historiska versionen.
+
+---
+
+## ÖPPNA POSTER (kvarstående, ej nya förstärkningar)
+
+### PWA-ljudlivscykel (iPhone) — OPEN, diagnostik deployad
+- Användarrapport: ljud fortsätter när PWA swipas bort; låsskärmen öppnar
+  fel PWA. pagehide/freeze-fixen (38efd3b) löste INTE problemet enligt
+  användarens iPhone-test.
+- Kodgranskning (2026-09-23): exakt EN Audio-element (singleton, aldrig
+  återskapad) — appen kan strukturellt inte producera ett andra element.
+  Kandidater: (a) annat dokument (dubbelinstallation/gammal flik), (b) iOS
+  media-session-UI kvarstår medan ljudet stoppat, (c) iOS standalone-
+  process avslutas fördröjt (OS-beteende).
+- Diagnostik aktiv: DIAG_ID per sidladdning → localStorage 'sr-diag-log'
+  (överlever sidstängning). **Nästa steg: användaren kör iPhone-proceduren
+  (dokumenterad i posten 2026-09-23 nedan) och loggen analyseras. Ingen
+  workaround förrän rotorsaken är identifierad.**
+- Diagnostikloggen ska tas bort när rotorsaken är känd.
+
+### Riktig enhetsvalidering — PARTIAL
+- iPhone (verifierat via användarskärmdump): DVR-seek, ±15 s, LIVE-etikett,
+  knappplacering, zoom, långtryckskort, expanderad spelare, gest-fixar.
+- iPhone (öppet): låsskärm/PWA-ljudlivscykel (se ovan), episod-låtmetadata
+  full paint (headless kan inte dekoda m4a/AAC), BUG B slider-känsla.
+- Android Chrome: ej validerat (hls.js-vägen).
+
+### Låsskärm: MediaSession-metadata + ikon — DONE med förbehåll
+- MediaSession-metadata + action handlers implementerade och deployade
+  (2026-09-22). Ikonen full-bleed square (verifierad md5 + hörnpixel).
+- Användaren bekräftade: "SR-ikoner visas nu på låsskärm + i spelaren".
+- Kvarstår: fel-PWA-öppningen vid låsskärm (se PWA-ljudlivscykel ovan —
+  samma rotorsaksutredning).
+
+---
+
 ## 2026-09-22 — Tablå-utredning: varför fungerar programhopp i SR:s app men inte hos oss?
 
 **Användarobservation:** SR:s officiella iPhone-app har fungerande tablå och
@@ -148,12 +292,17 @@ Verifierade live: back/fwd ändrar currentTime med 15 s.
   verifieras mot LIVE-URL härifrån, men allt verifierat i lokal Edge där HLS
   spelar. iPhone (svenskt nät) bör se DVR-rad + knappar.
 
-### Kvar
-- iPhone-test: gest-fixen (svep nedåt ska INTE längre seeka), ±15 s-knappar,
-  programhopp (syns när SR:s tablå-API fungerar igen).
-- ~~SR: rapportera/vänta ut scheduledevents-500:an.~~ → Se UPPDATERING
-  ovan: API:t avvecklas, 500:an fixas inte. Programhopp förblir dolt tills
-  vidare; överlevnadsplan (podd-URL:er, direktlänkar) är ny åtgärd.
+### Kvar — **UPPDATERAD 2026-09-23: programhopp är LIVE**
+- iPhone-test: gest-fixen (svep nedåt ska INTE längre seeka) och ±15 s-
+  knapparna verifierades via användarskärmdump 2026-09-22.
+- ~~programhopp (syns när SR:s tablå-API fungerar igen)~~ **DONE 2026-09-23:**
+  appen migrerad till `scheduledepisodes` (scheduledevents är permanent
+  avvecklat) — programhopp-knapparna är aktiva och tablåkortet visar
+  igår + idag.
+- ~~SR: rapportera/vänta ut scheduledevents-500:an.~~ **OBSOLETE** — API:t
+  avvecklat; migreringen gjorde frågan irrelevant. Överlevnadsplanen
+  (podd-URL:er, direktlänkar) behövs inte längre: scheduledepisodes +
+  episodes/get täcker uppspelningsvägen.
 
 ---
 
@@ -245,11 +394,13 @@ inte `/artikel/<id>`.
 - Nytt verktyg: `scripts/cdp-eval.mjs` (zero-dep CDP-klient för
   Edge-headless-verifiering — ersätter /tmp/ux-verify.js-mönstret).
 
-### Kvar
-- iPhone-verifiering av BUG A/B (DVR-pill + slider) och BUG 1 (sheet-scroll
-  efter andra öppningen) — användaren har enheten.
-- Android Chrome-validering (Fas 3-kvarvarande).
-- Fas 4/5 (PLANNED) oförändrat.
+### Kvar — **UPPDATERAD 2026-09-23**
+- iPhone-verifiering av BUG A/B och BUG 1: BUG A/B fixade + verifierade i
+  Edge 2026-09-22; BUG 1 fixad + verifierad. iPhone-känsla återstår enbart
+  som del av allmän enhetsvalidering (se AKTIV ARBETSKÖ).
+- Android Chrome-validering — fortfarande öppen.
+- ~~Fas 4/5 (PLANNED) oförändrat~~ **DONE** — båda implementerade
+  2026-09-23 (se ROADMAP-tabellen ovan).
 
 ---
 
@@ -258,21 +409,23 @@ inte `/artikel/<id>`.
 **Användaren testade nya UX:n på riktig iPhone.** Funktionellt fungerar DVR
 (seek + Till Direkt via LIVE-etiketten), men två UX-problem rapporterades:
 
-### BUG A — Pillen ska visa minus-tid, inte klocktid (HIGH, OPEN)
+### BUG A — Pillen ska visa minus-tid, inte klocktid (HIGH, ~~OPEN~~ **CLOSED 2026-09-22**)
 - **Observation:** pillen visar klocktid (t.ex. "23:05") men klocktiden står
   redan nere till vänster vid slidern — pillen ska visa **minus-tiden**
   ("−46 min") eftersom det är den information användaren vill se i pillen.
-- **Fix-riktning:** byt tillbaka pillen till `dvrOffsetLabel()` (relativ
-  offset). Behåll klocktiden i seekradens vänsterlabel (där den är nyttig
-  som drag-förhandsvisning). Detta återställer den icke-duplicerade
-  kompositionen: pill = minus-tid, slider-vänster = klocktid.
-- Obs: detta är en medveten designändring från UX-revisionen ovan —
-  användarens preferens vinner.
+- **FIXAD i fixpasset 2026-09-22** (se "FIXPASS"-posten nedan): pillen
+  använder `dvrOffsetLabel()`, verifierat live i Edge 153. iPhone-känsla
+  återstår enbart som del av enhetsvalideringen.
 
-### BUG B — Slider-upplevelsen fläckig/instabil (HIGH, OPEN)
+### BUG B — Slider-upplevelsen fläckig/instabil (HIGH, ~~OPEN~~ **CLOSED 2026-09-22**)
 - **Observation:** slider-känslan är "fläckig" och känns inte stabil/smooth
   på iPhone (touch).
-- **Möjliga orsaker att utreda (INTE bekräftade — utred först):**
+- **FIXAD i fixpasset 2026-09-22**: `touch-action: none` på DVR-baren +
+  pointer-robusthet (pointercancel-säkerhet, drag-end-fallback). Verifierat
+  live i Edge 153; regressionstester tillagda. Användaren har inte
+  återrapporterat instabilitet efter fixen; om känslan åter uppstår på
+  iPhone, utgå från hypoteslistan nedan.
+- **Möjliga orsaker som utreddes (historik):**
   1. `pointerdown` → `setPointerCapture` kan krocka med Safari's touch-
      scroll/gester; prova `touch-action: none` på `.dvr-bar` (saknas idag —
      CSS har ingen touch-action-regel för DVR-baren).
@@ -290,7 +443,9 @@ inte `/artikel/<id>`.
 - **Regressionsskydd:** 49/49 tester ska fortsätta passera; lägg gärna till
   ett test för touch-action-regeln.
 
-### Nästa session — startpunkt
+### Nästa session — startpunkt (**HISTORISK — genomförd 2026-09-22**)
+Planen nedan exekverades i fixpasset 2026-09-22 (BUG A + B + 1 + 2 fixade,
+64/64 tester, live-verifierad i Edge 153). Bevarad som historik.
 1. Läs denna post + "Fas 3 implementerad"-posten (nedan) för kontext.
 2. Fixa BUG A (pill → minus-tid) — liten ändring i `renderPlayer` mode-pill.
 3. Fixa BUG B (slider-stabilitet) — CSS `touch-action: none` + pointer-
@@ -340,9 +495,9 @@ Live-kanten ≈ nu. Position p i fönstret mappas till `now − (seekableEnd −
   (at-live) ✅
 - 49/49 tester passerar ✅
 
-### Kvar
-- iPhone-verifiering av nya UX:n (användaren har enheten) — mekanismen är
-  oförändrad, bara presentationen.
+### Kvar — **UPPDATERAD 2026-09-23: verifierad**
+- iPhone-verifiering av nya UX:n: genomförd via användarskärmdump
+  2026-09-22 (DVR-rad + knappar syns och fungerar).
 
 ---
 
@@ -379,8 +534,8 @@ position). Kontraktet "renderPlayer äger presentationen" är nu komplett
 
 ## ROADMAP — projektstatus och framtida faser (2026-09-22)
 
-**Statusöversikt (distinguishera COMPLETE / NEXT / PLANNED / OPEN BUG /
-NOT YET VALIDATED — historiken nedan är oförändrad):**
+**Statusöversikt (statuskolumnerna uppdaterade 2026-09-23 så att färdigt
+arbete inte visas som öppet; detaljer i AKTIV ARBETSKÖ-rekoncilieringen):**
 
 | Fas | Status |
 |---|---|
@@ -388,10 +543,10 @@ NOT YET VALIDATED — historiken nedan är oförändrad):**
 | Fas 2A — HLS playback-engine | **COMPLETE** |
 | Fas 2B — Validering på riktiga webbläsare | **COMPLETE ENOUGH TO PROCEED** |
 | Fas 3 — DVR-UI | **COMPLETE** (se nedan; verifierad på riktig Edge) |
-| Fas 4 — Expanderbar/rich player | **PLANNED** |
-| Fas 5 — Context cards: Tablå & podcast-avsnitt | **PLANNED** (framtida) |
-| Validering på riktig iPhone Safari + Android Chrome | **NOT YET VALIDATED** |
-| Bug backlog (Inställningar-krasch, nyhetslänkar) | **OPEN BUG** |
+| Fas 4 — Expanderbar/rich player | **COMPLETE** (2026-09-23: redesign + gester + låt/artist/artwork + fallback — se poster nedan; status uppdaterad 2026-09-23) |
+| Fas 5 — Context cards: Tablå & podcast-avsnitt | **COMPLETE** (2026-09-23: långtryckskort implementerade; tablåkortet visar igår+idag; status uppdaterad 2026-09-23) |
+| Validering på riktig iPhone Safari + Android Chrome | **PARTIAL** (iPhone: DVR/±15 s/gester/kort verifierade; bakgrund/låsskärm + Android öppna) |
+| Bug backlog (Inställningar-krasch, nyhetslänkar) | **CLOSED** (båda fixade + verifierade 2026-09-22; status uppdaterad 2026-09-23) |
 
 **Fas 2B-nyckelbevis (bevarat):** riktig Edge 153 (riktig Chromium, CDP-driven
 mot deployad GitHub Pages — ej Electron/VS Code-webview): seekable 0 → 10 880 s
@@ -415,21 +570,23 @@ Direkt", transportoberoende (läser Phase 2A-state), P2 FLAC aldrig automatiskt
 ersatt. Kvar för Fas 3: validering på riktig iPhone Safari + Android Chrome när
 enheter finns tillgängliga.
 
-### Fas 4 — Expanderbar/rich player (status: PLANNED — efter Fas 3)
-Syfte: expandera den kompakta spelaren till en rikare spelare utan att den
-normala spelaren blir rörig.
-- Tap på spelaren expanderar
-- Program/programmets namn, aktuell låt, artist
-- Podd/avsnitt-information där tillgänglig
-- Eventuellt omslagsbild
-- Kompakt spelarläge förblir standard
+### Fas 4 — Expanderbar/rich player (status: COMPLETE — implementerad 2026-09-23)
+Ursprunglig plan genomförd och därefter redesignad efter användarfeedback.
+- Chevron-knapp (ingen one-click-expansion), panel expanderar UPPÅT med
+  fingerföljande höjd, fälls via svep ned på grab-zon.
+- Visar nu: aktuell låt + artist (live via rightnow; episoder via ondemand-
+  tracks), artwork (iTunes), Pågår nu-programnamn som undertitel, fallback
+  med kanalomslag när ingen låt spelas.
+- Minimera till mini-bar (svep ned), tap återställer.
+- Detaljerade poster: "Fas 4 redesign" (natt), "Spelar-gester" (natt 2),
+  "Aktuell låt + artist + artwork" (natt 3), "Nyheter-logik korrigerad…"
+  (2026-09-23) — alla nedan.
 
-**UX-princip:** den normala spelaren förblir kompakt. Den expanderade
-spelaren är ett extra informationslager, inte en ersättning.
-
-### Fas 5 — Context cards: Tablå & podcast-avsnitt (status: PLANNED)
-Framtida funktion som kräver egen UX- och datakälls-utredning innan
-implementering. **Implementeras inte nu.**
+### Fas 5 — Context cards: Tablå & podcast-avsnitt (status: COMPLETE — implementerad 2026-09-23)
+Långtryck på kanal/podd öppnar context card. Tablåkortet hämtar IGÅR + IDAG
+(fetchScheduleDay, dagdividerare, auto-scroll till pågående program) och
+hela raden är klickbar; igårens program spelbara via episodes/get. Poddkort
+listar avsnitt (episodes/index page 1+2). Detaljer: poster 2026-09-23 nedan.
 
 **Kanaler — långtryck öppnar Tablå-kort:**
 1. Långtryck på en vald kanal öppnar ett kompakt informations/åtgärds-kort
@@ -461,36 +618,22 @@ Kvar att validera när enheter finns tillgängliga:
 - DVR-UI:n är transportoberoende (läser bara seekable-state) och ska
   valideras på båda plattformarna innan stödet förklaras komplett.
 
-### BUG BACKLOG (status: OPEN — separerade från feature-faser)
-
-Dessa är bekräftade applikationsbuggar som inte får glömmas. De är inte
-valfria förbättringar och kan behöva åtgärdas före/mellan feature-faser
-beroende på utredning.
+### BUG BACKLOG (status: CLOSED — båda fixade 2026-09-22, status uppdaterad 2026-09-23)
 
 **BUG 1 — Inställningssidan kraschar vid scroll till kanal/podd-val**
-- Severity: HIGH · Status: OPEN
-- Observerat: Inställningssidan kraschar när användaren scrollar ned till
-  sektionen där kanaler/poddar kan väljas.
-- Förväntat: sidan ska vara stabil genom hela Inställningar-sidan, inklusive
-  kanal- och poddval — öppna, scrolla, nå kanalval, nå poddval, välja/avvälja
-  och fortsätta scrolla utan krasch.
-- **Ingen rotorsak är känd — registrerad som observerad bugg som kräver
-  utredning.** Vid framtida fix: reproducera först, identifiera exakt fel
-  (rendering, event-hantering, DOM-livscykel, dataladdning eller annat),
-  gör den minsta lämpliga korrigeringen, lägg till regressionstäckning där
-  praktiskt.
+- Severity: HIGH · Status: **CLOSED (FIXAD + verifierad)**
+- Rotorsak (etablerad i fixpasset 2026-09-22): swipe-to-close var kopplad till
+  HELA sheeten — vertikala touchrörelser var som helst (inkl. på
+  scroll-listan) körde drag-logiken och satte transform på sheeten under
+  scroll, vilket på iOS strider mot native scroll och lämnade sheeten
+  oscrollbar. Fix: swipe-ytan avgränsad till grab-hantaget + headern.
+- Verifierat live (se BUG 1-posten nedan).
 
 **BUG 2 — Nyhetslänkar (URL) öppnas inte korrekt**
-- Severity: HIGH · Status: OPEN
-- Observerat: URL-länkar i nyhetssidorna öppnas inte korrekt.
-- Förväntat: när användaren väljer en länk från en nyhetssida ska
-  destinationen öppnas korrekt, med plattformslämplig navigering (PWA/
-  webbläsare).
-- **Ingen rotorsak är känd — registrerad som observerad bugg som kräver
-  utredning.** Vid framtida fix: identifiera hur nyhetslänkar renderas idag,
-  avgör om länkar fångas fel, om SPA-routing/PWA-navigering/target-hantering
-  eller URL-hantering är inblandad, reproducera, gör minsta lämpliga
-  korrigering, lägg till regressionstäckning där praktiskt.
+- Severity: HIGH · Status: **CLOSED (FIXAD + verifierad)**
+- Rotorsak (etablerad i fixpasset 2026-09-22): flödets /artikel/<id>-URL:er
+  är DÖDA (SR 404:ar dem). Fix: slug-härledda länkar / SR-sökning, aldrig
+  id-URL. Verifierat live (se BUG 2-posten nedan).
 
 ### Rekommenderad arbetsordning
 Faserna behöver inte genomföras i strikt numerisk ordning. De två bekräftade
@@ -777,10 +920,11 @@ för att en annan stödjer mer.
   testat. DVR-UI (spola bakåt i direkt) aktiveras bara när
   `audio.seekable` visar ett fönster > 0.
 
-### Kvar att testa på riktig hårdvara
-- iPhone: native HLS + DVR-seek + bakgrund/PWA (högsta prioritet)
-- Android: hls.js + DVR + bakgrund
-- Firefox desktop: TS-i-MSE
+### Kvar att testa på riktig hårdvara — **UPPDATERAD 2026-09-23**
+- iPhone: native HLS + DVR-seek **DONE** (användarskärdump 2026-09-22);
+  bakgrund/PWA-ljudlivscykel **OPEN** (diagnostik deployad).
+- Android: hls.js + DVR + bakgrund — **OPEN**.
+- Firefox desktop: TS-i-MSE — **OPEN** (låg prioritet; MP3-fallback fungerar).
 - (Electron-webviewen här är inte representativ; dess MSE-quirk dokumenterad
   ovan men påverkar bara VS Code-förhandsvisning)
 
@@ -905,14 +1049,14 @@ användaren ser när fallback triggas.**
 
 ---
 
-## 2026-09-21 — Öppna punkter (att ta itu med nästa session)
+## 2026-09-21 — Öppna punkter (att ta itu med nästa session) — **HISTORISK: alla tre genomförda samma dag**
 
-### 1. Inställningar-vyn: scrollning är inte smidig
+### 1. Inställningar-vyn: scrollning är inte smidig — **FIXAD (samma dag, se "Öppna punkter: genomförda" nedan)**
 - **Problem:** när man scrollar ned i Inställningar-vyn (bottom sheet) rör sig hemskärmen bakom med — bakgrundssidan följer med i scrollen ("scroll bleed-through").
 - **Orsak (trolig):** `overscroll-behavior` är inte satt på `.sheet` (endast på `.news-scroller` och `.icon-scroller`). Touch-scroll i sheeten "läcker" till body.
 - **Förslag på fix:** lägg `overscroll-behavior: contain;` på `.sheet` och se till att `body`-scroll låses ordentligt när sheeten är öppen (idag sätts `document.body.style.overflow = 'hidden'` — kontrollera att det gäller hela tiden, även efter swipe-to-close).
 
-### 2. Minispelaren: saknar svepfunktion och stäng-kryss
+### 2. Minispelaren: saknar svepfunktion och stäng-kryss — **ÖVERGRIVEN 2026-09-23: spelaren har nu full gestmotor (svep upp = expand, svep ned = minimera till mini-bar med stäng-kryss). Se Fas 4-redesign-posterna. Historik nedan.**
 - **Problem:** spelaren i nederkanten har varken svepgester eller stäng-kryss.
 - **Önskat:**
   - Svep nedåt (eller åt sidan) på spelaren ska stänga/stoppa uppspelning — samma mönster som Inställningar/Info.
@@ -974,13 +1118,13 @@ Diagnostik genomförd 2026-09-21 enligt checklistan. Resultat: se avsnittet "Lju
 5. **Autoplay-policy:** första play kräver användargest (hanteras), men växling mellan källor mitt i uppspelning kan i vissa webbläsare kräva ny gesture — otestat på iOS.
 6. **Service worker + audio:** SW ignorerar cross-origin (korrekt), men om SW-reglerna ändras finns risk att strömmar buffras fel.
 
-### Missing functionality (prioriterat)
-1. Retry/återanslutning för direktströmmar (viktigast).
-2. Stall/buffering-detektering + UI-indikering.
-3. `canPlayType`-check innan källval (AAC vs MP3).
-4. Kvalitetsval (SR erbjuder 96/192 kbps MP3 och AAC via olika URL-mallar — kräver kartläggning av SR:s ljud-URL-mönster).
-5. HLS-stöd (endast om SR:s HLS-strömmar ska användas; kräver hls.js ~400 kB — väg mot nytta).
-6. Nätverksmedvetenhet (`navigator.connection.effectiveType`).
+### Missing functionality (prioriterat) — **STATUS UPPDATERAD 2026-09-23** (se markering per rad; detaljer i AKTIV ARBETSKÖ)
+1. ~~Retry/återanslutning för direktströmmar~~ **DONE** — advanceCandidate + 6 s watchdog (Fas 1/2).
+2. ~~Stall/buffering-detektering + UI-indikering~~ **DONE** — buffrings-badge (waiting/stalled).
+3. ~~`canPlayType`-check innan källval~~ **DONE** — CAPS-modulen (Fas 1).
+4. Kvalitetsval — **OPEN → E1 "Högsta möjliga ljudkvalitet" i AKTIV ARBETSKÖ** (ondemand M4A-varianter 32/96/192 upptäckta 2026-09-23).
+5. ~~HLS-stöd~~ **DONE** — Fas 2A (hls.js lazy-load + native HLS).
+6. Nätverksmedvetenhet — **OPEN → del av E1-utredningen** (antag inte adaptiv kvalitet utan stöd i utredningen).
 
 ### Recommended next investigation steps
 1. Kartlägga SR:s ljud-URL-mallar för kvalitetsvarianter (96/192 MP3, AAC) — finns i SR:s dokumentation under "ljud".
@@ -1120,10 +1264,12 @@ proxy behövs. Tablå-kortet kan byggas på denna endpoint.
 - Poddkort: 10 avsnitt, alla spelbara, tid + längd ✅
 - 83/83 tester. SW minradio-a0461639.
 
-### Kvar
-- iPhone-verifiering: knappplacering, zoom, långtryckskort, expanderad
-  spelare, låsskärm (fel-PWA-buggen).
-- Android Chrome-validering.
+### Kvar — **UPPDATERAD 2026-09-23**
+- ~~iPhone-verifiering: knappplacering, zoom, långtryckskort, expanderad
+  spelare~~ **DONE** — verifierade via användarskärmdumpar 2026-09-23.
+- Låsskärm (fel-PWA-buggen) — **OPEN**, diagnostik deployad (se
+  AKTIV ARBETSKÖ).
+- Android Chrome-validering — **OPEN**.
 
 ## 2026-09-23 (natt) — Fas 4 redesign + iOS långtrycks-fix + 2 kritiska buggar
 
@@ -1169,10 +1315,13 @@ programhopp-knappar. Fix: toLocaleDateString('sv-SE'). Hittad live 01:02.
 - Pågår nu/Nästa med bilder, tider, beskrivningar ✅
 - 83/83 tester.
 
-### Kvar (iPhone)
-- Långtryck på ikoner → kort (iOS-menyn ska vara borta)
-- Chevron-expansion uppåt + svep-ned-fällning
-- Låsskärm: fel-PWA-buggen (noterad öppen)
+### Kvar (iPhone) — **UPPDATERAD 2026-09-23**
+- ~~Långtryck på ikoner → kort (iOS-menyn ska vara borta)~~ **DONE** —
+  iOS-callout-fixen (natt) + korten verifierade via användarskärmdump.
+- ~~Chevron-expansion uppåt + svep-ned-fällning~~ **DONE** — Fas 4-redesign
+  (natt) + gester (natt 2), verifierade live.
+- Låsskärm: fel-PWA-buggen — **OPEN** (diagnostik deployad; se
+  PWA-ljudlivscykel i AKTIV ARBETSKÖ).
 
 ## 2026-09-23 (natt 2) — Spelar-gester: fingerföljande expand/minimize (deployad)
 

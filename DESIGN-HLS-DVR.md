@@ -1,7 +1,9 @@
 # Design: HLS live playback + ~3 h DVR/time-shift i Min Radio
 
-Status: **IMPLEMENTERAD (Fas 1–3) — verifierad på riktig Edge 153 + iPhone.**
-Ursprunglig design 2026-09-21; implementerad och utökad 2026-09-21/22.
+Status: **IMPLEMENTERAD (Fas 1–5 + episod-metadata) — verifierad på riktig Edge 153 + iPhone (delvis).**
+Ursprunglig design 2026-09-21; implementerad och utökad 2026-09-21/22;
+utökad med tablå (scheduledepisodes), spelar-gester, låt/artist/artwork och
+arkiverade avsnitts låtmetadata 2026-09-23 (se "Nya bekräftade fakta").
 Grund: undersökningsresultat i ENHANCEMENTS.md (kompatibilitetsmatrisen)
 + curl-verifierade HLS-fakta.
 
@@ -13,10 +15,11 @@ Grund: undersökningsresultat i ENHANCEMENTS.md (kompatibilitetsmatrisen)
 | Fas 1a — Livscykel-fix | **KLAR** | renderPlayer nollställer transform varje render; alla 5 övergångar verifierade live |
 | Fas 2A — HLS playback-engine | **KLAR** | hls.js lazy-load, stale-session-guard, SR-ladder-bitrate via LEVEL_SWITCHED, seekable-state |
 | Fas 2B — Validering riktiga webbläsare | **KLAR** | Edge 153: seekable 181 min, 5-min bakåtseek; Firefox: MP3-fallback som designat |
-| Fas 3 — DVR-UI | **KLAR** | mode-pill (minus-tid), DVR-seekrad, ±15 s-knappar, programhopp (väntar på SR:s tablå-API), gest-disambiguering |
-| Fas 4 — Bitrate/codec-state | **KLAR** (delvis) | LEVEL_SWITCHED-badge + icy-br HEAD; MediaSession-metadata ej utökad |
-| Fas 5 — Riktig enhetsvalidering | **PÅGÅR** | iPhone: DVR + ±15 s verifierade (användarskärdump); bakgrundsljud/låsskärm ej fullständigt testad |
+| Fas 3 — DVR-UI | **KLAR** | mode-pill (minus-tid), DVR-seekrad, ±15 s-knappar, programhopp (LIVE via scheduledepisodes sedan 2026-09-23), gest-disambiguering |
+| Fas 4 — Bitrate/codec-state | **KLAR** | LEVEL_SWITCHED-badge + icy-br HEAD; MediaSession-metadata + action handlers utökade 2026-09-22 (låsskärm) |
+| Fas 5 — Riktig enhetsvalidering | **PÅGÅR** | iPhone: DVR + ±15 s + gester + knappplacering + zoom + långtryckskort verifierade (användarskärdumpar); bakgrundsljud/låsskärm ej fullständigt testad (PWA-ljudlivscykel under utredning, se ENHANCEMENTS) |
 | Fas 6 — FLAC-auto-upptäckt + Firefox | **EJ PÅBÖRJAD** | frivillig |
+| Fas 7 — Arkiverade avsnitt: låtmetadata + kvalitet | **DELVIS** | ondemand-trackmetadata implementerad 2026-09-23 (se "Nya bekräftade fakta"); kvalitetsval = öppen förstärkning E1 i ENHANCEMENTS |
 
 Avvikelser från designen (dokumenterade beslut):
 - **backBufferLength är 90, inte 11100** (§5/§6 föreslog hela fönstret) —
@@ -25,10 +28,42 @@ Avvikelser från designen (dokumenterade beslut):
 - **Mode-pill visar minus-tid** ("−12 min"), inte klocktid — användar-
   preferens 2026-09-22 (klocktiden bor i seekradens vänsterlabel).
 - **±15 s-knappar + programhopp tillkom** (användarönskemål 2026-09-22,
-  utanför ursprunglig design). Programhopp läser SR:s scheduledevents-API
-  (var nere 500 under utredningen — knappar syns när API:t återkommer).
+  utanför ursprunglig design). Programhopp läste ursprungligen SR:s
+  scheduledevents-API (500). **UPPDATERAT 2026-09-23:** scheduledevents är
+  PERMANENT AVVECKLAT (SR bekräftat); appen använder `scheduledepisodes`
+  (curl-verifierat, samma cache som tablåkortet) — programhopp-knapparna
+  är aktiva. Tablåkortet visar igår + idag (fetchScheduleDay).
 - **Gest-disambiguering på DVR-baren:** vertikala svep avbryter drag utan
   att seeka (fix för "hoppar till noll").
+- **Spelar-gester (2026-09-23):** svep upp på spelaren = expanderad panel
+  följer fingret; svep ned = minimera till mini-bar (ljudet fortsätter).
+  Utanför ursprunglig design.
+
+### Nya bekräftade fakta (2026-09-23) — påverkar arkitekturassumptioner
+
+1. **Arkiverade avsnitt har en egen metadatakälla:**
+   `https://web-api.sr.se/v1/player/ondemand?id=<episodeId>&type=episode`
+   (SR:s webbplayers endpoint; CORS öppen från GitHub Pages, verifierat).
+   Returnerar `item` (audio.src + duration) och `tracks` — musiklistan med
+   `relativeStartTime`/`relativeEndTime` (HH:MM:SS relativt avsnittets
+   ljudstart) som mappar DIREKT på audio-elementets `currentTime`.
+   Implementerat 2026-09-23: ingen polling, timeupdate är källan; cache per
+   avsnitt + seq-guard; talk-avsnitt → `tracks: []` (200 OK, ren tom state).
+2. **M4A-kvalitetsvarianter:** samma endpoint returnerar
+   `item.audio.src` med 32/96/192 kbps M4A-varianter. Appen spelar idag via
+   `episodes/get` → listenpodfile (MP3) / broadcastfiles (M4A) — dvs. ofta
+   inte högsta kvalitet. **Öppna förstärkning E1 (ENHANCEMENTS): högsta
+   möjliga kvalitet med robust fallback — ej implementerat.**
+3. **Live vs arkiverat är två separata metadatakällor som aldrig blandas:**
+   live = `playlists/rightnow` (poll 45 s), episoder = ondemand-tracks mot
+   `currentTime`. paintNowPlaying/renderSongView väljer källa per
+   `state.current.kind`.
+4. **PWA-ljudlivscykel (öppen utredning):** kodgranskning visar exakt EN
+   Audio-element (singleton) — appen kan strukturellt inte producera ett
+   andra element. Ljud som fortsätter efter swipe-away kommer inte från
+   detta dokuments element. Diagnostik (DIAG_ID → localStorage) deployad;
+   rotorsaksdata väntas från iPhone. Ingen arkitekturändring förrän
+   rotorsaken är känd.
 
 **Bilaga A (nedan): Spelar-UX & livscykel-granskning** — inklusive
 rotorsaken till buggen "stängd spelare kommer inte tillbaka" (§A.3),
@@ -260,17 +295,25 @@ EXPANDERAD (tap på kompakt spelare, eller svep uppåt):
   → HLS 320 (medvetet val, synligt i badgen). Ingen tyst nedgradering:
   bytet sker bara på explicit spol-begäran.
 
-## A.9 Framtida metadata-yta
+## A.9 Framtida metadata-yta — **UPPDATERAD 2026-09-23: nu implementerad**
 
-- **Kompakt:** undertexten visar program/podd-namn (idag) — låt/artist
-  kommer INTE att få plats i kompakt läge; det är OK, expanderat läge
-  är hemmet för detaljer.
-- **Expanderat:** dedikerade rader (se A.5): PROGRAMNAMN (semibold),
-  Låt/Avsnitt (stor), Artist/ledare (sekundär). SR:s metadata-API kan
-  fylla dessa senare utan layoutändring — raderna finns från fas 3
-  (tomma/dolda tills data finns).
-- **Poddar:** avsnittstitel + poddnamn — redan idag i kompakt; expanderat
-  lägger beskrivning-utdrag.
+- **Kompakt:** undertexten visar programnamn (live: Pågår nu-programmet från
+  scheduledepisodes) + ♪ artist – låt-linjen (`.now-playing-line`) — låt/
+  artist fick ÄNDÅ plats i kompakt läge (användarönskemål 2026-09-23).
+- **Expanderat:** implementerat — aktuell låt + artist (live via rightnow;
+  episoder via ondemand-tracks mot currentTime), artwork (iTunes), fallback
+  med kanalomslag + programnamn när ingen låt spelas.
+- **Poddar:** avsnittstitel + poddnamn i kompakt; expanderat visar
+  avsnittsvyn med omslag.
+- Ursprunglig design-text bevarad nedan som historik.
+- **Kompakt (ursprunglig design):** undertexten visar program/podd-namn —
+  låt/artist skulle inte få plats i kompakt läge; expanderat läge är hemmet
+  för detaljer.
+- **Expanderat (ursprunglig design):** dedikerade rader (se A.5):
+  PROGRAMNAMN (semibold), Låt/Avsnitt (stor), Artist/ledare (sekundär).
+  SR:s metadata-API kan fylla dessa senare utan layoutändring.
+- **Poddar (ursprunglig design):** avsnittstitel + poddnamn — redan idag i
+  kompakt; expanderat lägger beskrivning-utdrag.
 
 ## A.10 Svep-expansion — lämplig?
 
