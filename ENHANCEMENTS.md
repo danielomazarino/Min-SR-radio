@@ -1213,3 +1213,56 @@ kan inte läsa svaret. SR:s egen spelare är same-origin och därför funkar det
 för dem. Alla api.sr.se-varianter (songs/playlist/music/latlista) är 500.
 **Slutsats: låttitlar kräver en proxy — användarbeslut.** Programnivån
 (Pågår nu/Nästa) som expanderpanelen visar är allt som går utan backend.
+
+## 2026-09-23 (natt 3) — Aktuell låt + artist + artwork (Del 1–5 genomförda)
+
+### Del 1 — Discovery-regeln (BESTÅENDE)
+Sparad i `/memories/repo/discovery-rule.md` (repo-minne, läses i alla framtida
+sessioner i detta workspace) + referensrad överst i `/memories/repo/sr-pwa-app.md`.
+Innebörd: "Reverse-engineer the data model and API surface before
+implementation" — ett misslyckat endpoint-försök bevisar BARA att den
+endpointen misslyckades; kartlägg datamodellen, alternativa resource-namn,
+tjänstens egna klienter och nätverkstrafik; klassa fel (saknas/fel/ingen-CORS/
+browser-OK/production-origin-OK); "proxy krävs" först EFTER verifiering från
+riktig GitHub Pages-origin. Metodregel, inte SR-specifik.
+
+### Del 2 — Aktuell låt + artist (implementerat, deployat)
+- Endpoint: `playlists/rightnow?channelid=X&format=json` (verifierad 200 +
+  CORS `*` från GitHub Pages-origin).
+- Pollning: 45 s intervall, EXAKT EN loop, seq-guard mot stale responses.
+- `song === null` = normalt tillstånd (tal/program) → linjen döljs helt,
+  expanderpanelen visar "Ingen låtinformation — kanalen sänder program".
+- UI: "♪ Artist – Låt"-linje i spelarens meta-yta + mini-bar (accentfärg,
+  ellipsis, aria-live polite).
+- Kanalbyte: startNowPlayingPoll avbryter pending timer + pollar NY kanal
+  direkt (bugg hittad i Del 5-verifiering: gamla koden väntade upp till en
+  hel intervall eller dog på seq-guard utan återarmering).
+- Isolering: metadata-loopens fel kan ALDRIG påverka ljudet — fetch-fel =
+  sista kända låten behålls; stopp/kanalbyte städar loopen.
+
+### Del 3 — Artwork (implementerat enligt beslutsregeln)
+Utredning: rightnow har INGA bildfält (även inte med largedata=true). SR:s
+egna artwork (Spotify CDN-URL:er) finns bara på CORS-blockerade latlista-
+sidan. FÖLJ DISCOVERY-REGELN → hittade **iTunes Search API**
+(`itunes.apple.com/search`, CORS `*`, artworkUrl100 skalbar till 600x600 via
+URL-rewrite). Verifierat från GitHub Pages-origin: search 200 + <img>-laddning
+600x597 OK (<img> kräver ingen CORS).
+**Beslut: artwork STABIL nog → implementerad.**
+- Expanderad spelare visar nu: [artwork] Spelas just nu / Låttitel / Artist.
+- **Pågår nu + Nästa-program BORTTAGNA** från expanderpanelen (finns redan i
+  Tablå-kortet via långtryck på kanalikon — ingen duplicering).
+- song:null → ♪-placeholder + "Ingen låtinformation — kanalen sänder program".
+- Artwork-cache per artist|title (session), stale-guard, misslyckad bild =
+  placeholder, aldrig påverkan på ljudet.
+- Känd begränsning: klassisk musik (långa artiststrängar) matchar oftast inte
+  i iTunes → placeholder. Pop/musik = bra träfffrekvens.
+
+### Del 5 — Verifiering (från riktig GitHub Pages-origin)
+- P3 med musik: "♪ The Rolling Stones – Tumbling Dice" syns i spelaren ✅
+- P2 Musik: "♪ Leonidas Kavakos… – Violin Concerto no 2" ✅
+- P1 (tal): song=null → linje dold, expanderpanel visar placeholder ✅
+- Kanalbyte: metadata följer (efter poll-fixen) ✅
+- Ljuduppspelning påverkas inte av metadata/artwork-fel ✅
+- Requests går direkt browser→api.sr.se (resource-timing verifierad, ingen
+  proxy) ✅
+- 83/83 tester.
