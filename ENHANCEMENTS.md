@@ -1309,3 +1309,41 @@ bara den lilla play-knappen.
     (ljudet spelar). Sub = programnamn, titel = avsnittstitel.
   - Screenshot: Igår-sektionen syns direkt ovanför Idag, pågående rad centrerad.
 - 83/83 tester.
+
+### Användarönskemål 2026-09-23 (del 1–3): fallback, Nyheter-unfold, PWA-livscykel (commits 434eb28 + 0d6dfb3, bundle app.b178e3e6.js)
+
+**1. Fallback utan låt (expanderad spelare):**
+- Hårdkodade texten "Ingen låtinformation för tillfället — kanalen sänder
+  program." BORTTAGEN helt.
+- Ny fallback: kanal-omslag (cur.artwork) + "Spelas just nu" + Pågår
+  nu-programnamnet (cur._srProgramTitle) + kanalnamn som sub.
+- paintProgramTitle repaintar nu öppen expanderpanel — programtiteln kan
+  lösa sig EFTER att panelen öppnats.
+- Verifierat live (P1, tal): "Spelas just nu / Förmiddag i P1 / P1" med
+  kanalomslag, ingen hårdkodad text.
+
+**2. Nyheter unfold/fold:**
+- Sektionsrubriken är nu en toggle (chevron roterar). Ihopfälld = första
+  nyheten peekar ut (74px + gradient-mask) som hint.
+- Auto-unfold EN gång per uppspelningssession när program/podd spelar
+  (newsAutoUnfolded-flagga, reset i playTrack). Spelaren ligger kvar överst
+  (fixed z-30; sektionen är i normalt flöde).
+- BUGG hittad i live-verifiering: första manuell fällning under uppspelning
+  överriddes direkt — auto-unfold körde varje updatePlayingMarks och
+  re-expanderade. Fix: auto-unfold eldar en gång per session, manuellt val
+  vinner. Återverifierat: fold håller, unfold funkar, stopp ändrar inte.
+- Verifierat live: foldedInitially ✅ autoUnfoldedOnPlay ✅ manualFoldHolds ✅
+  manualUnfoldWorks ✅ afterStopStaysExpanded ✅
+
+**3. PWA-livscykel (stängd PWA + låsskärm):**
+- Användarrapport: "om den nya PWA:n läggs i bakgrunden och sedan stängs
+  spelar den första spelaren fortfarande" + låsskärmen öppnar fel PWA.
+- Analys: när PWA stängs (swipe away) skickar iOS pagehide; utan städning
+  kan OS behålla zombi-ljudsession bunden till döda sidan → låsskärmen
+  pekar på fel (gammal) installation.
+- Fix: pagehide(persisted=false) + freeze → pausa ljud + rensa
+  MediaSession. persisted=true (bfcache/bakgrund) påverkas INTE — radio i
+  bakgrunden är en feature. resume → synka UI.
+- iPhone-verifiering av zombi-sessionen återstår (användaren); om problemet
+  kvarstår efter ominstallation av PWA:n är nästa steg att leta efter en
+  dubbelinstallation (gammal + ny ikon).
