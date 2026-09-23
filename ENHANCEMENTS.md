@@ -1266,3 +1266,24 @@ URL-rewrite). Verifierat från GitHub Pages-origin: search 200 + <img>-laddning
 - Requests går direkt browser→api.sr.se (resource-timing verifierad, ingen
   proxy) ✅
 - 83/83 tester.
+
+### Fix — Låt-blink vid kanalbyte + programtitel (2026-09-23, commit ae84397)
+**Användarrapport:** "Beyoncé visades i 10:dels sekund, försvann, kom tillbaka
+efter ca 30 sekunder" vid P2→P3-byte. Dessutom: "P3 Direkt" skulle ersättas
+med Pågår nu-programmets namn.
+- Första fixen (12de6fa, renderPlayer före startNowPlayingPoll) räckte inte —
+  verifiering visade linjen fortfarande försvann (synlig @1s, borta @3s).
+- **Rotorsak 2 hittad:** renderPlayer() körs om av playback-events ('playing',
+  buffering-badge) EFTER att pollen paintat linjen. Varje rebuild börjar med
+  tom DOM ($player.textContent = '') → linjen + undertiteln nollställs till
+  nästa 45s-poll. MutationObserver bevisade mekanismen (0 renders @4s = linjen
+  tomdes av event-driven re-render, inte av ny poll).
+- **Fix:** paintNowPlaying() + paintProgramTitle() körs i slutet av BÅDA
+  renderPlayer-grenarna (full spelare + mini-bar), och undertitelelementet
+  seedas från cur._srProgramTitle vid bygg tid. Varje re-render är nu
+  self-healing — metadata kan aldrig längre "vippas bort" av en re-render.
+- **Verifierat live (GitHub Pages, ny bundle app.4eb4f888.js):** P2→P3-byte,
+  linje samplad @200ms/1s/3s/6s — STABIL ("♪ Funky Loffe & Sofie Norling –
+  Ching Ching Hej Hej" genomgående). Undertitel: "Direkt" @200ms → "Vaken"
+  @1s (fetchSchedule löser) och STAY. P2 visade "Notturno" ✅.
+- 83/83 tester.
