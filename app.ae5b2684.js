@@ -822,8 +822,12 @@
   }
 
   function startNowPlayingPoll() {
-    // Idempotent: exactly one loop regardless of how many times called.
-    if (nowPlayingTimer) return;
+    // Channel switch: cancel any pending timer and poll the NEW channel
+    // immediately. (The old loop's finally-check stops itself when it sees
+    // the channel changed — but its pending timer would otherwise delay the
+    // new channel's first fetch by up to a full interval, and if the old
+    // fetch was in flight its seq-guard kills the loop without re-arming.)
+    if (nowPlayingTimer) { clearTimeout(nowPlayingTimer); nowPlayingTimer = null; }
     pollNowPlaying();
   }
 
