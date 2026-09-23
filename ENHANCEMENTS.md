@@ -1287,3 +1287,25 @@ med Pågår nu-programmets namn.
   Ching Ching Hej Hej" genomgående). Undertitel: "Direkt" @200ms → "Vaken"
   @1s (fetchSchedule löser) och STAY. P2 visade "Notturno" ✅.
 - 83/83 tester.
+
+### Tablå-kortet: igår + idag + hela raden klickbar (2026-09-23, commit 4ec597d, bundle app.3f652e46.js)
+**Användarönskemål:** tablån ska visa både igår och idag så att man kan starta
+ett program från igår genom att scrolla; hela raden ska vara klickbar, inte
+bara den lilla play-knappen.
+- fetchScheduleDay(channelId, dateStr): per-dag-cache (10 min TTL), samma
+  parsing som tidigare. fetchSchedule(channelId) delegerar till idag —
+  DVR-knapparnas kontrakt oförändrat.
+- openChannelCard: hämtar igår + idag parallellt, dagdividerare "Igår"/"Idag"
+  (sticky, följer med vid scroll), igår först. Auto-scroll (scrollIntoView
+  block:center) till pågående programmet → igår ligger direkt ovanför.
+- Hela raden var redan en <button> (width 100%) — men disabled-rader (ingen
+  episodeId) såg likadana ut och gjorde inget, vilket gav intrycket att bara
+  ▶ var klickbar. Nu: disabled-rader dimmade (opacity 0.55), :active-
+  feedback på hela raden, ▶ är dekoration.
+- Verifierat live (GitHub Pages, app.3f652e46.js):
+  - Kortet: 122 rader (61 igår + 61 idag), dividerare Igår/Idag, 83 spelbara.
+  - END-TO-END: klick på igårens "Morgonpasset i P3 09:02" → episodes/get →
+    listenpodfile.mp3 → spelaren öppnad, seek 0:02→0:34 av 96:48 ADVANCERAR
+    (ljudet spelar). Sub = programnamn, titel = avsnittstitel.
+  - Screenshot: Igår-sektionen syns direkt ovanför Idag, pågående rad centrerad.
+- 83/83 tester.
