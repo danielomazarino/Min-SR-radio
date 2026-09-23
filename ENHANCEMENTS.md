@@ -1347,3 +1347,59 @@ bara den lilla play-knappen.
 - iPhone-verifiering av zombi-sessionen återstår (användaren); om problemet
   kvarstår efter ominstallation av PWA:n är nästa steg att leta efter en
   dubbelinstallation (gammal + ny ikon).
+
+### Nyheter-logik korrigerad + episod-låtmetadata + PWA-diagnostik (2026-09-23, commits 38efd3b + 66af359, bundle app.47d38b2b.js)
+
+**1. Nyheter — KORRIGERAD (första implementationen var bakvänd):**
+- Default (ingen uppspelning): HELT UTFÄLLD, alla nyheter synliga/klickbara.
+  Peek-beteendet ("första nyheten som hint") HELT BORTTAGET.
+- Uppspelning startar → auto-IHOPFÄLLNING en gång (endast header, scroller
+  display:none — ingen peek). Spelaren ligger överst (fixed z-30).
+- Manuell utfällning under uppspelning vinner (newsManualExpanded) —
+  playback-events/renderPlayer/metadata uppdateringar återfäller ALDRIG.
+- BUGG hittad i live-verifiering: paus→spela triggade om auto-i-hopfällningen
+  (updateNewsFold behandlade paus som sessionslut). Fix: session =
+  state.current finns; paus/resume inom sessionen ändrar inte läget. Endast
+  stängd spelare → åter full utfällning.
+- VERIFIERAT LIVE (alla 7 steg): s1 utfälld utan uppspelning ✅ s2 ihopfälld
+  vid play + scroller display:none ✅ s3 manuell utfällning håller ✅
+  s4a utfälld under paus ✅ s4 håller efter resume ✅ s5 utfälld efter stopp ✅
+
+**2. PWA-ljudlivscykel — INSTRUMENTERING (rotorsaksdata väntas från iPhone):**
+- Kodgranskning: exakt EN Audio (const, aldrig återskapad), en $player,
+  renderPlayer rör aldrig audioEl, alla listeners → singleton, alla
+  singletons (hls/timers/poll) städas i stopAndClosePlayer. SW cachar bara
+  same-origin shell — kan inte hålla ljud vid liv.
+- SLUTSATS FRÅN KOD: appen KAN inte producera ett andra audio-element. Om
+  ljud fortsätter efter swipe-away är det INTE detta dokuments audioEl.
+  Kandidater: (a) annat dokument (dubbelinstallation/gammal flik), (b)
+  iOS media-session UI kvarstår medan ljudet faktiskt stoppat, (c) iOS
+  standalone-process suspenderas/avslutas fördröjt — OS-beteende.
+- DIAGNOSTIK tillagd (tillfällig, tas bort när rotorsaken är känd): unikt
+  DIAG_ID per sidladdning; loggar page-load (med standalone-flagga),
+  audio-created/src-set/src-cleared, play/pause/ended, pagehide(persisted),
+  pageshow, visibilitychange, freeze, mediasession-cleared → localStorage
+  'sr-diag-log' (200 rader) + console. Loggen ÖVERLEVER sidstängning.
+- iPhone-procedur: spela → lås → lås upp → swipa bort PWA:n → öppna PWA:n
+  igen → Inställningar → (diag-loggen kan läsas via konsol eller nästa
+  steg: visa den i Om-appen-vyn). Om gammal DIAG_ID saknar pagehide-rad =
+  iOS meddelade aldrig sidan (kandidat c). Om pagehide persisted=false +
+  pause finns = ljudet kommer från annat dokument (kandidat a).
+
+**3. Arkiverade avsnitt: låtmetadata via web-api.sr.se/v1/player/ondemand:**
+- playTrack(kind=episode) → loadEpisodeTracks(id) (cache per avsnitt,
+  seq-guard så gamla svar aldrig läcker) → tracks med relativeStartTime/
+  relativeEndTime (HH:MM:SS relativt avsnittets ljudstart) → mappas direkt
+  mot audioEl.currentTime. INGEN polling — timeupdate är källan.
+- paintNowPlaying + expanderpanelens renderSongView läser episodeCurrent-
+  Track för episoder, nowPlaying.song för live — källorna kan aldrig blanda.
+- Seek/paus: timeupdate löser om positionen; paus behåller aktuell låt.
+- stopAndClosePlayer + live-övergång: stopEpisodeTracks() nollställer.
+- tracks:[] (talk/poddar) → ingen linje, ingen error (verifierat: podd
+  2878427 spelar, linje dold, panel visar avsnittstitel + omslag).
+- Verifierat mot riktiga data: 2861130 (33 spår) — position 300s →
+  "Avicii, Audra Mae – Addicted To You" ✅. Diag-loggen bekräftar att
+  playTrack anropats med rätt episode-id:n. Full paint-verifiering av
+  musikavsnitt kräver riktig enhet (headless Chromium kan inte dekoda
+  SR:s m4a/AAC — samma URL:er spelar redan i produktion via episodes/get).
+- 83/83 tester.
