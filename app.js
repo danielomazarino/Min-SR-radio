@@ -17,6 +17,8 @@
  *    Live streams support pause/resume but not seek.
  */
 
+import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
+
 (() => {
   'use strict';
 
@@ -319,7 +321,7 @@
   function fmtDur(sec) {
     if (!Number.isFinite(sec) || sec <= 0) return '';
     const m = Math.floor(sec / 60);
-    const s = Math.round(sec % 60);
+    const s = Math.floor(sec % 60);
     return `${m}:${String(s).padStart(2, '0')}`;
   }
 
@@ -791,6 +793,7 @@
   const nowPlaying = { song: null, artwork: null, channelId: null };
   let nowPlayingTimer = null;
   let nowPlayingSeq = 0; // stale-response guard on channel switches
+  let artworkSeq = 0; // invalidates stale artwork lookups on every source change
 
   // ---- Archived-episode track metadata (web-api.sr.se ondemand) ----
   // SR's own web player uses this endpoint; it returns the episode's music
@@ -860,6 +863,7 @@
   function stopNowPlayingPoll() {
     if (nowPlayingTimer) { clearTimeout(nowPlayingTimer); nowPlayingTimer = null; }
     nowPlayingSeq += 1; // invalidate in-flight responses
+    artworkSeq += 1; // an old live artwork response must not outlive the channel
     nowPlaying.song = null;
     nowPlaying.artwork = null;
     nowPlaying.channelId = null;
@@ -926,18 +930,21 @@
   // only on the CORS-blocked latlista page. iTunes Search is CORS-open and
   // artworkUrl100 scales to any size via URL rewrite. Fully isolated:
   // failure = no image, never affects audio.
-  let artworkSeq = 0;
   const artworkCache = new Map(); // "artist|title" → url (session-lifetime)
   async function refreshNowPlayingArtwork() {
+    const seq = ++artworkSeq;
     const song = nowPlaying.song;
-    if (!song || !song.title) { nowPlaying.artwork = null; paintNowPlaying(); return; }
+    if (!song || !song.title) {
+      nowPlaying.artwork = null;
+      paintNowPlaying();
+      return;
+    }
     const key = `${song.artist}|${song.title}`.toLowerCase();
     if (artworkCache.has(key)) {
       nowPlaying.artwork = artworkCache.get(key);
       paintNowPlaying();
       return;
     }
-    const seq = ++artworkSeq;
     try {
       const q = encodeURIComponent(`${song.artist} ${song.title}`.slice(0, 180));
       const r = await fetch(`https://itunes.apple.com/search?term=${q}&entity=song&limit=1`);
@@ -960,21 +967,31 @@
   // can never mix: an episode never reads rightnow, live never reads tracks.
   function paintNowPlaying() {
     const line = $player.querySelector('.now-playing-line');
-    if (!line) return;
     const cur = state.current;
-    const song = cur && cur.kind === 'episode'
+    const isEpisode = Boolean(cur && cur.kind === 'episode');
+    const song = isEpisode
       ? episodeCurrentTrack
       : nowPlaying.song;
-    if (!song || !song.title) {
-      line.textContent = '';
-      line.classList.remove('has-song');
-    } else {
-      line.textContent = `♪ ${song.artist ? song.artist + ' – ' : ''}${song.title}`;
-      line.classList.add('has-song');
+    // Episodes have no compact now-playing line, but their expanded panel
+    // still depends on this function. Repaint the panel even when no compact
+    // line is present.
+    if (line) {
+      if (!song || !song.title) {
+        line.textContent = '';
+        line.classList.remove('has-song');
+      } else {
+        line.textContent = `♪ ${song.artist ? song.artist + ' – ' : ''}${song.title}`;
+        line.classList.add('has-song');
+      }
     }
     // If the expand panel is open, repaint its song view too.
     const panel = $player.querySelector('.player-expand');
-    if (panel && typeof panel._srRepaint === 'function') panel._srRepaint();
+    if (panel && typeof panel._srRepaint === 'function') {
+      panel._srRepaint();
+      // The episode painter deliberately has no compact song line; this
+      // paint call exists to refresh the expanded episode view only.
+      if (isEpisode) return;
+    }
   }
 
   // ---- Pågår nu-programmet som undertitel (användarönskemål 2026-09-23) ----
@@ -1008,6 +1025,12 @@
   }
 
   function playTrack(track) {
+    // Any track transition invalidates both old episode resolution and state.
+    // This is important for episode→episode, not just episode→live.
+    stopEpisodeTracks();
+    // Do not display the previous live song/artwork while the new channel's
+    // rightnow request is pending. The sequence guards also kill late replies.
+    stopNowPlayingPoll();
     state.current = track;
     lastPlayingKey = `${track.kind}:${track.id}`;
     // New playback session → the news auto-collapse may fire once again.
@@ -1072,11 +1095,9 @@
     // second, then vanished for ~30 s — user report 2026-09-23).
     renderPlayer();
     if (track.kind === 'live') {
-      stopEpisodeTracks(); // archived-track state must not leak into live
       startNowPlayingPoll();
       resolveProgramTitle(track); // Pågår nu-programmet som undertitel
     } else {
-      stopNowPlayingPoll(); // live rightnow must not leak into episodes
       // Archived episode: load its music playlist (cached per episode).
       // The audio path is untouched — metadata only.
       if (track.id) {
@@ -1724,9 +1745,10 @@
                 ? el('div', { class: 'expand-sub', text: cur.title }) : null)));
           return;
         }
+        const songArtwork = isEpisode ? null : nowPlaying.artwork;
         content.appendChild(el('div', { class: 'expand-row' },
-          nowPlaying.artwork
-            ? el('img', { class: 'expand-img expand-img-song', src: nowPlaying.artwork, alt: '' })
+          songArtwork
+            ? el('img', { class: 'expand-img expand-img-song', src: songArtwork, alt: '' })
             : el('div', { class: 'expand-img expand-img-placeholder', 'aria-hidden': 'true' }, '♪'),
           el('div', { class: 'expand-text' },
             el('div', { class: 'expand-label', text: 'Spelas just nu' }),
@@ -1785,18 +1807,40 @@
 
     let seekRow = null;
     if (!live) {
-      const bar = el('div', { class: 'seek-bar' }, el('div', { class: 'seek-fill' }));
+      const bar = el('div', {
+        class: 'seek-bar episode-seek-bar',
+        role: 'slider',
+        'aria-label': 'Spola i avsnittet',
+        'aria-valuemin': 0,
+        'aria-valuemax': cur.duration || 0,
+        'aria-valuenow': 0,
+        tabindex: '0',
+      }, el('div', { class: 'seek-fill' }), el('div', { class: 'seek-thumb' }));
       const timeLeft = el('div', { class: 'player-time', text: '' });
       const timeRight = el('div', { class: 'player-time', text: '' });
       seekRow = el('div', { class: 'seek-row' }, timeLeft, bar, timeRight);
-      const fill = bar.firstChild;
+      const fill = bar.querySelector('.seek-fill');
+      const thumb = bar.querySelector('.seek-thumb');
+
+      const duration = () => Number.isFinite(audioEl.duration) && audioEl.duration > 0
+        ? audioEl.duration
+        : (cur.duration || 0);
+      const fractionAt = (clientX) => {
+        const rect = bar.getBoundingClientRect();
+        if (!rect.width) return null;
+        return Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+      };
+      const paintEpisodeSeek = (frac) => {
+        const f = Math.min(1, Math.max(0, frac));
+        fill.style.width = `${f * 100}%`;
+        thumb.style.left = `${f * 100}%`;
+        bar.setAttribute('aria-valuenow', String(Math.round(f * duration())));
+      };
 
       const upd = () => {
-        const d = Number.isFinite(audioEl.duration) && audioEl.duration > 0
-          ? audioEl.duration
-          : (cur.duration || 0);
+        const d = duration();
         const t = audioEl.currentTime || 0;
-        if (d > 0) fill.style.width = `${Math.min(100, (t / d) * 100)}%`;
+        if (d > 0) paintEpisodeSeek(t / d);
         timeLeft.textContent = fmtDur(t) || '0:00';
         timeRight.textContent = d ? fmtDur(d) : '';
       };
@@ -1805,13 +1849,28 @@
       audioEl.addEventListener('timeupdate', upd);
       upd();
 
-      bar.addEventListener('click', (e) => {
-        const d = Number.isFinite(audioEl.duration) && audioEl.duration > 0
-          ? audioEl.duration : cur.duration;
-        if (!d) return;
-        const rect = bar.getBoundingClientRect();
-        const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-        audioEl.currentTime = frac * d;
+      installEpisodeSeekPointerHandlers(bar, {
+        getDuration: duration,
+        seekToFraction: (fraction) => {
+          const d = duration();
+          if (d > 0) audioEl.currentTime = fraction * d;
+        },
+        onPreview: paintEpisodeSeek,
+        onRestore: upd,
+      });
+      bar.addEventListener('keydown', (e) => {
+        const d = duration();
+        if (!(d > 0)) return;
+        if (e.key === 'Home' || e.key === 'End') {
+          e.preventDefault();
+          audioEl.currentTime = e.key === 'Home' ? 0 : d;
+          return;
+        }
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        e.preventDefault();
+        const step = e.shiftKey ? SEEK_STEP_S : 5;
+        audioEl.currentTime = Math.max(0, Math.min(d, (audioEl.currentTime || 0)
+          + (e.key === 'ArrowLeft' ? -step : step)));
       });
     } else if (cur.dvrAvailable) {
       // DVR seek row (Phase 3, UX rev): a REAL draggable slider (pointer
@@ -3306,16 +3365,6 @@
   document.getElementById('edit-btn').addEventListener('click', () => {
     openSheet({ initialTab: 'channels', onDone: boot });
   });
-
-  // register service worker with a path that works under any base URL
-  if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-      const swUrl = new URL('sw.js', document.baseURI).href;
-      navigator.serviceWorker.register(swUrl).catch((err) => {
-        console.warn('Service worker registration failed:', err);
-      });
-    });
-  }
 
   boot();
 })();

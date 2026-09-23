@@ -837,6 +837,13 @@ body.player-gesture-lock {
   position: relative;
 }
 
+/* Episode seek allows vertical page gestures while handling horizontal drag. */
+.episode-seek-bar {
+  touch-action: pan-y;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 .seek-bar::before {
   content: '';
   position: absolute;
@@ -896,6 +903,29 @@ body.player-gesture-lock {
   z-index: 2;
   pointer-events: none; /* the bar handles the pointer */
   transition: transform 0.12s ease;
+}
+.episode-seek-bar .seek-thumb {
+  /* Larger invisible hit area without changing the visible 14px thumb. */
+  width: 32px;
+  height: 32px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  pointer-events: auto;
+  touch-action: pan-y;
+}
+.episode-seek-bar .seek-thumb::after {
+  content: '';
+  position: absolute;
+  inset: 9px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--surface);
+  box-shadow: 0 1px 4px rgba(28, 28, 30, 0.35);
+  pointer-events: none;
+}
+.episode-seek-bar.dragging .seek-thumb::after {
+  transform: scale(1.15);
 }
 .dvr-bar.dragging .seek-thumb { transform: translate(-50%, -50%) scale(1.25); }
 @media (prefers-reduced-motion: reduce) {

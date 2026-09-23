@@ -3,10 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
-  <!-- Zoom policy: pinch-zoom stays available (accessibility), but
-       double-tap zoom is suppressed via touch-action: manipulation on
-       interactive surfaces (styles.6a174276.css) — double-clicking the player
-       zoomed the page unintentionally (user report 2026-09-23). -->
+  <!-- Zoom policy: pinch zoom remains available for accessibility; CSS also
+       suppresses accidental double-tap zoom on interactive surfaces. -->
   <title>Min Radio</title>
   <meta name="description" content="Din personliga radiostartskärm från Sveriges Radio" />
 
@@ -22,7 +20,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Min Radio" />
 
-  <link rel="stylesheet" href="styles.6a174276.css" />
+  <link rel="stylesheet" href="styles.d80070f9.css" />
 </head>
 <body>
   <div class="app" id="app">
@@ -34,13 +32,23 @@
     </header>
 
     <main id="main" class="content">
-      <!-- Rendered by app.47d38b2b.js -->
+      <!-- Rendered by the tracked app.js bundle source. -->
     </main>
   </div>
 
   <div id="sheet-root"></div>
   <div id="toast-root" role="status" aria-live="polite"></div>
 
-  <script src="app.47d38b2b.js" defer></script>
+  <script type="module" src="app.40d8364e.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        const swUrl = new URL('sw.js', document.baseURI).href;
+        navigator.serviceWorker.register(swUrl).catch((err) => {
+          console.warn('Service worker registration failed:', err);
+        });
+      });
+    }
+  </script>
 </body>
 </html>

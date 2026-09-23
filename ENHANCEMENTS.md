@@ -28,9 +28,10 @@ som öppet (detaljer i respektive historisk post):
 | Ljud-diagnostik "Missing functionality" 1–3, 5 | öppna rekommendationer | **DONE** (retry/fallback = advanceCandidate + watchdog; stall-detektering = buffrings-badge; canPlayType = CAPS; HLS = Fas 2A) |
 | Ljud-diagnostik 4 (kvalitetsval) + 6 (nätverksmedvetenhet) | öppna | **OPEN → ny förstärkningspost "Högsta ljudkvalitet" (nedan)** |
 | Låsskärm fel-PWA | öppen | **OPEN — diagnostik deployad, rotorsaksdata väntas från iPhone** (se PWA-ljudlivscykel nedan) |
-| iPhone/Android-validering | NOT YET VALIDATED | **PARTIAL** (iPhone: DVR/±15 s/gester/knappplacering/zoom/långtryck verifierade via användarskärmdumpar; episod-metadata + episode-seek-drag + bakgrund/låsskärm öppna; Android Chrome ej validerad) |
-| Episod-låtmetadata | OPEN | Stale expanded-panel UI reproducerad 6/6 i headless production-UI-test; verklig ljud/timeupdate och intern state-vs-repaint-rotorsak ej bevisad (se evidenspasset längst ned) |
-| Episodens seek-reglage på touch | OPEN | Tryck-seek fungerar enligt användaren; drag/thumb/hit area behöver verifieras och åtgärdas på riktig iPhone |
+| iPhone/Android-validering | NOT YET VALIDATED | **PARTIAL** (earlier iPhone screenshots cover DVR/±15 s/gester/zoom/long-press; updated episode seek/metadata, lifecycle and Android Chrome remain blocked on physical-device access) |
+| Episod-låtmetadata | SOURCE FIX IMPLEMENTED — build/test verified; production/device verification BLOCKED | Root cause: repaint early-return when compact line absent; stale transition guards added |
+| Episodens seek-reglage på touch | SOURCE FIX IMPLEMENTED — local pointer UI verified; production/iPhone validation BLOCKED | Preview/release/cancel and thumb hit area implemented; device behavior remains |
+| iPhone installed-PWA lifecycle analysis | OPEN — BLOCKED (waiting for user-exported `sr-diag-log`; no device storage access available here) |
 | E1–E4 förstärkningar | PLANNED | Ta efter öppna uppspelnings-/enhetsproblem; E1 är högst prioriterad bland förstärkningarna |
 
 ---
@@ -121,7 +122,7 @@ startsidan — inte via Inställningar.
 
 ## ÖPPNA POSTER (kvarstående, ej nya förstärkningar)
 
-### Episod-låtmetadata otillförlitlig i fältet — OPEN (fälttest 2026-09-23)
+### Episod-låtmetadata otillförlitlig i fältet — SOURCE FIX IMPLEMENTED; live/iPhone RETEST REQUIRED
 - Användarens iPhone + Edge-test av igårens program: låt/artist visas bara
   mycket sällan; när den visas uppdateras den INTE vid nästa låt; ibland
   visas fel kanals information när ingen låt spelas (P3 "Vaken" medan
@@ -134,9 +135,44 @@ startsidan — inte via Inställningar.
   efter seek **6/6 gånger**; korrekt spår visades först efter att panelen
   stängts/öppnats. Testet saknade fungerande mediaelement, så faktisk
   ljuduppspelning/timeupdate och state-vs-repaint-rotorsak är fortfarande
-  obevisade. Se evidenspasset längst ned.
+  obevisade i första headless-passet. Senare source review fastställde
+  repaint-roten; se fix-anteckning nedan.
+  **Uppdatering 2026-09-24 — kodorsak verifierad, fix implementerad:**
+  `paintNowPlaying()` tidigare returnerade direkt när `.now-playing-line`
+  saknades. Episoder saknar den kompakta live-raden, så `updateEpisodeTrack()`
+  kunde uppdatera `episodeCurrentTrack` och anropa paint, men aldrig nå
+  `panel._srRepaint()`. Stäng/öppna byggde om panelen och läste den redan
+  korrekta state:n — exakt symptom från Playwright. Ändringen gör compact line
+  valfri men kör panelrepaint ändå; regressionstest skyddar detta.
+- Ytterligare hardening: episode metadata state nollställs/in-flight fetch
+  invalidieras vid ALLA playback-övergångar (även episode→episode), stale
+  live-artwork requests invalidieras när polling stoppas/uppdateras, och
+  expanderad episode artwork lånar inte live-kanalens låtbild.
+- **Uppdatering 2026-09-24:** repo/build mismatch är åtgärdad lokalt.
+  `public/` och tidigare `build.mjs` var gitignored och gav `npm run build` en
+  stale utvecklingskopia; testmappen var också ignored. Nu är package/tests/
+  module/build script spårbara, tester läser tracked root, index pekar på den
+  enda aktuella hashed bunlden, och canonical Pages build genererar root +
+  `dist/`, skriver SW precache inklusive moduler/cache version. GitHub Pages
+  API bekräftade source `main` `/`.
+- Artifact inspection at final build: root index loads `app.ac87ca45.js` +
+  `styles.d80070f9.css`; SW cache is content-based and precaches the same pair
+  + `src/episode-seek.mjs`; old hashed bundles are deleted. Build passed;
+  tracked test suite **98/98** passerar.
+- Built artifact browser journey: player/episode/panel rendered. Simulated
+  touch-pointer drag previewed 10→55% and seek time 0:01→34:43; synthetic
+  post-drag click caused no second seek. A pointerup-only vertical release
+  with 20 px vertical drift left media time unchanged (found/fixed after
+  browser testing). Same-track metadata showed the episode-title fallback;
+  favorite P3 Musikdokumentär is talk content, not a useful music-track fixture.
+  Browser had no observable `<audio>`/video/media request and SR MP3 failed
+  with `ERR_ABORTED`/`ERR_CONNECTION_CLOSED`, so no actual audio/timeupdate
+  claim.
+- Production Pages has **not** been deployed or retested after these edits;
+  physical iPhone/Android behavior still BLOCKED. See exact support steps
+  below.
 
-### Episodspelare: seek-reglaget ska vara dragbart på iPhone — OPEN
+### Episodspelare: seek-reglaget ska vara dragbart på iPhone — SOURCE FIX IMPLEMENTED; iPhone RETEST REQUIRED
 - Användarrapport: vid podd-/episoduppspelning går det att trycka på
   tidslinjen för att söka, men touch-and-drag fungerar inte som på
   live-radions DVR-reglage.
@@ -150,6 +186,23 @@ startsidan — inte via Inställningar.
   `.dvr-bar`; verifiera drag från både tummen och spåret på riktig iPhone.
   Behåll tryck-seek och kontrollera att bredare träffyta inte försämrar
   sidscroll eller spelarens gester.
+- **Uppdatering 2026-09-24 — implementation klar, iPhone-validering BLOCKED:**
+  `.episode-seek-bar` har horisontell pointer-preview och commit på släpp,
+  kvarvarande klick-seek, 32 px transparent tum-träffyta runt oförändrad
+  synlig prick, vertikal gest-avbrytning, pointercancel/lost-capture-säkerhet
+  och tangentbordsstöd. Full testsvit passerade; tracked-root-source preview
+  visade pointerpreview 10→55 % och släpp uppdaterade tiden 0:01→34:43.
+  Headless-miljön hade ingen observable audio node/faktisk ljudtransport och inget
+  iPhone finns tillgängligt här. Kräver iPhone Safari + installerad PWA för
+  drag från thumb/bar, tap-seek, vertikal scroll/svep, cancel och verklig
+  seek/lyssning. Android touch-gesture har inte heller testats.
+- **Efter deploy: konkret stöd som krävs.** iPhone Safari + installerad PWA:
+  drag från thumb och bar, tap-seek, vertikal scroll/svep, cancel, seek över
+  känd låtgräns och episode→episode/live; verifiera faktisk ljudtid och både
+  compact/expanded metadata. Lifecycle separat: spela→lås→lås upp→svep bort→öppna;
+  exportera sanerade DIAG_ID-rader för audio/pagehide/pageshow/visibility/freeze/
+  MediaSession. Android Chrome/PWA behöver en Android-enhet för live HLS/DVR,
+  episod seek/drag, metadata/kanalbyten, fallback, bakgrund och låsskärm.
 
 ### PWA-ljudlivscykel (iPhone) — OPEN, diagnostik deployad
 - Användarrapport: ljud fortsätter när PWA swipas bort; låsskärmen öppnar
@@ -166,15 +219,49 @@ startsidan — inte via Inställningar.
   från användarens iPhone efter reproduktion av sekvensen (spela → lås →
   lås upp → swipa bort PWA:n → öppna igen). Ingen workaround förrän
   rotorsaken är identifierad.**
+- Tillgänglig logg i den delade VS Code-browserns GitHub Pages-origin:
+  200 poster, 10 DIAG_ID:n mellan 2026-09-23 02:00Z och 20:29Z; 9 page-load
+  och 8 pagehide, majoriteten visibilitychange/audio-play/pause. Detta är
+  desktop/browser-historik (display-mode standalone=false), inte den
+  installerade iPhone PWA:n och inte korrelerad bevisning för rapporterade
+  lås→svep-bort-sekvensen. Därför räcker inte loggen för rotorsaksbeslut.
 - Diagnostikloggen ska tas bort när rotorsaken är känd.
+- **BLOCKED — device log unavailable:** denna agent-session saknar åtkomst
+  till iPhone localStorage och Safari Web Inspector. Krävs att användaren på
+  installerad PWA reproducerar spela→lås→lås upp→svep bort→öppna igen och
+  exporterar sanerade `sr-diag-log`-rader via Mac Safari Web Inspector
+  (Develop → iPhone → Min Radio → Console →
+  `localStorage.getItem('sr-diag-log')`). Dela posterna med DIAG_ID och
+  page-load/audio-src-set/audio-play/pause/pagehide/pageshow/
+  visibilitychange/freeze/mediasession-cleared; maskera query-parametrar
+  eller andra privata värden. Ingen lifecycle-kod/workaround ändrad utan
+  den evidensen. Utan fysisk iPhone/Mac-inspector eller användarexporterad
+  logg går Task 1/4 inte att slutföra.
+- **Stöd som krävs:** jag kan inte läsa iPhone-localStorage eller iPhone-
+  konsolen från denna VS Code-session. På den installerade PWA:n: reproducera
+  spela → lås → lås upp → svep bort → öppna igen; öppna sedan Info/inställningar
+  och exportera innehållet i localStorage-nyckeln `sr-diag-log` (200 rader,
+  vanlig text/JSON) genom en tillfällig kopieringsruta om den finns i den
+  aktuella builden, annars via iOS Safari Web Inspector. Skicka bara posterna
+  med DIAG_ID och händelserna page-load, audio-src-set/play/pause,
+  pagehide/pageshow, visibilitychange, freeze och mediasession-cleared;
+  maskera URL-parametrar/personuppgifter. Loggen innehåller normalt bara
+  kanal-/resursnamn och tid, men granska innan delning. Nödvändigt stöd:
+  användaren behöver klistra in/exportera den sanerade loggen; utan detta
+  finns ingen evidensbaserad livscykelfix att verifiera.
 
 ### Riktig enhetsvalidering — PARTIAL
 - iPhone (verifierat via användarskärmdump): DVR-seek, ±15 s, LIVE-etikett,
   knappplacering, zoom, långtryckskort, expanderad spelare, gest-fixar.
 - iPhone (öppet): episod-låtmetadata-panelen (headless UI-symptom reproducerat,
-  faktisk media/timeupdate ej verifierad), episodens seek-drag/träffyta och
-  låsskärm/PWA-ljudlivscykel (se posterna ovan).
-- Android Chrome: ej validerat (hls.js-vägen).
+  source fix implemented but new production/device retest needed), episodens
+  seek-drag/träffyta (implemented, not iPhone-verified), och låsskärm/PWA-
+  ljudlivscykel (diagnostic log needed; see above).
+- Android Chrome: ej validerat (hls.js-vägen; no Android device available in
+  this session). Required support: Android phone with Chrome; install/open
+  PWA and test HLS live, DVR, episode play/seek/drag, metadata transitions,
+  channel switch, fallback, background and lock screen. Mark remains BLOCKED
+  until observed on device.
 
 ### Låsskärm: MediaSession-metadata + ikon — DONE med förbehåll
 - MediaSession-metadata + action handlers implementerade och deployade

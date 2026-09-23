@@ -17,6 +17,8 @@
  *    Live streams support pause/resume but not seek.
  */
 
+import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
+
 (() => {
   'use strict';
 
@@ -319,7 +321,7 @@
   function fmtDur(sec) {
     if (!Number.isFinite(sec) || sec <= 0) return '';
     const m = Math.floor(sec / 60);
-    const s = Math.round(sec % 60);
+    const s = Math.floor(sec % 60);
     return `${m}:${String(s).padStart(2, '0')}`;
   }
 
@@ -340,8 +342,27 @@
   };
 
   // ---------------- audio / player ----------------
+  // ---- TEMPORARY DIAGNOSTICS (PWA audio lifecycle investigation) ----
+  // Every page load gets a unique instance id. All audio/lifecycle events
+  // are logged with it, so logs from an OLD page can be distinguished from
+  // the CURRENT one. Kept in localStorage (survives page close) + console.
+  // REMOVE once the iOS zombie-audio root cause is identified.
+  const DIAG_ID = Math.random().toString(36).slice(2, 8);
+  const diagLog = (msg) => {
+    const line = `${new Date().toISOString()} [${DIAG_ID}] ${msg}`;
+    try { console.log('%cSRDIAG', 'color:#f60', line); } catch { /* ignore */ }
+    try {
+      const k = 'sr-diag-log';
+      const arr = JSON.parse(localStorage.getItem(k) || '[]');
+      arr.push(line);
+      localStorage.setItem(k, JSON.stringify(arr.slice(-200)));
+    } catch { /* ignore */ }
+  };
+  diagLog(`page-load href=${location.href} standalone=${window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true}`);
+
   const audioEl = new Audio();
   audioEl.preload = 'none';
+  diagLog(`audio-element-created id=${DIAG_ID}`);
 
   const $player = el('div', { class: 'player', 'aria-label': 'Spelare' });
   document.body.appendChild($player);
@@ -731,6 +752,12 @@
       && state.current.transport === 'hls') {
       updateSeekableState();
     }
+    // Archived-episode track resolution: currentTime is the source of truth.
+    // Covers normal playback, seeks (timeupdate fires after seek), and
+    // pause (position stays — the displayed track stays consistent).
+    if (state.current && state.current.kind === 'episode') {
+      updateEpisodeTrack();
+    }
   });
 
   // Debug handle for manual engine verification (not user UI).
@@ -766,10 +793,77 @@
   const nowPlaying = { song: null, artwork: null, channelId: null };
   let nowPlayingTimer = null;
   let nowPlayingSeq = 0; // stale-response guard on channel switches
+  let artworkSeq = 0; // invalidates stale artwork lookups on every source change
+
+  // ---- Archived-episode track metadata (web-api.sr.se ondemand) ----
+  // SR's own web player uses this endpoint; it returns the episode's music
+  // playlist with relativeStartTime/relativeEndTime (HH:MM:SS, relative to
+  // the START OF THE EPISODE AUDIO) — these map directly onto the existing
+  // audio element's currentTime. No polling: timeupdate is the source of
+  // truth. Verified live 2026-09-23 (P3 Musik 2861130: 33 tracks; P3 Mix:
+  // 29; talk episodes: tracks:[] with 200 OK). CORS-open from GitHub Pages.
+  // The episode AUDIO path is untouched — this is metadata only.
+  const episodeTracksCache = new Map(); // episodeId → tracks[] (session)
+  let episodeTrackSeq = 0; // stale guard: old episode's fetch must not leak
+  let episodeCurrentTrack = null; // {title, artist} for the current position
+
+  // "HH:MM:SS" → seconds. Returns null on malformed input.
+  function hmsToSec(s) {
+    if (typeof s !== 'string') return null;
+    const parts = s.split(':').map(Number);
+    if (parts.some((n) => !Number.isFinite(n))) return null;
+    return parts.reduce((acc, v) => acc * 60 + v, 0);
+  }
+
+  function stopEpisodeTracks() {
+    episodeTrackSeq += 1; // invalidate in-flight fetches
+    episodeCurrentTrack = null;
+  }
+
+  async function loadEpisodeTracks(episodeId) {
+    const seq = ++episodeTrackSeq;
+    if (episodeTracksCache.has(episodeId)) {
+      return seq === episodeTrackSeq ? episodeTracksCache.get(episodeId) : null;
+    }
+    try {
+      const r = await fetch(`https://web-api.sr.se/v1/player/ondemand?id=${episodeId}&type=episode`);
+      if (seq !== episodeTrackSeq) return null; // superseded — another episode
+      const j = await r.json();
+      const tracks = Array.isArray(j?.tracks) ? j.tracks : [];
+      episodeTracksCache.set(episodeId, tracks);
+      return tracks;
+    } catch {
+      // Endpoint down / offline → no track line; never affects playback.
+      return null;
+    }
+  }
+
+  // Resolve the track at the CURRENT playback position and paint it. Called
+  // from timeupdate (cheap: linear scan over ≤40 entries) and after seeks.
+  function updateEpisodeTrack() {
+    const cur = state.current;
+    if (!cur || cur.kind !== 'episode' || !cur.id) return;
+    const tracks = episodeTracksCache.get(cur.id);
+    if (!tracks || !tracks.length) return; // talk episode / fetch failed
+    const t = audioEl.currentTime || 0;
+    const hit = tracks.find((tr) => {
+      const s = hmsToSec(tr.relativeStartTime);
+      const e = hmsToSec(tr.relativeEndTime);
+      return s != null && e != null && t >= s && t < e;
+    });
+    const next = hit ? { title: hit.title || '', artist: hit.artist || '' } : null;
+    // Only repaint on change — timeupdate fires ~4×/s.
+    if ((next?.title || null) !== (episodeCurrentTrack?.title || null)
+      || (next?.artist || null) !== (episodeCurrentTrack?.artist || null)) {
+      episodeCurrentTrack = next;
+      paintNowPlaying();
+    }
+  }
 
   function stopNowPlayingPoll() {
     if (nowPlayingTimer) { clearTimeout(nowPlayingTimer); nowPlayingTimer = null; }
     nowPlayingSeq += 1; // invalidate in-flight responses
+    artworkSeq += 1; // an old live artwork response must not outlive the channel
     nowPlaying.song = null;
     nowPlaying.artwork = null;
     nowPlaying.channelId = null;
@@ -836,18 +930,21 @@
   // only on the CORS-blocked latlista page. iTunes Search is CORS-open and
   // artworkUrl100 scales to any size via URL rewrite. Fully isolated:
   // failure = no image, never affects audio.
-  let artworkSeq = 0;
   const artworkCache = new Map(); // "artist|title" → url (session-lifetime)
   async function refreshNowPlayingArtwork() {
+    const seq = ++artworkSeq;
     const song = nowPlaying.song;
-    if (!song || !song.title) { nowPlaying.artwork = null; paintNowPlaying(); return; }
+    if (!song || !song.title) {
+      nowPlaying.artwork = null;
+      paintNowPlaying();
+      return;
+    }
     const key = `${song.artist}|${song.title}`.toLowerCase();
     if (artworkCache.has(key)) {
       nowPlaying.artwork = artworkCache.get(key);
       paintNowPlaying();
       return;
     }
-    const seq = ++artworkSeq;
     try {
       const q = encodeURIComponent(`${song.artist} ${song.title}`.slice(0, 180));
       const r = await fetch(`https://itunes.apple.com/search?term=${q}&entity=song&limit=1`);
@@ -865,20 +962,36 @@
 
   // Paint the now-playing line into the player (if present). DOM-diffing is
   // unnecessary: the line is a single element updated in place.
+  // Source of truth: LIVE → nowPlaying.song (playlists/rightnow poll);
+  // EPISODE → episodeCurrentTrack (ondemand tracks vs currentTime). The two
+  // can never mix: an episode never reads rightnow, live never reads tracks.
   function paintNowPlaying() {
     const line = $player.querySelector('.now-playing-line');
-    if (!line) return;
-    const song = nowPlaying.song;
-    if (!song || !song.title) {
-      line.textContent = '';
-      line.classList.remove('has-song');
-    } else {
-      line.textContent = `♪ ${song.artist ? song.artist + ' – ' : ''}${song.title}`;
-      line.classList.add('has-song');
+    const cur = state.current;
+    const isEpisode = Boolean(cur && cur.kind === 'episode');
+    const song = isEpisode
+      ? episodeCurrentTrack
+      : nowPlaying.song;
+    // Episodes have no compact now-playing line, but their expanded panel
+    // still depends on this function. Repaint the panel even when no compact
+    // line is present.
+    if (line) {
+      if (!song || !song.title) {
+        line.textContent = '';
+        line.classList.remove('has-song');
+      } else {
+        line.textContent = `♪ ${song.artist ? song.artist + ' – ' : ''}${song.title}`;
+        line.classList.add('has-song');
+      }
     }
     // If the expand panel is open, repaint its song view too.
     const panel = $player.querySelector('.player-expand');
-    if (panel && typeof panel._srRepaint === 'function') panel._srRepaint();
+    if (panel && typeof panel._srRepaint === 'function') {
+      panel._srRepaint();
+      // The episode painter deliberately has no compact song line; this
+      // paint call exists to refresh the expanded episode view only.
+      if (isEpisode) return;
+    }
   }
 
   // ---- Pågår nu-programmet som undertitel (användarönskemål 2026-09-23) ----
@@ -887,10 +1000,14 @@
   // place när schemat löser sig; misslyckande = 'Direkt' som fallback.
   function paintProgramTitle() {
     const sub = $player.querySelector('.player-sub');
-    if (!sub) return;
-    const cur = state.current;
-    if (!cur || cur.kind !== 'live') return;
-    if (cur._srProgramTitle) sub.textContent = cur._srProgramTitle;
+    if (sub) {
+      const cur = state.current;
+      if (cur && cur.kind === 'live' && cur._srProgramTitle) sub.textContent = cur._srProgramTitle;
+    }
+    // If the expand panel is open, repaint its fallback view too — the
+    // program title may have resolved AFTER the panel was opened.
+    const panel = $player.querySelector('.player-expand');
+    if (panel && typeof panel._srRepaint === 'function') panel._srRepaint();
   }
 
   async function resolveProgramTitle(cur) {
@@ -908,8 +1025,17 @@
   }
 
   function playTrack(track) {
+    // Any track transition invalidates both old episode resolution and state.
+    // This is important for episode→episode, not just episode→live.
+    stopEpisodeTracks();
+    // Do not display the previous live song/artwork while the new channel's
+    // rightnow request is pending. The sequence guards also kill late replies.
+    stopNowPlayingPoll();
     state.current = track;
     lastPlayingKey = `${track.kind}:${track.id}`;
+    // New playback session → the news auto-collapse may fire once again.
+    newsAutoCollapsed = false;
+    newsManualExpanded = false;
     let srcUrl = track.audioUrl;
     if (Array.isArray(track.candidates) && track.candidates.length) {
       const key = lastPlayingKey;
@@ -950,6 +1076,7 @@
         loadHlsJs().then(startHls);
       }
     } else if (audioEl.src !== srcUrl) {
+      diagLog(`audio-src-set kind=${track.kind} id=${track.id} url=${srcUrl.slice(-50)}`);
       audioEl.src = srcUrl;
       audioEl.play().catch(() => {
         showToast('Kunde inte starta uppspelning. Försök igen.');
@@ -971,7 +1098,13 @@
       startNowPlayingPoll();
       resolveProgramTitle(track); // Pågår nu-programmet som undertitel
     } else {
-      stopNowPlayingPoll();
+      // Archived episode: load its music playlist (cached per episode).
+      // The audio path is untouched — metadata only.
+      if (track.id) {
+        loadEpisodeTracks(track.id).then((tracks) => {
+          if (tracks && state.current === track) updateEpisodeTrack();
+        });
+      }
     }
     updatePlayingMarks();
   }
@@ -1048,7 +1181,9 @@
     if (audioEl._srStuckGuard) { clearInterval(audioEl._srStuckGuard); audioEl._srStuckGuard = null; }
     hlsDetach(); // no HLS instance may outlive the player
     stopNowPlayingPoll(); // metadata loop must not outlive the player
+    stopEpisodeTracks(); // archived-track state must not leak into next session
     audioEl.pause();
+    diagLog(`audio-src-cleared (stopAndClosePlayer)`);
     audioEl.removeAttribute('src');
     state.current = null;
     lastPlayingKey = null;
@@ -1059,6 +1194,7 @@
     $player.onclick = null;
     $player.textContent = '';
     updatePlayingMarks();
+    updateNewsFold(); // playback ended → News returns to fully expanded
   }
 
   audioEl.addEventListener('error', () => {
@@ -1083,9 +1219,57 @@
         : base;
       node.setAttribute('aria-label', active ? stopLabel : playLabel);
     });
+    // Nyheter collapse (user request 2026-09-23, corrected): when a program
+    // or podcast starts playing, the news section COLLAPSES so the player
+    // gets visual focus; when playback stops it returns to fully expanded.
+    // Manual expand during playback wins (see updateNewsFold).
+    updateNewsFold();
+  }
+
+  // ---- Nyheter collapse/expand (user request 2026-09-23, CORRECTED) ----
+  // Correct semantics (the first implementation had this REVERSED):
+  //   No playback  → News FULLY EXPANDED (normal, all items visible, no peek).
+  //   Playback on  → News auto-COLLAPSES once (header only, no peek) so the
+  //                  player gets visual focus.
+  //   Manual expand during playback → user's choice wins; playback events,
+  //                  renderPlayer, metadata polls etc. must NOT re-collapse.
+  //   Playback off → News returns to fully expanded.
+  // Module-level so the state survives renderHome() re-renders.
+  let newsExpanded = true;      // default: fully expanded, no collapsed state
+  let newsManualExpanded = false; // user expanded manually during playback
+  let newsAutoCollapsed = false;  // auto-collapse already fired this session
+  function updateNewsFold() {
+    // "Active playback" = a track is loaded AND audio is not paused. A
+    // mid-session PAUSE is still the same playback session — the section
+    // must not flip states while the user pauses/resumes (verified live:
+    // pause→resume re-triggered the auto-collapse). Only a closed player
+    // (state.current === null) ends the session.
+    const session = Boolean(state.current);
+    const playing = session && !audioEl.paused;
+    if (!session) {
+      // No active playback at all → fully expanded (user requirement A/D).
+      newsExpanded = true;
+      newsManualExpanded = false;
+      newsAutoCollapsed = false;
+    } else if (playing && !newsAutoCollapsed && !newsManualExpanded) {
+      // Playback just started → auto-collapse ONCE. After that the user's
+      // manual choice wins: playback events / renderPlayer / metadata
+      // updates must never re-collapse an expanded section.
+      newsExpanded = false;
+      newsAutoCollapsed = true;
+    }
+    document.querySelectorAll('.news-section').forEach((sec) => {
+      sec.classList.toggle('expanded', newsExpanded);
+      const btn = sec.querySelector('.news-toggle');
+      if (btn) {
+        btn.setAttribute('aria-expanded', String(newsExpanded));
+        btn.setAttribute('aria-label', newsExpanded ? 'Fäll ihop Nyheter' : 'Fäll ut Nyheter');
+      }
+    });
   }
 
   ['play', 'pause', 'ended'].forEach((ev) => audioEl.addEventListener(ev, () => {
+    diagLog(`audio-${ev} src=${(audioEl.currentSrc || audioEl.src || 'none').slice(-50)} t=${audioEl.currentTime?.toFixed(1)}`);
     if (ev === 'play') {
       armPlaybackWatchdog();
     } else if (ev === 'pause' || ev === 'ended') {
@@ -1118,6 +1302,41 @@
   // sessionen till DEN HÄR appen och ger riktiga kontroller.
   const mediaSession = ('mediaSession' in navigator) ? navigator.mediaSession : null;
 
+  // ---- Sidlivscykel: döda ljudsessionen när PWA:an stängs ----
+  // Användarrapport 2026-09-23: "om den nya PWA:n läggs i bakgrunden och
+  // sedan stängs spelar den första spelaren fortfarande". När en PWA stängs
+  // (swipe away i appväxlaren) skickar iOS pagehide; om ljudsessionen inte
+  // städas kan OS:en behålla en zombi-session bunden till den döda sidan —
+  // och låsskärmen öppnar då "fel" app (den gamla installationen).
+  // pagehide med persisted=false = sidan stängs på riktigt → pausa + rensa
+  // MediaSession. persisted=true (bfcache) = normal bakgrundsuppspelning,
+  // ljudet SKA fortsätta (radio i bakgrunden är en feature).
+  // freeze = sidan är på väg att läggas i is (iOS/Android minneshantering).
+  window.addEventListener('pagehide', (e) => {
+    diagLog(`pagehide persisted=${e.persisted} playing=${!audioEl.paused}`);
+    if (e.persisted) return; // bakgrund, inte stängd — låt ljudet spela
+    if (!audioEl.paused) audioEl.pause();
+    updateMediaSession(); // rensar now-playing direkt
+  });
+  document.addEventListener('freeze', () => {
+    diagLog(`freeze playing=${!audioEl.paused}`);
+    if (!audioEl.paused) audioEl.pause();
+    updateMediaSession();
+  });
+  window.addEventListener('pageshow', (e) => {
+    diagLog(`pageshow persisted=${e.persisted} paused=${audioEl.paused}`);
+  });
+  document.addEventListener('visibilitychange', () => {
+    diagLog(`visibilitychange hidden=${document.hidden} paused=${audioEl.paused}`);
+  });
+  // Tillbaka till appen: om ljudet pausades av pagehide ovan (edge case),
+  // synka UI-state. Vi återstartar INTE ljudet automatiskt — användaren
+  // styr uppspelning.
+  document.addEventListener('resume', () => {
+    updatePlayingMarks();
+    renderPlayer();
+  });
+
   if (mediaSession) {
     const safeSeek = (fn) => { try { fn(); } catch { /* live streams may reject */ } };
     try {
@@ -1133,6 +1352,7 @@
     if (!mediaSession) return;
     const cur = state.current;
     if (!cur) {
+      diagLog('mediasession-cleared');
       mediaSession.metadata = null;
       try { mediaSession.playbackState = 'none'; } catch { /* ignore */ }
       return;
@@ -1502,20 +1722,33 @@
       // both verified from GitHub Pages origin). Pågår nu/Nästa program
       // removed — that info already lives in the Tablå context card
       // (long-press on a channel icon); no duplication.
-      // song === null (talk content) → show a quiet "no song" state.
+      // song === null (talk content) → show CHANNEL + ONGOING PROGRAM
+      // (user request 2026-09-23): channel artwork + channel name + the
+      // Pågår nu-program title from the schedule. The old hardcoded text
+      // "Ingen låtinformation för tillfället — kanalen sänder program." is
+      // REMOVED — the channel name is already in the icon, and the program
+      // name is the useful info here.
       const renderSongView = () => {
-        const song = nowPlaying.song;
+        // Same source of truth as paintNowPlaying: episodes read the
+        // ondemand track at the current position; live reads rightnow.
+        const isEpisode = cur.kind === 'episode';
+        const song = isEpisode ? episodeCurrentTrack : nowPlaying.song;
         if (!song || !song.title) {
           content.appendChild(el('div', { class: 'expand-row' },
+            cur.artwork
+              ? el('img', { class: 'expand-img', src: cur.artwork, alt: '' })
+              : el('div', { class: 'expand-img expand-img-placeholder', 'aria-hidden': 'true' }, '♪'),
             el('div', { class: 'expand-text' },
               el('div', { class: 'expand-label', text: 'Spelas just nu' }),
-              el('div', { class: 'expand-title', text: cur.title || '' }),
-              el('div', { class: 'expand-desc', text: 'Ingen låtinformation för tillfället — kanalen sänder program.' }))));
+              el('div', { class: 'expand-title', text: isEpisode ? (cur.title || '') : (cur._srProgramTitle || cur.title || '') }),
+              !isEpisode && cur._srProgramTitle && cur.title && cur._srProgramTitle !== cur.title
+                ? el('div', { class: 'expand-sub', text: cur.title }) : null)));
           return;
         }
+        const songArtwork = isEpisode ? null : nowPlaying.artwork;
         content.appendChild(el('div', { class: 'expand-row' },
-          nowPlaying.artwork
-            ? el('img', { class: 'expand-img expand-img-song', src: nowPlaying.artwork, alt: '' })
+          songArtwork
+            ? el('img', { class: 'expand-img expand-img-song', src: songArtwork, alt: '' })
             : el('div', { class: 'expand-img expand-img-placeholder', 'aria-hidden': 'true' }, '♪'),
           el('div', { class: 'expand-text' },
             el('div', { class: 'expand-label', text: 'Spelas just nu' }),
@@ -1574,18 +1807,40 @@
 
     let seekRow = null;
     if (!live) {
-      const bar = el('div', { class: 'seek-bar' }, el('div', { class: 'seek-fill' }));
+      const bar = el('div', {
+        class: 'seek-bar episode-seek-bar',
+        role: 'slider',
+        'aria-label': 'Spola i avsnittet',
+        'aria-valuemin': 0,
+        'aria-valuemax': cur.duration || 0,
+        'aria-valuenow': 0,
+        tabindex: '0',
+      }, el('div', { class: 'seek-fill' }), el('div', { class: 'seek-thumb' }));
       const timeLeft = el('div', { class: 'player-time', text: '' });
       const timeRight = el('div', { class: 'player-time', text: '' });
       seekRow = el('div', { class: 'seek-row' }, timeLeft, bar, timeRight);
-      const fill = bar.firstChild;
+      const fill = bar.querySelector('.seek-fill');
+      const thumb = bar.querySelector('.seek-thumb');
+
+      const duration = () => Number.isFinite(audioEl.duration) && audioEl.duration > 0
+        ? audioEl.duration
+        : (cur.duration || 0);
+      const fractionAt = (clientX) => {
+        const rect = bar.getBoundingClientRect();
+        if (!rect.width) return null;
+        return Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+      };
+      const paintEpisodeSeek = (frac) => {
+        const f = Math.min(1, Math.max(0, frac));
+        fill.style.width = `${f * 100}%`;
+        thumb.style.left = `${f * 100}%`;
+        bar.setAttribute('aria-valuenow', String(Math.round(f * duration())));
+      };
 
       const upd = () => {
-        const d = Number.isFinite(audioEl.duration) && audioEl.duration > 0
-          ? audioEl.duration
-          : (cur.duration || 0);
+        const d = duration();
         const t = audioEl.currentTime || 0;
-        if (d > 0) fill.style.width = `${Math.min(100, (t / d) * 100)}%`;
+        if (d > 0) paintEpisodeSeek(t / d);
         timeLeft.textContent = fmtDur(t) || '0:00';
         timeRight.textContent = d ? fmtDur(d) : '';
       };
@@ -1594,13 +1849,28 @@
       audioEl.addEventListener('timeupdate', upd);
       upd();
 
-      bar.addEventListener('click', (e) => {
-        const d = Number.isFinite(audioEl.duration) && audioEl.duration > 0
-          ? audioEl.duration : cur.duration;
-        if (!d) return;
-        const rect = bar.getBoundingClientRect();
-        const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-        audioEl.currentTime = frac * d;
+      installEpisodeSeekPointerHandlers(bar, {
+        getDuration: duration,
+        seekToFraction: (fraction) => {
+          const d = duration();
+          if (d > 0) audioEl.currentTime = fraction * d;
+        },
+        onPreview: paintEpisodeSeek,
+        onRestore: upd,
+      });
+      bar.addEventListener('keydown', (e) => {
+        const d = duration();
+        if (!(d > 0)) return;
+        if (e.key === 'Home' || e.key === 'End') {
+          e.preventDefault();
+          audioEl.currentTime = e.key === 'Home' ? 0 : d;
+          return;
+        }
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        e.preventDefault();
+        const step = e.shiftKey ? SEEK_STEP_S : 5;
+        audioEl.currentTime = Math.max(0, Math.min(d, (audioEl.currentTime || 0)
+          + (e.key === 'ArrowLeft' ? -step : step)));
       });
     } else if (cur.dvrAvailable) {
       // DVR seek row (Phase 3, UX rev): a REAL draggable slider (pointer
@@ -2303,8 +2573,27 @@
     $main.appendChild(buildIconSection('podcasts', 'Poddar', state.podcasts));
 
     // ----- News: latest text flashes, newest on top; tap opens in-app reader -----
-    const newsSection = el('section', { class: 'section' },
-      el('h2', { class: 'section-title', text: 'Nyheter' }));
+    // Nyheter collapse/expand (user request 2026-09-23, corrected): the
+    // header is a toggle. Default = FULLY EXPANDED (no peek). When playback
+    // starts the section auto-collapses (header only); the user can expand
+    // it manually during playback and it stays expanded. When playback
+    // stops it returns to fully expanded.
+    const newsSection = el('section', { class: 'section news-section' });
+    const newsToggle = el('button', {
+      class: 'news-toggle', type: 'button',
+      'aria-expanded': String(newsExpanded),
+      'aria-label': newsExpanded ? 'Fäll ihop Nyheter' : 'Fäll ut Nyheter',
+      onclick: () => {
+        // Manual toggle. If the user expands during playback, that choice
+        // wins for the rest of the session (no auto re-collapse).
+        newsExpanded = !newsExpanded;
+        if (newsExpanded) newsManualExpanded = true;
+        updateNewsFold();
+      },
+    },
+      el('h2', { class: 'section-title', text: 'Nyheter' }),
+      el('span', { class: 'news-toggle-chevron', 'aria-hidden': 'true' }));
+    newsSection.appendChild(newsToggle);
     if (!state.news.length) {
       newsSection.appendChild(el('div', { class: 'state-msg', text: 'Inga nyheter just nu.' }));
     } else {
@@ -2340,6 +2629,8 @@
       newsSection.appendChild(scroller);
     }
     $main.appendChild(newsSection);
+    // Apply the current fold state to the freshly rendered section.
+    updateNewsFold();
 
     $main.appendChild(el('p', { class: 'attribution' },
       'Data från ',
@@ -3074,16 +3365,6 @@
   document.getElementById('edit-btn').addEventListener('click', () => {
     openSheet({ initialTab: 'channels', onDone: boot });
   });
-
-  // register service worker with a path that works under any base URL
-  if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-      const swUrl = new URL('sw.js', document.baseURI).href;
-      navigator.serviceWorker.register(swUrl).catch((err) => {
-        console.warn('Service worker registration failed:', err);
-      });
-    });
-  }
 
   boot();
 })();

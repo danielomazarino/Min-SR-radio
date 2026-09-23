@@ -1,11 +1,12 @@
-# Dev files — only the built app is deployed from this branch
+# Local-only preview/development files; tracked root assets are GitHub Pages source.
 server.js
-build.mjs
-scripts/
-src/
-tests/
+scripts/*
+!scripts/
+!scripts/build-pages.mjs
 public/
 node_modules/
-package.json
-package-lock.json
 dist/
+app.*.js
+styles.*.css
+!app.*.js
+!styles.*.css

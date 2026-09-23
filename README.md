@@ -109,16 +109,19 @@ localStorage (favoriter, antal nyheter)
 ## Köra & bygga
 
 ```bash
-npm test          # 10 tester (favoriter, max-4-regler, nyhetssortering)
-npm run build     # produktion → dist/ med cache-bustade filer
-npm start         # VALFRI lokal preview på :3000 (serverar dist/)
+npm test          # tracked node:test suite and regression tests
+npm run build     # dist/ from tracked root; hashes app/CSS, updates SW cache
+npm start         # local preview; serves dist/ if built, else tracked root
 ```
 
-**Deploy till GitHub Pages:**
-1. Skapa ett GitHub-repo, t.ex. `min-radio`.
-2. Ladda upp innehållet i `dist/` (eller kör `npm run build` i en Actions-workflow).
-3. Settings → Pages → Branch: `main`, katalog `/ (root)` eller `/docs`.
-4. Appen finns på `https://<användare>.github.io/min-radio/` — öppna den i telefonens webbläsare.
+**GitHub Pages källa:** GitHub Pages publicerar repositoryts root från `main`
+(`gh api repos/danielomazarino/Min-SR-radio/pages` bekräftade branch `main`,
+path `/`). `app.js`/`styles.css` är redigerbara källor. `npm run build` bygger
+från tracked root, genererar cache-bustade runtime bundles till root plus
+`dist/`, uppdaterar `index.html`/`sw.js` och lägger till lokala ES-moduler i
+service-worker-cachen. Commit + push av build-output är den befintliga Pages-
+deploymentmekanismen; ignored `public/` används inte. Kontrollera Pages
+deploymentstatus efter push.
 
 Alla referenser i appen är relativa, så den fungerar under vilken basväg som helst.
 
