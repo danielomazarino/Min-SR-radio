@@ -6,9 +6,10 @@ Pågående anteckningar för förbättringar att ta itu med senare. Nyast övers
 
 ## AKTIV ARBETSKÖ (uppdaterad 2026-09-23 kväll — dokumentationspass)
 
-Historiken nedan är oförändrad (bevarad som referens). Denna sektion är
-**den aktuella arbetsköen** — allt annat nedan är antingen historik med
-status i rubriken eller äldre poster som har rullats in hit.
+Historiken nedan bevaras som referens; statusrättelser kan annotera äldre
+slutsatser när senare evidens har motbevisat dem. Denna sektion är **den
+aktuella arbetskön** — allt annat nedan är historik eller äldre poster som
+har rullats in hit.
 
 ### Statusrekonciliering 2026-09-23 (dokumentationspass)
 
@@ -22,18 +23,21 @@ som öppet (detaljer i respektive historisk post):
 | ROADMAP BUG 1 (Inställningar-krasch vid scroll) | OPEN | **DONE** (rotorsak: swipe-to-close på hela sheeten; fixad i BUG 1-fixpasset, verifierat) |
 | ROADMAP BUG 2 (nyhetslänkar öppnas inte) | OPEN | **DONE** (rotorsak: döda /artikel/<id>-URL:er; fixad i BUG 2-fixpasset, verifierat) |
 | BUG A (pill minus-tid) | OPEN i iPhone-feedback-posten | **DONE** (fixpass 2026-09-22, verifierat live Edge; iPhone-verifiering återstår enbart som enhetstest) |
-| BUG B (slider-instabilitet) | OPEN i iPhone-feedback-posten | **DONE** (touch-action + pointer-robusthet, verifierat live; iPhone-känsla ej återrapporterad) |
+| BUG B (live DVR-slider-instabilitet) | OPEN i iPhone-feedback-posten | **DONE** (touch-action + pointer-robusthet, verifierat live; separat från öppet episode-seek-drag) |
 | Öppna punkter 2026-09-21 (buffringsindikator, svep-ned-stäng, sheet-bleed) | öppna | **DONE** (implementerade + verifierade samma dag) |
 | Ljud-diagnostik "Missing functionality" 1–3, 5 | öppna rekommendationer | **DONE** (retry/fallback = advanceCandidate + watchdog; stall-detektering = buffrings-badge; canPlayType = CAPS; HLS = Fas 2A) |
 | Ljud-diagnostik 4 (kvalitetsval) + 6 (nätverksmedvetenhet) | öppna | **OPEN → ny förstärkningspost "Högsta ljudkvalitet" (nedan)** |
 | Låsskärm fel-PWA | öppen | **OPEN — diagnostik deployad, rotorsaksdata väntas från iPhone** (se PWA-ljudlivscykel nedan) |
-| iPhone/Android-validering | NOT YET VALIDATED | **PARTIAL** (iPhone: DVR/±15 s/gester/knappplacering/zoom/långtryck verifierade via användarskärmdumpar; bakgrund/låsskärm + Android Chrome fortfarande öppna) |
+| iPhone/Android-validering | NOT YET VALIDATED | **PARTIAL** (iPhone: DVR/±15 s/gester/knappplacering/zoom/långtryck verifierade via användarskärmdumpar; episod-metadata + episode-seek-drag + bakgrund/låsskärm öppna; Android Chrome ej validerad) |
+| Episod-låtmetadata | OPEN | Stale expanded-panel UI reproducerad 6/6 i headless production-UI-test; verklig ljud/timeupdate och intern state-vs-repaint-rotorsak ej bevisad (se evidenspasset längst ned) |
+| Episodens seek-reglage på touch | OPEN | Tryck-seek fungerar enligt användaren; drag/thumb/hit area behöver verifieras och åtgärdas på riktig iPhone |
+| E1–E4 förstärkningar | PLANNED | Ta efter öppna uppspelnings-/enhetsproblem; E1 är högst prioriterad bland förstärkningarna |
 
 ---
 
 ## ARBETSKÖ — FYRA NYA FÖRSTÄRKNINGAR (registrerade 2026-09-23, EJ implementerade)
 
-### E1 — Högsta möjliga ljudkvalitet (HÖGSTA PRIORITET)
+### E1 — Högsta möjliga ljudkvalitet (HÖGSTA PRIORITET BLAND FÖRSTÄRKNINGAR — EJ före öppna buggar)
 **Mål:** appen ska alltid använda den bästa ljudkvalitet som är tekniskt
 tillgänglig och pålitligt spelbar, med robust fallback till lägre kvalitet.
 
@@ -126,6 +130,26 @@ startsidan — inte via Inställningar.
 - Detaljerad analys + utredningsplan: se "FÄLTTEST 2026-09-23"-posten
   (ovan, under episod-metadata-posten). **Utred nästa session innan kod
   ändras.**
+- Senare evidens: GitHub Pages-UI-testet reproducerade stale/tom expanderpanel
+  efter seek **6/6 gånger**; korrekt spår visades först efter att panelen
+  stängts/öppnats. Testet saknade fungerande mediaelement, så faktisk
+  ljuduppspelning/timeupdate och state-vs-repaint-rotorsak är fortfarande
+  obevisade. Se evidenspasset längst ned.
+
+### Episodspelare: seek-reglaget ska vara dragbart på iPhone — OPEN
+- Användarrapport: vid podd-/episoduppspelning går det att trycka på
+  tidslinjen för att söka, men touch-and-drag fungerar inte som på
+  live-radions DVR-reglage.
+- Den runda tumregeln/indikatorn ska synas även för poddar. Utöka dess
+  touch-träffyta så att dragning startar pålitligt utan att användaren måste
+  träffa ett fåtal exakta pixlar; den synliga punkten behöver inte göras
+  större om en större interaktionsyta räcker.
+- Förväntat: tryck och drag ger samma förhandsvisning och seek vid släpp som
+  live-reglaget, samtidigt som vanliga sidgester inte fångas av misstag.
+- Orsak ej fastställd. Jämför episodens `.seek-bar`-händelser/CSS med
+  `.dvr-bar`; verifiera drag från både tummen och spåret på riktig iPhone.
+  Behåll tryck-seek och kontrollera att bredare träffyta inte försämrar
+  sidscroll eller spelarens gester.
 
 ### PWA-ljudlivscykel (iPhone) — OPEN, diagnostik deployad
 - Användarrapport: ljud fortsätter när PWA swipas bort; låsskärmen öppnar
@@ -147,8 +171,9 @@ startsidan — inte via Inställningar.
 ### Riktig enhetsvalidering — PARTIAL
 - iPhone (verifierat via användarskärmdump): DVR-seek, ±15 s, LIVE-etikett,
   knappplacering, zoom, långtryckskort, expanderad spelare, gest-fixar.
-- iPhone (öppet): låsskärm/PWA-ljudlivscykel (se ovan), episod-låtmetadata
-  **otillförlitlig i fältet** (se FÄLTTEST-posten), BUG B slider-känsla.
+- iPhone (öppet): episod-låtmetadata-panelen (headless UI-symptom reproducerat,
+  faktisk media/timeupdate ej verifierad), episodens seek-drag/träffyta och
+  låsskärm/PWA-ljudlivscykel (se posterna ovan).
 - Android Chrome: ej validerat (hls.js-vägen).
 
 ### Låsskärm: MediaSession-metadata + ikon — DONE med förbehåll
@@ -429,7 +454,7 @@ inte `/artikel/<id>`.
   använder `dvrOffsetLabel()`, verifierat live i Edge 153. iPhone-känsla
   återstår enbart som del av enhetsvalideringen.
 
-### BUG B — Slider-upplevelsen fläckig/instabil (HIGH, ~~OPEN~~ **CLOSED 2026-09-22**)
+### BUG B — Live DVR-slider: tidigare instabilitet (HIGH, ~~OPEN~~ **CLOSED 2026-09-22**; separat från episodens dragbugg)
 - **Observation:** slider-känslan är "fläckig" och känns inte stabil/smooth
   på iPhone (touch).
 - **FIXAD i fixpasset 2026-09-22**: `touch-action: none` på DVR-baren +
@@ -546,8 +571,8 @@ position). Kontraktet "renderPlayer äger presentationen" är nu komplett
 
 ## ROADMAP — projektstatus och framtida faser (2026-09-22)
 
-**Statusöversikt (statuskolumnerna uppdaterade 2026-09-23 så att färdigt
-arbete inte visas som öppet; detaljer i AKTIV ARBETSKÖ-rekoncilieringen):**
+**Statusöversikt vid 2026-09-23 (historisk; AKTIV ARBETSKÖ högst upp är
+aktuell status):**
 
 | Fas | Status |
 |---|---|
@@ -557,7 +582,7 @@ arbete inte visas som öppet; detaljer i AKTIV ARBETSKÖ-rekoncilieringen):**
 | Fas 3 — DVR-UI | **COMPLETE** (se nedan; verifierad på riktig Edge) |
 | Fas 4 — Expanderbar/rich player | **COMPLETE** (2026-09-23: redesign + gester + låt/artist/artwork + fallback — se poster nedan; status uppdaterad 2026-09-23) |
 | Fas 5 — Context cards: Tablå & podcast-avsnitt | **COMPLETE** (2026-09-23: långtryckskort implementerade; tablåkortet visar igår+idag; status uppdaterad 2026-09-23) |
-| Validering på riktig iPhone Safari + Android Chrome | **PARTIAL** (iPhone: DVR/±15 s/gester/kort verifierade; bakgrund/låsskärm + Android öppna) |
+| Validering på riktig iPhone Safari + Android Chrome | **PARTIAL** (iPhone: DVR/±15 s/gester/kort verifierade; episodmetadata/seek-drag + bakgrund/låsskärm öppna; Android ej validerad) |
 | Bug backlog (Inställningar-krasch, nyhetslänkar) | **CLOSED** (båda fixade + verifierade 2026-09-22; status uppdaterad 2026-09-23) |
 
 **Fas 2B-nyckelbevis (bevarat):** riktig Edge 153 (riktig Chromium, CDP-driven
@@ -570,17 +595,19 @@ exponeras. `backBufferLength: 90` / `maxBufferLength: 30` räckte för den
 testade bakåtseeken — **ändra inte dessa värden** bara för att SR:s playlist
 innehåller ~3 timmar.
 
-**Ej verifierade plattformar (kvarstår):** iPhone Safari, Android Chrome,
-bakgrund/låsskärm-uppspelning. Fas 2B gav tillräckligt underlag för DVR-UI;
-**riktig enhetsvalidering krävs innan iPhone/Android-DVR-stöd kan förklaras
-komplett.**
+**Plattformsstatus (uppdaterad 2026-09-23):** iPhone Safari/PWA har
+användarverifiering av DVR/±15 s och centrala gester, men episod-seek-drag,
+episodmetadata och ljudets bakgrund/låsskärmslivscykel är fortfarande öppna.
+Android Chrome/PWA är ännu inte validerad. HLS/DVR-stöd ska inte kallas
+fullständigt plattformsverifierat förrän dessa riktiga enhetsflöden testats.
 
-### Fas 3 — DVR-UI (status: COMPLETE, verifierad på riktig Edge 153)
+### Fas 3 — DVR-UI (status: COMPLETE; iPhone delvis verifierad 2026-09-22/23)
 Implementerad och verifierad 2026-09-22 (se detaljerad post nedan): mode-pill
 med relativ offset, DVR-seekrad mappad till aktuell seekable-range, "Till
 Direkt", transportoberoende (läser Phase 2A-state), P2 FLAC aldrig automatiskt
-ersatt. Kvar för Fas 3: validering på riktig iPhone Safari + Android Chrome när
-enheter finns tillgängliga.
+ersatt. iPhone DVR/±15 s/gester har senare verifierats via användartest och
+skärmdumpar; Android Chrome återstår. Separata öppna episode-seek- och
+metadatafel listas i den aktuella arbetskön.
 
 ### Fas 4 — Expanderbar/rich player (status: COMPLETE — implementerad 2026-09-23)
 Ursprunglig plan genomförd och därefter redesignad efter användarfeedback.
@@ -621,14 +648,14 @@ använda faktisk tillgänglighetsinformation från appens datakälla.
 **UX-intent:** ett snabbt kontextuellt sätt att bläddra i innehåll utan att
 lämna huvudkanal/podd-val-upplevelsen.
 
-### Validering på riktig enhet (status: NOT YET VALIDATED)
-Kvar att validera när enheter finns tillgängliga:
-- iPhone Safari + installerad PWA: native HLS, DVR-UI, bakgrundsljud,
-  låsskärm, kanalbyte, fallback
-- Android Chrome + installerad PWA: hls.js, DVR-UI, bakgrundsljud,
-  låsskärm, kanalbyte, fallback
-- DVR-UI:n är transportoberoende (läser bara seekable-state) och ska
-  valideras på båda plattformarna innan stödet förklaras komplett.
+### Validering på riktig enhet (status: PARTIAL)
+- iPhone Safari + installerad PWA: DVR/±15 s, centrala gester, kort,
+  knappplacering och zoom har verifierats via användartest/skärmdumpar.
+  Kvar: episodmetadata/seek-drag samt bakgrundsljud och låsskärmslivscykel.
+- Android Chrome + installerad PWA: hls.js, DVR, bakgrundsljud, låsskärm,
+  kanalbyte och fallback är ännu inte validerade.
+- DVR-UI:n är transportoberoende (läser seekable-state), men faktisk
+  plattformsvalidering krävs innan iPhone/Android-stödet förklaras komplett.
 
 ### BUG BACKLOG (status: CLOSED — båda fixade 2026-09-22, status uppdaterad 2026-09-23)
 
@@ -647,11 +674,40 @@ Kvar att validera när enheter finns tillgängliga:
   är DÖDA (SR 404:ar dem). Fix: slug-härledda länkar / SR-sökning, aldrig
   id-URL. Verifierat live (se BUG 2-posten nedan).
 
-### Rekommenderad arbetsordning
-Faserna behöver inte genomföras i strikt numerisk ordning. De två bekräftade
-buggarna (Inställningar-krasch, nyhetslänkar) kan behöva åtgärdas före eller
-mellan feature-faser beroende på utredning. Riktig enhetsvalidering
-(iPhone/Android) krävs innan plattformsspecifikt DVR-stöd förklaras komplett.
+### Rekommenderad arbetsordning (uppdaterad 2026-09-23)
+1. **PWA-ljudlivscykel/låsskärm — samla evidens nu:** hämta iPhone-
+  diagnostik efter den dokumenterade reproduktionssekvensen. Ändra ingen kod
+  förrän loggen skiljer dokument-/session-/iOS-livscykelhypoteserna åt. Detta
+  kan göras parallellt med följande isolerade UI-arbete.
+2. **Episodens touch-seek:** tydlig användarrapport och avgränsad yta.
+  Jämför `.seek-bar` med `.dvr-bar`, implementera drag + synlig thumb/bredare
+  hit area utan att fånga scrollgester, verifiera på riktig iPhone.
+3. **Episodmetadata-panelens stale UI:** headless production-UI-symptom
+  reproducerat 6/6, men faktisk ljud/timeupdate och intern state-vs-repaint-
+  rotorsak ej bevisad. Reproducera med fungerande media eller på iPhone;
+  skilj track-state från repaint innan ändring.
+4. **PWA-ljudlivscykel — rotorsaksfix:** efter granskning av loggen, välj
+  minsta korrigering och testa upprepad start/lås/återöppning på iPhone.
+  Håll detta separat från episodmetadata.
+5. **Enhetsvalidering:** komplettera iPhone-flöden och kör Android Chrome /
+  installerad PWA-smoke-test för HLS, DVR, kanalbyte, fallback och bakgrund.
+6. **E1 ljudkvalitet:** gör discovery och besluta policy innan någon
+  uppspelningsväg byts; testa fallback och stabilitet på riktiga enheter.
+7. **E3 nyheter/play-pill:** endpoint-/trafikdiscovery först, därefter
+  produktbeslut om spelbara objekt.
+8. **E4 info-vy:** omarbeta hjälpinnehållet och placera INFO på startsidan.
+9. **E2 Spotify/YouTube:** sist; valfri bekvämlighet och delvis beroende av
+  tillförlitlig låtmetadata. Använd Spotify-ID där det finns och var tydlig
+  med att textbaserade sökningar inte garanterar exakt matchning.
+
+De två nya spelarproblemen ska hanteras före större ljudförbättringar; samla
+samtidigt PWA-diag-data efter den dokumenterade reproduktionen. Håll
+diagnostik, implementation och iPhone/Android-verifiering som separata steg;
+enhetstest eller headless DOM-test ensamt räcker inte för att markera dessa
+problem lösta. BUG 1 och BUG 2 är stängda och ska inte återöppnas utan ny
+reproduktion. Denna sektion är den enda aktuella arbetsordningen; numrerade
+faser och checklistor i daterade historikposter beskriver status vid den
+tidpunkten.
 
 ---
 
@@ -741,7 +797,7 @@ mot deployad GitHub Pages-build:
 - MSE-quirken (mediaSourceRequiresReset) → HLS-fallback till MP3 är den enda
   spelbara vägen där. Bevisar endast fallback-kedjan, inte Chrome-kompatibilitet.
 
-### Acceptansmatris
+### Acceptansmatris (ögonblicksbild vid Fas 2B-testet; aktuell status står ovan)
 
 | Platform | HLS-metod | HLS-uppspelning | Seekable | Bakåtseek | Bakgrundsljud | Not |
 |---|---|---|---|---|---|---|
@@ -876,7 +932,7 @@ för att en annan stödjer mer.
 - **Slutsats:** hls.js-arkitekturen är via-bar för DVR; kräver riktig
   Chrome/Safari-test innan implementering.
 
-### Kompatibilitetsmatris (kodavkodning vs SR-ström vs arkitektur)
+### Kompatibilitetsmatris (snapshot 2026-09-21; plattformsstatus uppdaterad i senare poster)
 
 | Kapabilitet | iOS Safari/PWA | iPadOS Safari/PWA | Android Chrome/PWA | Win Chrome | Win Edge | Win Firefox | macOS Safari | macOS Chrome | Linux Chrome | Linux Firefox |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -932,7 +988,7 @@ för att en annan stödjer mer.
   testat. DVR-UI (spola bakåt i direkt) aktiveras bara när
   `audio.seekable` visar ett fönster > 0.
 
-### Kvar att testa på riktig hårdvara — **UPPDATERAD 2026-09-23**
+### Kvar att testa på riktig hårdvara — **ögonblicksbild 2026-09-23, se senare evidens ovan/nedan**
 - iPhone: native HLS + DVR-seek **DONE** (användarskärdump 2026-09-22);
   bakgrund/PWA-ljudlivscykel **OPEN** (diagnostik deployad).
 - Android: hls.js + DVR + bakgrund — **OPEN**.
@@ -1002,7 +1058,7 @@ för att en annan stödjer mer.
 
 ---
 
-## 2026-09-21 — Strömresolver med automatisk fallback (implementerat)
+## 2026-09-21 — Strömresolver med automatisk fallback (historisk första version; kanalordning korrigerad senare)
 
 **Princip: bästa ljudkvalitet först för ALLA enheter; automatisk fallback till
 nästa kandidat vid fel — och badgen i spelaren följer med automatiskt så
@@ -1080,7 +1136,7 @@ Diagnostik genomförd 2026-09-21 enligt checklistan. Resultat: se avsnittet "Lju
 
 ---
 
-## Ljud-diagnostik 2026-09-21 (investigation only, inga filer ändrade)
+## Ljud-diagnostik 2026-09-21 (historisk arkitektursnapshot — senare arbete ersatte flera slutsatser)
 
 ### Current architecture
 - **100 % statisk PWA**, vanilla JS (IIFE i `public/app.js`), ingen backend, inga ramverk, inget state-bibliotek — tillståndet är en enkel `state`-objekt-modul (`state.channels/podcasts/news/current`) plus `localStorage` för favoriter/inställningar.
@@ -1138,7 +1194,7 @@ Diagnostik genomförd 2026-09-21 enligt checklistan. Resultat: se avsnittet "Lju
 5. ~~HLS-stöd~~ **DONE** — Fas 2A (hls.js lazy-load + native HLS).
 6. Nätverksmedvetenhet — **OPEN → del av E1-utredningen** (antag inte adaptiv kvalitet utan stöd i utredningen).
 
-### Recommended next investigation steps
+### Recommended next investigation steps (HISTORIK — ersatta av HLS- och fallback-arbetet)
 1. Kartlägga SR:s ljud-URL-mallar för kvalitetsvarianter (96/192 MP3, AAC) — finns i SR:s dokumentation under "ljud".
 2. Testa beteende vid nätverksbortfall på riktig telefon (flygplansläge mitt i P1) — dokumentera exakt vad som händer.
 3. Utvärdera `audio.addEventListener(['waiting','stalled','suspend'])` som bas för stall-detektering.
@@ -1151,7 +1207,7 @@ Diagnostik genomförd 2026-09-21 enligt checklistan. Resultat: se avsnittet "Lju
 - 2026-09-21: Ikonrader med kontinuerlig rullning (exakt 4 syns, stopp vid sista ikonen); Valda favoriter + drag-and-drop-sortering i Inställningar; fler än 4 val möjliga (cap 16); svep nedåt stänger Inställningar; svep åt sidan stänger läsare/Info; Info/Spara 50/50; kugghjul; reglage med värde i bollen.
 - 2026-09-20: Statisk arkitektur (GitHub Pages), nyhetsläsare i appen, rullbar nyhetslista med inställbart antal, poddsökning klientsidigt, PWA-ikoner, service worker.
 
-## Låsskärm-fixar (2026-09-22)
+## Låsskärm-fixar (2026-09-22; första implementationen, senare fälttest visade att fel-PWA-problemet kvarstår)
 
 **1. Fel PWA öppnades från låsskärmsspelaren.** Utan `navigator.mediaSession`-
 metadata kunde iOS binda now-playing-sessionen till fel installerad PWA (tryck
@@ -1171,10 +1227,11 @@ opak teal [0,80,78,255] både lokalt och LIVE).
 till `public/icons/`. Glömd kopiering → live-ikonen förblev gammal trots
 "lyckad" build. Nu verifierad byte-for-byte via md5 mot live-URL.
 
-**Verifierat live:** bundle `app.21251be8.js`, SW `minradio-2265a6ae`,
-ikon-md5 `c79ae883…` på GitHub Pages. MediaSession-metadata sätts vid
-uppspelning (poddar/nyheter; kanaler följer samma kodväg). iPhone-verifiering
-av låsskärmsspelaren + ikonen återstår (användaren).
+**Verifierat live vid implementationen:** bundle `app.21251be8.js`, SW
+`minradio-2265a6ae`, ikon-md5 `c79ae883…` på GitHub Pages. MediaSession-
+metadata sätts vid uppspelning. Senare iPhone-test (2026-09-23) rapporterade
+oförändrat fel-PWA-beteende efter både livscykelfix och diagnostik; den öppna
+rotorsaksutredningen i AKTIV ARBETSKÖ är den aktuella statusen.
 
 ## 2026-09-23 — TABLÅ FIXAD: scheduledepisodes (upptäckt via srtableau.se)
 
@@ -1305,11 +1362,13 @@ none` på `.stream-icon`, och `pointer-events: none` på `.stream-icon img`
   vall, bild och beskrivning från scheduledepisodes. Verifierat live:
   P3 01:02 → "Vaken (Vaken med P3 & P4) 01:02–02:00" + "Nästa: Ekot senaste
   nytt 02:00–02:02", båda med bilder + beskrivningar.
-- **Låttitlar finns INTE i någon nåbar SR-källa** (utrett 2026-09-23):
-  rightnow-endpointen är död (500), HLS-playlistorna saknar
-  EXT-X-DATERANGE-metadata (verifierat mot ljud1-cdn), och sverigesradio.se
-  SSR-sida har bara programnivå (CORS-blockerad). Programnivå är det bästa
-  möjliga — och det är exakt vad SR:s egen app visar i tablåvyn.
+- **Dåvarande slutsats, senare motbevisad samma natt:** den utredningen fann
+  inga nåbara låttitlar eftersom den testade `channels/{id}/rightnow` (500),
+  HLS-playlistorna saknade EXT-X-DATERANGE-metadata och sverigesradio.se:s
+  SSR-sida var CORS-blockerad. Del 2 nedan fann `playlists/rightnow`, som
+  returnerar live artist/titel med CORS från GitHub Pages. Behåll detta som
+  historik över en ofullständig endpoint-utredning, inte som nuvarande
+  arkitekturbeslut.
 
 ### 3. Kritisk bugg A: duplicerad const nextEv (FIXAD)
 SyntaxError "Identifier 'nextEv' has already been declared" kraschade HELA
@@ -1372,8 +1431,10 @@ sverigesradio.se/kanaler/latlista/p3 är server-renderad med hela låtlistan
 CORS-headers (verifierat med Origin-header — servern ignorerar den), så PWA:n
 kan inte läsa svaret. SR:s egen spelare är same-origin och därför funkar det
 för dem. Alla api.sr.se-varianter (songs/playlist/music/latlista) är 500.
-**Slutsats: låttitlar kräver en proxy — användarbeslut.** Programnivån
-(Pågår nu/Nästa) som expanderpanelen visar är allt som går utan backend.
+**Dåvarande slutsats, motbevisad senare samma natt:** låttitlar skulle kräva
+en proxy. Del 2 nedan fann `playlists/rightnow`, som ger live artist/titel
+med CORS från GitHub Pages. Behåll detta stycke som historik över en
+ofullständig endpoint-utredning, inte som nuvarande arkitekturbeslut.
 
 ## 2026-09-23 (natt 3) — Aktuell låt + artist + artwork (Del 1–5 genomförda)
 
@@ -1496,7 +1557,7 @@ bara den lilla play-knappen.
 - Verifierat live: foldedInitially ✅ autoUnfoldedOnPlay ✅ manualFoldHolds ✅
   manualUnfoldWorks ✅ afterStopStaysExpanded ✅
 
-**3. PWA-livscykel (stängd PWA + låsskärm):**
+**3. PWA-livscykel (försökt fix; senare iPhone-test bekräftade att problemet kvarstår):**
 - Användarrapport: "om den nya PWA:n läggs i bakgrunden och sedan stängs
   spelar den första spelaren fortfarande" + låsskärmen öppnar fel PWA.
 - Analys: när PWA stängs (swipe away) skickar iOS pagehide; utan städning
@@ -1505,9 +1566,10 @@ bara den lilla play-knappen.
 - Fix: pagehide(persisted=false) + freeze → pausa ljud + rensa
   MediaSession. persisted=true (bfcache/bakgrund) påverkas INTE — radio i
   bakgrunden är en feature. resume → synka UI.
-- iPhone-verifiering av zombi-sessionen återstår (användaren); om problemet
-  kvarstår efter ominstallation av PWA:n är nästa steg att leta efter en
-  dubbelinstallation (gammal + ny ikon).
+- Vid implementationstillfället återstod iPhone-verifiering. Fälttest
+  2026-09-23 bekräftade att beteendet var oförändrat; hämta först
+  `sr-diag-log` enligt AKTIV ARBETSKÖ i stället för att anta att ominstallation
+  eller dubbelinstallation är orsaken.
 
 ### Nyheter-logik korrigerad + episod-låtmetadata + PWA-diagnostik (2026-09-23, commits 38efd3b + 66af359, bundle app.47d38b2b.js)
 
@@ -1579,7 +1641,7 @@ Användarens fälttest av igårens program (skärmdumpar bifogade rapporten):
    Eduard Tubin" medan Musik mot midnatt spelar — dvs. metadata från fel
    källa/fel session läcker in i panelen.
 
-**Analys (preliminär, INTE verifierad — utred nästa session):**
+**Första analysen (preliminär och senare förfinad av evidenspassen nedan):**
 - Punkt 3 tyder på att `episodeCurrentTrack`/`nowPlaying`-state inte
   nollställs vid kanal-/avsnittsbyte i alla vägar, eller att expander-
   panelens `renderSongView` läser state som tillhör en tidigare session.
@@ -1591,7 +1653,7 @@ Användarens fälttest av igårens program (skärmdumpar bifogade rapporten):
 - Punkt 1 kan vara att ondemand-fetchen misslyckas tyst (catch → null) för
   vissa avsnitt, eller att tracks är tomma för vissa igårens program.
 
-**Nästa session (utred först, ändra inte direkt):**
+**Ursprunglig nästa-session-plan (historisk; senare iPhone-/Playwright-evidens och aktuell arbetsordning följer nedan):**
 1. Reproducera på riktig enhet: spela igårens musikprogram, vänta till
    nästa låt, öppna panelen — logga vilken källa (episodeCurrentTrack vs
    nowPlaying.song) panelen ritar.
@@ -1600,5 +1662,151 @@ Användarens fälttest av igårens program (skärmdumpar bifogade rapporten):
 3. Verifiera att ondemand-fetchen lyckas för de igårens avsnitt som
    misslyckas i fältet (endpoint kan returnera tracks:[] för vissa).
 4. Lägg till regressionstester för state-nollställning per övergång.
+
+### Evidenspass 2026-09-23 (GitHub Pages + Edge headless) — AVGRÄNSAT, INTE iPhone
+
+Detta pass verifierade den publicerade builden och SR-data från den riktiga
+GitHub Pages-origin. Headless Edge kan inte användas som bevis för att SR:s
+M4A-ljud faktiskt spelar eller att iPhone-beteendet är reproducerat.
+
+**Verifierat:**
+- Publicerad sida laddar `app.47d38b2b.js`; den har ingen service-worker-
+  controller i denna headless-session. Befintliga Network Timing-resurser
+  visar två lyckade `ondemand?id=2863666`-anrop (HTTP-status kunde inte
+  avläsas ur Performance API; appens fetch-respons hanteras separat).
+- SR `scheduledepisodes` returnerade HTTP 200 för 2026-09-22. Jazzradion
+  `episodeid=2863666` (60 min) har 8 låtposter; Musik mot midnatt
+  `episodeid=2863667` (120 min) har 28; P3-programmet `episodeid=2861333`
+  har 66. Ondemand-endpointen returnerade HTTP 200 för samtliga och
+  motsvarande spårantal. Radio Sweden-avsnitt `2878427` returnerade 200,
+  `tracks: []` — giltigt talinnehåll, inte fetch-fel.
+- Rätt aktivt avsnitt valdes i UI-kortet för Jazzradion, och expanderpanelen
+  visade dess avsnittstitel/omslag medan ingen låt ännu matchade position
+  0:00. Headless ljudstart misslyckades (`Kunde inte starta uppspelning`,
+  `ERR_ABORTED` på M4A efter kandidatbyte); därför gick det inte att verifiera
+  timeupdate, spårgräns eller nästa-låt-paint i denna miljö.
+- Live `playlists/rightnow` gav HTTP 200 och olika data för P2 Musik (163)
+  och P3 (164). Stale song/artwork från föregående kanal kan inte avgöras
+  genom att titta på DOM utan att köra sidans interna listeners/state.
+- Ingen kodändring. `npm test`: 83/83 passerar.
+
+**Kodgranskning — konkret avvikelse som behöver verifieras:**
+- `playTrack()` sätter `state.current = track` före metadata-övergångarna.
+  Vid live väljs därför rätt live-källa direkt; `stopEpisodeTracks()` rensar
+  avsnitts-låten. Vid episod anropas `stopNowPlayingPoll()`, men funktionen
+  rensar `nowPlaying.song/artwork` utan att anropa `paintNowPlaying()`.
+- `paintNowPlaying()` väljer korrekt textkälla efter `state.current.kind`,
+  men expanderpanelens `renderSongView()` väljer rätt `song` och använder
+  ändå alltid `nowPlaying.artwork` för låtbilden. Därför kan gammalt
+  live-omslag paras med episodens låttext under en övergång, om panelen
+  är öppen och episodmetadata hinner målas före en ny render. Detta är en
+  verifierbar inkonsekvens i koden, men ännu inte bekräftad som förklaring
+  till användarens skärmdumpar.
+- `refreshNowPlayingArtwork()` skyddar sena iTunes-resultat med `artworkSeq`
+  bara när en ny bildsökning startar. `stopNowPlayingPoll()` invaliderar inte
+  `artworkSeq`; ett svar från föregående live-kanal kan därför skriva
+  `nowPlaying.artwork` efter kanal-/episodbyte. Ingen synlig episod-låttext
+  orsakas av detta, eftersom episodens textkälla är separat, men omslagsbild
+  kan bli stale. Bekräfta faktisk synlighet innan åtgärd.
+- `updateEpisodeTrack()` körs bara på `timeupdate`; resolvern lämnar
+  `episodeCurrentTrack` oförändrad om `tracks` saknas/tomma. Korrekt
+  sekvensguard finns för fetch, men appen ignorerar `response.ok` före
+  `response.json()` och gör fetchfel/tomt svar indistinguishable i UI.
+
+**Nästa högsta informationsvärde:** på riktig iPhone spela Jazzradion
+2863666 från tablån, verifiera låt vid 00:02 (första intervallet startar
+00:01:49), sök till cirka 00:11 (nästa låt börjar 00:10:41), och rapportera
+om både minispelarens rad och expanderpanelens titel byts. Anteckna aktivt
+avsnitt, visad låt/omslag och UI direkt före/efter sökningen. Separat,
+kontrollera episode→live och episode→annat episode med expanderpanelen öppen
+för att avgöra om stale artwork faktiskt visas. Ändra inte reset-/paint-flödet
+förrän en av dessa fall visar det specifika felet.
+
+### iPhone-uppföljning (rätt tredje skärmdump, 2026-09-23)
+
+- Vid ca 02:14 i Jazzradion 2863666 visar panelen fortfarande programmets
+  titel/omslag, inte låten. API:ts första låt är `A Real Goodun'` från
+  00:01:49 till 00:10:41. Observationen bekräftar alltså att första
+  låtintervallet inte syntes vid den rapporterade positionen.
+- Vid 12:46 visas `Groove Merchant` med Anders Berglunds band; API:t anger
+  intervallet 00:12:00–00:18:34. Andra intervallet matchar således
+  uppspelningstiden och renderades korrekt. Detta begränsar problemet:
+  metadata saknas inte generellt för avsnittet; felet tycks bero på första
+  låtens upptäckt/visning eller testets initiala laddnings-/seeksekvens.
+- Korrigerad tredje skärmdump efter tryck på P2-kanalikonen visar P2 som
+  aktiv källa, undertiteln `Konsert i P2` och live-spåret `Trippelkonsert
+  för violin, cello, och piano i C-dur op 56` av Trio Con Brio. Detta är
+  förenligt med P2:s live-metadata och visar inte kvarhängande Jazzradion-
+  eller episodtext. Badgen visar `AAC 192 · buffrar`; skärmbilden ensam
+  bekräftar inte om ljudet därefter återhämtade sig eller förblev stannat.
+- Därmed finns ännu inget fältbelägg för episod→live-textläckage i just
+  denna övergång. Den kodgranskade artwork-race:n är fortfarande en möjlig
+  hypotes, inte en bekräftad orsak.
+- **Ny uppföljning:** vid seek tillbaka saknades `A Real Goodun'` först;
+  vid ändring till ca 12:26 ändrades inte låten direkt. När användaren
+  stängde den expanderade panelen och öppnade den igen visades rätt låt.
+  Samma sak inträffade efter återgång till ca 02:14. Detta skiljer tydligt
+  på metadata/data och presentation: rätt låt kan visas för samma position
+  efter att panelen byggts om, så saknad endpoint-data är inte längre den
+  främsta hypotesen. Användaren förtydligar att felet är i den expanderade
+  spelarens uppdatering: efter återgång till 02:14 stängdes/öppnades panelen,
+  och då dök rätt låt upp. Detta korrigerar eventuell feltolkning att låten
+  skulle ha dykt upp spontant medan panelen var öppen. Fokusera nu på
+  panelens repaint/livscykel efter seek; track-state kan redan vara korrekt,
+  men aktuell observation ensam bevisar inte exakt vilket led som fallerar.
+
+**Föreslagen kontroll då (senare ersatt av Playwright-försöket nedan):** håll panelen öppen och seeka mellan 02:14 och
+12:26. Bekräfta om metadata i panelen förblir stale medan spelaren går, och
+uppdateras omedelbart när panelen stängs/öppnas. Denna jämförelse skiljer en
+missad panel-repaint från en metadata-resolver som bara uppdateras vid ny
+render. Koden att spåra är `updateEpisodeTrack()` → `paintNowPlaying()` →
+`panel._srRepaint`; kontrollera även om `renderPlayer()` återskapar panelen
+under seek. Gör ingen workaround innan den ansvariga vägen är bekräftad.
+
+### Fokuserat Playwright-försök (produktionsorigin, 2026-09-23)
+
+- Git-status före testet: ENDAST redan existerande ändring i `ENHANCEMENTS.md`
+  från dokumentation av fälttester; inga app-/test-/skriptändringar. Inga
+  tillfälliga diagnostik-wrappers eller Audio-mocks användes i detta pass.
+- Använde byggda GitHub Pages-appen `app.47d38b2b.js`. Endpointen för P3
+  Musik episod `2861130` gav 200 och 33 spår. Kända positioner: 130 s =
+  `Waste My Time`, 300 s = `Addicted To You`, 740 s = `Faller`.
+- Verklig UI-resa: öppna P3:s tablå via högerklick/contextmenu på P3-ikonen,
+  välja gårdagens `P3 Musik`-rad 22:03 (episod 2861130), öppna expanderpanelen,
+  klicka på seekraden vid episodpositionen och läsa panelens faktiska DOM.
+  Varje seek följdes av DOM-läsning efter 1, 3, 5 och 10 s; därefter stängdes
+  och öppnades expanderpanelen och DOM lästes igen.
+- Tre kompletta cykler genomfördes för 130 s och 300 s (6 seekförsök):
+  - 130 s: i samtliga 3 cykler visade panelen endast `Med Annie Widman`
+    efter 1/3/5/10 s; efter panel stäng/öppna visade den
+    `Waste My Time — Benjamin Ingrosso`.
+  - 300 s: i samtliga 3 cykler visade panelen `Waste My Time — Benjamin
+    Ingrosso` efter 1/3/5/10 s; efter panel stäng/öppna visade den
+    `Addicted To You — Avicii, Audra Mae`.
+- Första cykelns tidslinje: panel öppen med fallback `Med Annie Widman` →
+  seek till rapporterad 130 s, UI-tid 1:59 → panel oförändrad vid +1,+3,+5,
+  +10 s → stäng/öppna → `Waste My Time` visas. Därefter seek 300 s, UI-tid
+  4:54 → panel behåller `Waste My Time` i 10 s → stäng/öppna → panel visar
+  `Addicted To You`.
+- **Resultat: produktions-Playwright återgav den användarsynliga buggen
+  6/6 gånger** (gammal/tom panel efter seek; korrekt spår först efter
+  expanderpanelen byggts om). Detta besvarar reproducerbarhetsfrågan: JA.
+- Begränsning: browser context hade ingen `<audio>`/`<video>`-nod och inga
+  media-resource entries; seekraden ändrade ändå appens synliga tid. Därför
+  verifierar detta direkt fel i den deployade UI-resan, men bevisar inte att
+  faktisk AAC-dekodning/timeupdate/ljuduppspelning fungerade. Den testade
+  positionen var UI-tid nära respektive spårposition; miljöns media-gräns
+  gör detta en browser-automation-återgivning av UI-symptomet, inte full
+  ljudkedja.
+- Slutsats hittills: det reproduceras tydligt i UI och reopening ändrar
+  expanderpanelens text. Track-resolution vs repaint kan ännu inte säkert
+  skiljas åt utan privata state-instrument eller en miljö med fungerande
+  mediaavkodning. Varken console- eller HTTP-fel som hör till denna UI-resa
+  identifierades; relevant ondemand-fetch hade tidigare returnerat 200.
+- Nästa minsta steg: återge samma production journey i icke-headless
+  desktop Edge/Chrome med verkligt fungerande media och seek, och jämför
+  användar-DOM över 1/3/5/10 s. Om automatisering fortsatt saknar riktig
+  media bör diagnosen stanna vid "UI-bug reproducerad, intern gräns ej
+  avgjord" — inga slutsatser om `episodeCurrentTrack`.
 
 ---
