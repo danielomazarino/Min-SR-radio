@@ -117,26 +117,38 @@ startsidan — inte via Inställningar.
 
 ## ÖPPNA POSTER (kvarstående, ej nya förstärkningar)
 
+### Episod-låtmetadata otillförlitlig i fältet — OPEN (fälttest 2026-09-23)
+- Användarens iPhone + Edge-test av igårens program: låt/artist visas bara
+  mycket sällan; när den visas uppdateras den INTE vid nästa låt; ibland
+  visas fel kanals information när ingen låt spelas (P3 "Vaken" medan
+  Jazzradion spelar; "Aftonsång och Vaggvisa / Eduard Tubin" medan Musik
+  mot midnatt spelar — skärmdumpar i rapporten).
+- Detaljerad analys + utredningsplan: se "FÄLTTEST 2026-09-23"-posten
+  (ovan, under episod-metadata-posten). **Utred nästa session innan kod
+  ändras.**
+
 ### PWA-ljudlivscykel (iPhone) — OPEN, diagnostik deployad
 - Användarrapport: ljud fortsätter när PWA swipas bort; låsskärmen öppnar
-  fel PWA. pagehide/freeze-fixen (38efd3b) löste INTE problemet enligt
-  användarens iPhone-test.
+  fel PWA. **Både pagehide/freeze-fixen (38efd3b) och diagnostikpasset
+  (66af359) har EJ löst problemet enligt användarens senaste iPhone-test
+  2026-09-23 — beteendet är oförändrat.**
 - Kodgranskning (2026-09-23): exakt EN Audio-element (singleton, aldrig
   återskapad) — appen kan strukturellt inte producera ett andra element.
   Kandidater: (a) annat dokument (dubbelinstallation/gammal flik), (b) iOS
   media-session-UI kvarstår medan ljudet stoppat, (c) iOS standalone-
   process avslutas fördröjt (OS-beteende).
 - Diagnostik aktiv: DIAG_ID per sidladdning → localStorage 'sr-diag-log'
-  (överlever sidstängning). **Nästa steg: användaren kör iPhone-proceduren
-  (dokumenterad i posten 2026-09-23 nedan) och loggen analyseras. Ingen
-  workaround förrän rotorsaken är identifierad.**
+  (överlever sidstängning). **Nästa steg: hämta och analysera diag-loggen
+  från användarens iPhone efter reproduktion av sekvensen (spela → lås →
+  lås upp → swipa bort PWA:n → öppna igen). Ingen workaround förrän
+  rotorsaken är identifierad.**
 - Diagnostikloggen ska tas bort när rotorsaken är känd.
 
 ### Riktig enhetsvalidering — PARTIAL
 - iPhone (verifierat via användarskärmdump): DVR-seek, ±15 s, LIVE-etikett,
   knappplacering, zoom, långtryckskort, expanderad spelare, gest-fixar.
 - iPhone (öppet): låsskärm/PWA-ljudlivscykel (se ovan), episod-låtmetadata
-  full paint (headless kan inte dekoda m4a/AAC), BUG B slider-känsla.
+  **otillförlitlig i fältet** (se FÄLTTEST-posten), BUG B slider-känsla.
 - Android Chrome: ej validerat (hls.js-vägen).
 
 ### Låsskärm: MediaSession-metadata + ikon — DONE med förbehåll
@@ -1552,3 +1564,41 @@ bara den lilla play-knappen.
   musikavsnitt kräver riktig enhet (headless Chromium kan inte dekoda
   SR:s m4a/AAC — samma URL:er spelar redan i produktion via episodes/get).
 - 83/83 tester.
+
+### FÄLTTEST 2026-09-23 (användarens iPhone + Edge) — episod-låtmetadata FUNGERAR OTILLFÖRLITLIGT — **OPEN, kräver mer testning**
+
+Användarens fälttest av igårens program (skärmdumpar bifogade rapporten):
+
+1. **Låttitel + artist visas bara mycket sällan** på igårens program.
+2. **När titel/artist VÄL visas uppdateras den inte** — samma låt står kvar
+   även när nästa låt börjar (t.ex. "Koncert: Hammond…" på Jazzradion,
+   skärmdump).
+3. **Fel kanalinformation visas ibland** när ingen låt spelas: skärmdump 1
+   (iPhone) visar expanderpanelen med P3-omslag + "Vaken / P3" medan
+   Jazzradion spelar; skärmdump 2 (Edge) visar "Aftonsång och Vaggvisa /
+   Eduard Tubin" medan Musik mot midnatt spelar — dvs. metadata från fel
+   källa/fel session läcker in i panelen.
+
+**Analys (preliminär, INTE verifierad — utred nästa session):**
+- Punkt 3 tyder på att `episodeCurrentTrack`/`nowPlaying`-state inte
+  nollställs vid kanal-/avsnittsbyte i alla vägar, eller att expander-
+  panelens `renderSongView` läser state som tillhör en tidigare session.
+  Kandidater: stopEpisodeTracks() saknas i någon övergång; panel öppnad
+  före/efter byte repainterar med gammalt state; `_srRepaint`-guard.
+- Punkt 2 tyder på att `updateEpisodeTrack()` inte körs (timeupdate når
+  inte resolvern) eller att jämförelsen av title/artist felaktigt bedömer
+  "ingen ändring" — eller att tracks-cache innehåller fel avsnitts data.
+- Punkt 1 kan vara att ondemand-fetchen misslyckas tyst (catch → null) för
+  vissa avsnitt, eller att tracks är tomma för vissa igårens program.
+
+**Nästa session (utred först, ändra inte direkt):**
+1. Reproducera på riktig enhet: spela igårens musikprogram, vänta till
+   nästa låt, öppna panelen — logga vilken källa (episodeCurrentTrack vs
+   nowPlaying.song) panelen ritar.
+2. Granska alla övergångar (episode→live, episode→episode, stopp) för
+   saknad stopEpisodeTracks()/stopNowPlayingPoll().
+3. Verifiera att ondemand-fetchen lyckas för de igårens avsnitt som
+   misslyckas i fältet (endpoint kan returnera tracks:[] för vissa).
+4. Lägg till regressionstester för state-nollställning per övergång.
+
+---
