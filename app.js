@@ -116,6 +116,10 @@
 
   // ---------------- SR data layer (direct, static-host friendly) ----------------
   const SR_API = 'https://api.sr.se/api/v2';
+  // Now-playing poll interval: 45 s — well within reason, and the song's
+  // stoptimeutc usually gives natural alignment anyway (a song change is
+  // picked up at most one interval late).
+  const NOW_PLAYING_INTERVAL_MS = 45000;
   const RSS_URL = 'https://api.sr.se/api/rss/program/83?format=145';
 
   function parseSrDate(v) {
@@ -749,6 +753,130 @@
     return state.current && state.current.kind === kind && state.current.id === id;
   }
 
+  // ---- now-playing metadata (playlists/rightnow) ----
+  // VERIFIED data source (2026-09-23, from GitHub Pages origin):
+  // https://api.sr.se/api/v2/playlists/rightnow?channelid=X&format=json
+  // → 200, CORS `*`, payload playlist.song {title, artist, starttimeutc,
+  // stoptimeutc} (+ previoussong/nextsong). song === null is NORMAL
+  // (talk/program content) — not an error.
+  //
+  // ISOLATION CONTRACT: this loop never touches audioEl, hls, or playback
+  // state. Any fetch/network/parse failure just leaves the last known song
+  // (or hides the line). One loop total, keyed to the active live channel.
+  const nowPlaying = { song: null, artwork: null, channelId: null };
+  let nowPlayingTimer = null;
+  let nowPlayingSeq = 0; // stale-response guard on channel switches
+
+  function stopNowPlayingPoll() {
+    if (nowPlayingTimer) { clearTimeout(nowPlayingTimer); nowPlayingTimer = null; }
+    nowPlayingSeq += 1; // invalidate in-flight responses
+    nowPlaying.song = null;
+    nowPlaying.artwork = null;
+    nowPlaying.channelId = null;
+  }
+
+  async function fetchNowPlaying(channelId, seq) {
+    try {
+      const data = await apiFetch(`${SR_API}/playlists/rightnow?channelid=${channelId}&format=json`);
+      if (seq !== nowPlayingSeq) return; // stale — channel changed meanwhile
+      const pl = data?.playlist || {};
+      const song = pl.song || null; // null = talk/program content — normal
+      nowPlaying.song = song ? {
+        title: song.title || '',
+        artist: song.artist || '',
+        startMs: parseSrDate(song.starttimeutc),
+        stopMs: parseSrDate(song.stoptimeutc),
+      } : null;
+      nowPlaying.channelId = channelId;
+      paintNowPlaying();
+      // Artwork lookup is fully isolated: failure = no image, nothing else.
+      refreshNowPlayingArtwork();
+    } catch {
+      // Network/API error: keep last known song; never touch playback.
+    }
+  }
+
+  function scheduleNowPlayingPoll() {
+    if (nowPlayingTimer) clearTimeout(nowPlayingTimer);
+    nowPlayingTimer = setTimeout(() => {
+      nowPlayingTimer = null;
+      pollNowPlaying();
+    }, NOW_PLAYING_INTERVAL_MS);
+  }
+
+  function pollNowPlaying() {
+    const cur = state.current;
+    // Poll ONLY for live channels while audio is playing (or paused mid-
+    // session). Stopped player → no polling at all.
+    if (!cur || cur.kind !== 'live' || !cur.id) {
+      stopNowPlayingPoll();
+      return;
+    }
+    const seq = ++nowPlayingSeq;
+    fetchNowPlaying(cur.id, seq).finally(() => {
+      // Re-arm only if still the same live channel and the player is open.
+      if (state.current && state.current.kind === 'live' && state.current.id === cur.id && seq === nowPlayingSeq) {
+        scheduleNowPlayingPoll();
+      }
+    });
+  }
+
+  function startNowPlayingPoll() {
+    // Idempotent: exactly one loop regardless of how many times called.
+    if (nowPlayingTimer) return;
+    pollNowPlaying();
+  }
+
+  // ---- artwork (iTunes Search, CORS `*`, <img> needs no CORS) ----
+  // rightnow has NO image fields; SR's own artwork (Spotify CDN URLs) lives
+  // only on the CORS-blocked latlista page. iTunes Search is CORS-open and
+  // artworkUrl100 scales to any size via URL rewrite. Fully isolated:
+  // failure = no image, never affects audio.
+  let artworkSeq = 0;
+  const artworkCache = new Map(); // "artist|title" → url (session-lifetime)
+  async function refreshNowPlayingArtwork() {
+    const song = nowPlaying.song;
+    if (!song || !song.title) { nowPlaying.artwork = null; paintNowPlaying(); return; }
+    const key = `${song.artist}|${song.title}`.toLowerCase();
+    if (artworkCache.has(key)) {
+      nowPlaying.artwork = artworkCache.get(key);
+      paintNowPlaying();
+      return;
+    }
+    const seq = ++artworkSeq;
+    try {
+      const q = encodeURIComponent(`${song.artist} ${song.title}`.slice(0, 180));
+      const r = await fetch(`https://itunes.apple.com/search?term=${q}&entity=song&limit=1`);
+      if (seq !== artworkSeq) return; // superseded by a newer song
+      const j = await r.json();
+      const url = j?.results?.[0]?.artworkUrl100 || null;
+      const big = url ? url.replace(/\d+x\d+bb/, '600x600bb') : null;
+      artworkCache.set(key, big);
+      if (seq === artworkSeq) { nowPlaying.artwork = big; paintNowPlaying(); }
+    } catch {
+      // Artwork failure: never blocks anything. Keep old image briefly to
+      // avoid flicker; clear only when the song itself changes.
+    }
+  }
+
+  // Paint the now-playing line into the player (if present). DOM-diffing is
+  // unnecessary: the line is a single element updated in place.
+  function paintNowPlaying() {
+    const line = $player.querySelector('.now-playing-line');
+    if (!line) return;
+    const song = nowPlaying.song;
+    if (!song || !song.title) {
+      line.textContent = '';
+      line.classList.remove('has-song');
+    } else {
+      line.textContent = `♪ ${song.artist ? song.artist + ' – ' : ''}${song.title}`;
+      line.classList.add('has-song');
+    }
+    // If the expand panel is open, repaint its song view too.
+    const panel = $player.querySelector('.player-expand');
+    if (panel && typeof panel._srRepaint === 'function') panel._srRepaint();
+  }
+
   function playTrack(track) {
     state.current = track;
     lastPlayingKey = `${track.kind}:${track.id}`;
@@ -803,6 +931,10 @@
     }
     armPlaybackWatchdog();
     updateMediaSession();
+    // Now-playing metadata: live channels only. Starts the single poll loop;
+    // channel switches are handled by the seq guard (stale responses dropped).
+    if (track.kind === 'live') startNowPlayingPoll();
+    else stopNowPlayingPoll();
     renderPlayer();
     updatePlayingMarks();
   }
@@ -878,6 +1010,7 @@
     clearPlaybackWatchdog();
     if (audioEl._srStuckGuard) { clearInterval(audioEl._srStuckGuard); audioEl._srStuckGuard = null; }
     hlsDetach(); // no HLS instance may outlive the player
+    stopNowPlayingPoll(); // metadata loop must not outlive the player
     audioEl.pause();
     audioEl.removeAttribute('src');
     state.current = null;
@@ -1235,7 +1368,8 @@
         miniThumb,
         el('div', { class: 'player-meta', onclick: restorePlayer },
           el('div', { class: 'player-title', text: cur.title || '' }),
-          el('div', { class: 'player-sub', text: cur.subtitle || (live ? 'Direkt' : '') })),
+          el('div', { class: 'player-sub', text: cur.subtitle || (live ? 'Direkt' : '') }),
+          live ? el('div', { class: 'now-playing-line', 'aria-live': 'polite' }) : null),
         miniPlay, miniExpand, miniStop);
       $player.appendChild(mini);
       // Tap anywhere on the mini-bar (except buttons) restores the player.
@@ -1280,6 +1414,10 @@
     const meta = el('div', { class: 'player-meta' },
       el('div', { class: 'player-title', text: cur.title || '' }),
       el('div', { class: 'player-sub', text: cur.subtitle || (live ? 'Direkt' : '') }),
+      // Now-playing line (live channels): artist – song from playlists/
+      // rightnow. Hidden entirely when song === null (talk content) —
+      // normal state, not an error.
+      live ? el('div', { class: 'now-playing-line', 'aria-live': 'polite' }) : null,
       quality, mode);
 
     // Fas 4 (redesign 2026-09-23): NO one-click expansion — accidental taps
@@ -1307,44 +1445,34 @@
       const panel = el('div', { class: 'player-expand', role: 'region', 'aria-label': 'Programinformation' });
       const content = el('div', { class: 'expand-content' });
       panel.appendChild(content);
-      // Static content first (episode info / channel tagline) — instant.
-      if (cur.kind === 'episode') {
-        content.appendChild(el('div', { class: 'expand-row' },
-          cur.image ? el('img', { class: 'expand-img', src: cur.image, alt: '' }) : null,
-          el('div', { class: 'expand-text' },
-            el('div', { class: 'expand-title', text: cur.title || '' }),
-            cur.programName ? el('div', { class: 'expand-sub', text: cur.programName }) : null,
-            cur.description ? el('div', { class: 'expand-desc', text: cur.description }) : null,
-            cur.duration ? el('div', { class: 'expand-meta', text: `Längd: ${fmtDur(cur.duration)}` }) : null)));
-      } else {
-        // Live: fetch the schedule and show current + next programme.
-        content.appendChild(el('div', { class: 'card-loading', text: 'Hämtar programinfo…' }));
-        fetchSchedule(cur.id).then((schedule) => {
-          if (!document.contains(content)) return; // player closed meanwhile
-          content.textContent = '';
-          if (!schedule || !schedule.length) {
-            content.appendChild(el('div', { class: 'state-msg', text: 'Programinfo kunde inte hämtas.' }));
-            return;
-          }
-          const now = Date.now();
-          const row = (ev, label) => el('div', { class: 'expand-row' },
-            ev.image ? el('img', { class: 'expand-img', src: ev.image, alt: '' }) : null,
+      // Fas 4 v3 (2026-09-23): the expanded player shows NOW-PLAYING
+      // artwork + artist + song (from playlists/rightnow + iTunes artwork,
+      // both verified from GitHub Pages origin). Pågår nu/Nästa program
+      // removed — that info already lives in the Tablå context card
+      // (long-press on a channel icon); no duplication.
+      // song === null (talk content) → show a quiet "no song" state.
+      const renderSongView = () => {
+        const song = nowPlaying.song;
+        if (!song || !song.title) {
+          content.appendChild(el('div', { class: 'expand-row' },
             el('div', { class: 'expand-text' },
-              el('div', { class: 'expand-label', text: label }),
-              el('div', { class: 'expand-title', text: ev.title || '' }),
-              ev.programName && ev.programName !== ev.title ? el('div', { class: 'expand-sub', text: ev.programName }) : null,
-              el('div', { class: 'expand-meta', text: `${dvrClockLabel(new Date(ev.startMs))}–${dvrClockLabel(new Date(ev.endMs))}` }),
-              ev.description ? el('div', { class: 'expand-desc', text: ev.description }) : null));
-          const curEv = schedule.find((ev) => now >= ev.startMs && now < ev.endMs);
-          if (curEv) content.appendChild(row(curEv, 'Pågår nu'));
-          const nextEv = schedule.find((ev) => ev.startMs > now);
-          if (nextEv) content.appendChild(row(nextEv, 'Nästa'));
-          if (!curEv && !nextEv) content.appendChild(el('div', { class: 'state-msg', text: 'Ingen programinfo.' }));
-        }).catch(() => {
-          if (document.contains(content)) content.textContent = '';
-          if (document.contains(content)) content.appendChild(el('div', { class: 'state-msg', text: 'Programinfo kunde inte hämtas.' }));
-        });
-      }
+              el('div', { class: 'expand-label', text: 'Spelas just nu' }),
+              el('div', { class: 'expand-title', text: cur.title || '' }),
+              el('div', { class: 'expand-desc', text: 'Ingen låtinformation för tillfället — kanalen sänder program.' }))));
+          return;
+        }
+        content.appendChild(el('div', { class: 'expand-row' },
+          nowPlaying.artwork
+            ? el('img', { class: 'expand-img expand-img-song', src: nowPlaying.artwork, alt: '' })
+            : el('div', { class: 'expand-img expand-img-placeholder', 'aria-hidden': 'true' }, '♪'),
+          el('div', { class: 'expand-text' },
+            el('div', { class: 'expand-label', text: 'Spelas just nu' }),
+            el('div', { class: 'expand-title', text: song.title || '' }),
+            song.artist ? el('div', { class: 'expand-sub', text: song.artist }) : null)));
+      };
+      renderSongView();
+      // Re-paint when metadata/artwork arrives after the panel opened.
+      panel._srRepaint = () => { content.textContent = ''; renderSongView(); };
       return panel;
     };
 
