@@ -881,6 +881,32 @@
     if (panel && typeof panel._srRepaint === 'function') panel._srRepaint();
   }
 
+  // ---- Pågår nu-programmet som undertitel (användarönskemål 2026-09-23) ----
+  // "P3 Direkt" ersätts med programmets namn — kanalen syns redan i ikonen.
+  // Datakälla: fetchSchedule (samma cache som Tablå-kortet). Uppdateras i
+  // place när schemat löser sig; misslyckande = 'Direkt' som fallback.
+  function paintProgramTitle() {
+    const sub = $player.querySelector('.player-sub');
+    if (!sub) return;
+    const cur = state.current;
+    if (!cur || cur.kind !== 'live') return;
+    if (cur._srProgramTitle) sub.textContent = cur._srProgramTitle;
+  }
+
+  async function resolveProgramTitle(cur) {
+    if (!cur || cur.kind !== 'live' || !cur.id) return;
+    try {
+      const schedule = await fetchSchedule(cur.id);
+      if (!schedule || state.current !== cur) return; // superseded
+      const now = Date.now();
+      const ev = schedule.find((e) => now >= e.startMs && now < e.endMs);
+      if (ev?.title) {
+        cur._srProgramTitle = ev.title;
+        paintProgramTitle();
+      }
+    } catch { /* schedule unavailable — 'Direkt' fallback stays */ }
+  }
+
   function playTrack(track) {
     state.current = track;
     lastPlayingKey = `${track.kind}:${track.id}`;
@@ -935,11 +961,18 @@
     }
     armPlaybackWatchdog();
     updateMediaSession();
-    // Now-playing metadata: live channels only. Starts the single poll loop;
-    // channel switches are handled by the seq guard (stale responses dropped).
-    if (track.kind === 'live') startNowPlayingPoll();
-    else stopNowPlayingPoll();
+    // Now-playing metadata: live channels only. IMPORTANT ORDER: render the
+    // new player DOM FIRST, then start the poll — otherwise a fast rightnow
+    // response paints the OLD (about-to-be-discarded) DOM and the new line
+    // stays empty until the next poll (observed: song flashed for a split
+    // second, then vanished for ~30 s — user report 2026-09-23).
     renderPlayer();
+    if (track.kind === 'live') {
+      startNowPlayingPoll();
+      resolveProgramTitle(track); // Pågår nu-programmet som undertitel
+    } else {
+      stopNowPlayingPoll();
+    }
     updatePlayingMarks();
   }
 
