@@ -4,7 +4,7 @@ Pågående anteckningar för förbättringar att ta itu med senare. Nyast övers
 
 ---
 
-## AKTIV ARBETSKÖ (uppdaterad 2026-09-23 kväll — dokumentationspass)
+## AKTIV ARBETSKÖ (uppdaterad 2026-09-24 — iPhone-fälttest efter deploy)
 
 Historiken nedan bevaras som referens; statusrättelser kan annotera äldre
 slutsatser när senare evidens har motbevisat dem. Denna sektion är **den
@@ -27,11 +27,12 @@ som öppet (detaljer i respektive historisk post):
 | Öppna punkter 2026-09-21 (buffringsindikator, svep-ned-stäng, sheet-bleed) | öppna | **DONE** (implementerade + verifierade samma dag) |
 | Ljud-diagnostik "Missing functionality" 1–3, 5 | öppna rekommendationer | **DONE** (retry/fallback = advanceCandidate + watchdog; stall-detektering = buffrings-badge; canPlayType = CAPS; HLS = Fas 2A) |
 | Ljud-diagnostik 4 (kvalitetsval) + 6 (nätverksmedvetenhet) | öppna | **OPEN → ny förstärkningspost "Högsta ljudkvalitet" (nedan)** |
-| Låsskärm fel-PWA | öppen | **OPEN — diagnostik deployad, rotorsaksdata väntas från iPhone** (se PWA-ljudlivscykel nedan) |
-| iPhone/Android-validering | NOT YET VALIDATED | **PARTIAL** (earlier iPhone screenshots cover DVR/±15 s/gester/zoom/long-press; updated episode seek/metadata, lifecycle and Android Chrome remain blocked on physical-device access) |
-| Episod-låtmetadata | SOURCE FIX IMPLEMENTED — build/test verified; production/device verification BLOCKED | Root cause: repaint early-return when compact line absent; stale transition guards added |
-| Episodens seek-reglage på touch | SOURCE FIX IMPLEMENTED — local pointer UI verified; production/iPhone validation BLOCKED | Preview/release/cancel and thumb hit area implemented; device behavior remains |
-| iPhone installed-PWA lifecycle analysis | OPEN — BLOCKED (waiting for user-exported `sr-diag-log`; no device storage access available here) |
+| P2 Musik FLAC → AAC 320 fallback vid svagt nät | OPEN | Corporate Wi-Fi observation: FLAC playback does not fall back to AAC 320 when bandwidth is insufficient; reproduce and establish whether this is a stalled stream, missed error/watchdog, or unsupported network adaptation |
+| Låsskärmens spelarknapp öppnar fel PWA efter Face ID | OPEN — REGRESSION (2026-09-24) | Previously appeared fixed, but user now reports tapping the lock-screen player opens another installed PWA again. Reproduce and identify which app/build owns the active MediaSession before changing metadata or lifecycle code. |
+| iPhone/Android-validering | NOT YET VALIDATED | **PARTIAL:** iPhone confirms podcast seek works; lock-screen playback continues as expected. Wrong-PWA launch after tapping lock-screen controls has regressed; P1→P2 mismatch and P2 metadata/artwork remain. Android Chrome untested. |
+| Episod-track repaint | SOURCE FIX IMPLEMENTED — 8f577b6 deployed; actual audio-boundary retest still open | The source fix targets archived-episode track repaint; the separate P1→P2 live-channel header mismatch is tracked below |
+| Episodens seek-reglage på touch | SOURCE FIX IMPLEMENTED — **iPhone VERIFIED 2026-09-24** | User reports podcast slider now works correctly on iPhone; Android remains untested |
+| iPhone lock-screen flow | **OPEN — regression:** tapping the lock-screen player can open another installed PWA again. Playback continuing while the lock screen is open is expected and is not the bug. |
 | E1–E4 förstärkningar | PLANNED | Ta efter öppna uppspelnings-/enhetsproblem; E1 är högst prioriterad bland förstärkningarna |
 
 ---
@@ -66,6 +67,30 @@ via `episodes/get` → `listenpodfile.url` (MP3) / `broadcastfiles[0].url`
 
 **Viktigt:** ändra inte den fungerande uppspelningsvägen utan verifiering.
 Målet är maximal praktisk kvalitet utan att offra uppspelningspålitlighet.
+
+**Konkret rapporterat fallbackfel (2026-09-24):** på företags-Wi-Fi med
+otillräcklig bandbredd spelar P2 Musik FLAC inte ned till AAC 320. Det här är
+en användarrapporterad observation, inte ännu en reproducerad nätverksmätning.
+Undersök först om FLAC fastnar efter att ha börjat spela (ingen `error` och
+eventuellt inget `waiting`/`stalled`-skydd efter `playing`), om fallbackkedjan
+för aktuell plattform faktiskt innehåller AAC 320, och om bandbreddsanpassning
+är avsedd eller stöds. Reproducera på samma nät med tidsstämplar för
+`currentTime`, `readyState`, `waiting`/`stalled`/`error` och visad codec; jämför
+med ett nät där FLAC fungerar. Förvänta inte att en aktiv FLAC-ström automatiskt
+byter kandidat förrän beteendet är verifierat och en explicit policy beslutats.
+
+**Ny rapport om buffert/robusthet (2026-09-24):** en kollega som reste med
+tåg genom en lång tunnel upplevde att Min Radio-strömmen stannade innan tåget
+kommit igenom tunneln, medan Sveriges Radios officiella iOS-app fortsatte spela
+i samma tunnel. Observationen är andrahandsrapporterad och jämförelsen är ännu
+inte instrumenterad. Utred separat från formatfallbacken: vilken kanal/codec/
+transport och nät som användes; om ljudet stannade eller bara tystnade tillfälligt;
+vad `currentTime`, `readyState`, `buffered`, `waiting`/`stalled`/`playing` och
+`error` gjorde; samt om SR-appen hade en större buffert eller annan transport.
+Reproducera gärna samma sträcka med båda apparna, samma kanal/enhet och nät,
+notera stopptid och återhämtning. Bedöm först därefter om lösningen är större
+förbuffring, återanslutning, HLS-/transportval eller kvalitetsfallback. Ändra
+inte buffertrösklar på grundval av jämförelsen ensam.
 
 ### E2 — Spotify + YouTube-ikoner i expanderade spelaren
 **Mål:** när artist/låt-information finns, visa små klickbara Spotify- och
@@ -155,7 +180,7 @@ startsidan — inte via Inställningar.
   enda aktuella hashed bunlden, och canonical Pages build genererar root +
   `dist/`, skriver SW precache inklusive moduler/cache version. GitHub Pages
   API bekräftade source `main` `/`.
-- Artifact inspection at final build: root index loads `app.ac87ca45.js` +
+- Artifact inspection at final build: root index loads `app.40d8364e.js` +
   `styles.d80070f9.css`; SW cache is content-based and precaches the same pair
   + `src/episode-seek.mjs`; old hashed bundles are deleted. Build passed;
   tracked test suite **98/98** passerar.
@@ -168,11 +193,18 @@ startsidan — inte via Inställningar.
   Browser had no observable `<audio>`/video/media request and SR MP3 failed
   with `ERR_ABORTED`/`ERR_CONNECTION_CLOSED`, so no actual audio/timeupdate
   claim.
-- Production Pages has **not** been deployed or retested after these edits;
-  physical iPhone/Android behavior still BLOCKED. See exact support steps
-  below.
+- **Uppdatering 2026-09-24:** commit `8f577b6` is pushed; Pages workflow
+  35934340021 succeeded and the live site serves `app.40d8364e.js`,
+  `styles.d80070f9.css`, SW cache `minradio-1021477e`. User retested Safari
+  and the installed Home Screen PWA after restart. Podcast seek works on
+  iPhone. A separate P1→P2 switch still leaves stale P1 program information
+  in the expanded header while controls show P2. P2 song/artist was absent in
+  one Safari observation; whether this is SR response data or an app/UI issue
+  is not established. The lock-screen control had appeared to open the correct
+  PWA after Face ID, but the user now reports this regressed. Audio continuing
+  while the lock screen is open is expected. Android remains untested.
 
-### Episodspelare: seek-reglaget ska vara dragbart på iPhone — SOURCE FIX IMPLEMENTED; iPhone RETEST REQUIRED
+### Episodspelare: seek-reglaget ska vara dragbart på iPhone — DONE (iPhone retest 2026-09-24)
 - Användarrapport: vid podd-/episoduppspelning går det att trycka på
   tidslinjen för att söka, men touch-and-drag fungerar inte som på
   live-radions DVR-reglage.
@@ -186,17 +218,17 @@ startsidan — inte via Inställningar.
   `.dvr-bar`; verifiera drag från både tummen och spåret på riktig iPhone.
   Behåll tryck-seek och kontrollera att bredare träffyta inte försämrar
   sidscroll eller spelarens gester.
-- **Uppdatering 2026-09-24 — implementation klar, iPhone-validering BLOCKED:**
+- **Uppdatering 2026-09-24 — iPhone-verifierad av användaren:**
   `.episode-seek-bar` har horisontell pointer-preview och commit på släpp,
   kvarvarande klick-seek, 32 px transparent tum-träffyta runt oförändrad
   synlig prick, vertikal gest-avbrytning, pointercancel/lost-capture-säkerhet
   och tangentbordsstöd. Full testsvit passerade; tracked-root-source preview
   visade pointerpreview 10→55 % och släpp uppdaterade tiden 0:01→34:43.
-  Headless-miljön hade ingen observable audio node/faktisk ljudtransport och inget
-  iPhone finns tillgängligt här. Kräver iPhone Safari + installerad PWA för
-  drag från thumb/bar, tap-seek, vertikal scroll/svep, cancel och verklig
-  seek/lyssning. Android touch-gesture har inte heller testats.
-- **Efter deploy: konkret stöd som krävs.** iPhone Safari + installerad PWA:
+  Användaren bekräftar att podcastens seek-reglage fungerar korrekt på iPhone
+  efter deploy. Detta verifierar den rapporterade touch-drag-buggen på iPhone;
+  kontroll av faktisk ljudposition över en känd låtgräns och Android-beteende
+  är fortfarande separata tester.
+- **Ytterligare validering om tid finns.** iPhone Safari + installerad PWA:
   drag från thumb och bar, tap-seek, vertikal scroll/svep, cancel, seek över
   känd låtgräns och episode→episode/live; verifiera faktisk ljudtid och både
   compact/expanded metadata. Lifecycle separat: spela→lås→lås upp→svep bort→öppna;
@@ -204,21 +236,66 @@ startsidan — inte via Inställningar.
   MediaSession. Android Chrome/PWA behöver en Android-enhet för live HLS/DVR,
   episod seek/drag, metadata/kanalbyten, fallback, bakgrund och låsskärm.
 
+### Live-kanal: fel programtitel kvar i expanderad spelare efter kanalbyte — OPEN
+- **Användarverifierat 2026-09-24 i Safari och installerad PWA efter omstart:**
+  starta P1 och byt till P2. P2-ikonen markeras och kontrollerna visar
+  `P2 / Nottur`, men den expanderade spelarens övre programrad visar fortfarande
+  `Europapodden / P1`. Detta är separat från episode-track repainten i commit
+  `8f577b6`.
+- P2 saknade låt/artist i en Safari-observation. Ett API-prov vid en viss
+  tidpunkt fick `song: null` för P2 och ett aktuellt `song` för P3. Det är
+  förenligt med att SR saknade aktuell P2-låtmetadata då, men bevisar inte att
+  P2-data alltid saknas eller att appens UI fungerar korrekt. Användaren såg
+  även olika uppdateringstakt mellan P3/P4; om orsaken är SR-publicering,
+  polling eller UI har inte fastställts.
+- **Ytterligare användarrapport 2026-09-24 — programhopp under live/DVR:**
+  när en låt visas och användaren använder föregående/nästa program-funktionen
+  flyttas positionen/seek-reglaget till ett annat program, men den gamla låten
+  ligger kvar och programtiteln uppdateras inte. Behandla detta som ytterligare
+  ett fel i den expanderade spelarens metadata efter tids-/programhopp, inte som
+  bevis på att SR saknar metadata. Kontrollera skillnaden mellan kanalens
+  `rightnow` (live-metadata) och det program/låt som hörs vid DVR-positionen;
+  bekräfta även när titel och låtbild ska rensas respektive uppdateras.
+- **Nästa steg:** reproducera P1→P2 i en Safari-flik och installerad PWA;
+  tidsstämpla `rightnow`-svaret och jämför kanal-ID, aktuell uppspelning,
+  markerad tile och samtliga playerfält. Kontrollera att expanderad header och
+  kontroller följer samma aktiva kanal. Separat, reproducera programhopp med
+  låt synlig och kontrollera seek-position, programtitel, låt och artwork före
+  och efter hoppet. Lägg till regressionstest för kanalbyte och programhopp före
+  eventuell fix; behåll skydd mot sena svar.
+
+### Låtbild för musikspår i poddar/episoder — OPEN (utred källa först)
+- Användaren rapporterar att musikspår i poddavsnitt saknar låtbild; den
+  expanderade spelaren visar en not-placeholder i stället för förväntad bild.
+  Koden sätter episodspårets artwork avsiktligt till `null`; programmets
+  omslagsbild finns separat och används i fallback-vyn.
+- Utred om episode-track-data (artist + titel) kan användas för iTunes Search
+  och om resultatet ger rätt bild för aktuellt spår. Behåll programmets
+  omslagsbild som fallback. Skydda mot sena bildsvar efter seek, spårbyte och
+  episode→live-övergång.
+- Kontrollera samtidigt iTunes-baserad live-låtbild för P2 och fler kanaler,
+  inte bara P3. Testa match, saknad träff och felmatchning. Avgör först om P2:s
+  saknade bild beror på utebliven `rightnow.song` eller artworkflödet.
+- Ingen kodändring ännu; gör källdiscovery först.
+
 ### PWA-ljudlivscykel (iPhone) — OPEN, diagnostik deployad
-- Användarrapport: ljud fortsätter när PWA swipas bort; låsskärmen öppnar
-  fel PWA. **Både pagehide/freeze-fixen (38efd3b) och diagnostikpasset
-  (66af359) har EJ löst problemet enligt användarens senaste iPhone-test
-  2026-09-23 — beteendet är oförändrat.**
+- **Förtydligande från användaren 2026-09-24:** ljudet fortsätter spela när
+  låsskärmen öppnas; detta är förväntat och ska inte beskrivas som ett fel.
+  Låsskärmens spelarknapp öppnade tillfälligt rätt PWA efter Face ID, men
+  användaren rapporterar nu att den åter öppnar en annan installerad PWA —
+  regressionen är öppen. Detta är separat från eventuell ljudfortsättning efter
+  att PWA:n svepts bort.
 - Kodgranskning (2026-09-23): exakt EN Audio-element (singleton, aldrig
   återskapad) — appen kan strukturellt inte producera ett andra element.
   Kandidater: (a) annat dokument (dubbelinstallation/gammal flik), (b) iOS
   media-session-UI kvarstår medan ljudet stoppat, (c) iOS standalone-
   process avslutas fördröjt (OS-beteende).
-- Diagnostik aktiv: DIAG_ID per sidladdning → localStorage 'sr-diag-log'
-  (överlever sidstängning). **Nästa steg: hämta och analysera diag-loggen
-  från användarens iPhone efter reproduktion av sekvensen (spela → lås →
-  lås upp → swipa bort PWA:n → öppna igen). Ingen workaround förrän
-  rotorsaken är identifierad.**
+- Diagnostik aktiv: DIAG_ID per sidladdning → localStorage `sr-diag-log`.
+  Den installerade PWA:ns logg behövs bara om användaren bekräftar att ett
+  separat problem kvarstår efter att appen svepts bort, eller för att spåra
+  vilken MediaSession/installation som öppnas vid den återkomna felaktiga
+  låsskärmsnavigeringen. Logga inte normal uppspelning medan låsskärmen visas
+  som ett fel.
 - Tillgänglig logg i den delade VS Code-browserns GitHub Pages-origin:
   200 poster, 10 DIAG_ID:n mellan 2026-09-23 02:00Z och 20:29Z; 9 page-load
   och 8 pagehide, majoriteten visibilitychange/audio-play/pause. Detta är
@@ -226,37 +303,24 @@ startsidan — inte via Inställningar.
   installerade iPhone PWA:n och inte korrelerad bevisning för rapporterade
   lås→svep-bort-sekvensen. Därför räcker inte loggen för rotorsaksbeslut.
 - Diagnostikloggen ska tas bort när rotorsaken är känd.
-- **BLOCKED — device log unavailable:** denna agent-session saknar åtkomst
-  till iPhone localStorage och Safari Web Inspector. Krävs att användaren på
-  installerad PWA reproducerar spela→lås→lås upp→svep bort→öppna igen och
-  exporterar sanerade `sr-diag-log`-rader via Mac Safari Web Inspector
-  (Develop → iPhone → Min Radio → Console →
-  `localStorage.getItem('sr-diag-log')`). Dela posterna med DIAG_ID och
-  page-load/audio-src-set/audio-play/pause/pagehide/pageshow/
-  visibilitychange/freeze/mediasession-cleared; maskera query-parametrar
-  eller andra privata värden. Ingen lifecycle-kod/workaround ändrad utan
-  den evidensen. Utan fysisk iPhone/Mac-inspector eller användarexporterad
-  logg går Task 1/4 inte att slutföra.
-- **Stöd som krävs:** jag kan inte läsa iPhone-localStorage eller iPhone-
-  konsolen från denna VS Code-session. På den installerade PWA:n: reproducera
-  spela → lås → lås upp → svep bort → öppna igen; öppna sedan Info/inställningar
-  och exportera innehållet i localStorage-nyckeln `sr-diag-log` (200 rader,
-  vanlig text/JSON) genom en tillfällig kopieringsruta om den finns i den
-  aktuella builden, annars via iOS Safari Web Inspector. Skicka bara posterna
-  med DIAG_ID och händelserna page-load, audio-src-set/play/pause,
-  pagehide/pageshow, visibilitychange, freeze och mediasession-cleared;
-  maskera URL-parametrar/personuppgifter. Loggen innehåller normalt bara
-  kanal-/resursnamn och tid, men granska innan delning. Nödvändigt stöd:
-  användaren behöver klistra in/exportera den sanerade loggen; utan detta
-  finns ingen evidensbaserad livscykelfix att verifiera.
+- **Villkorat nästa steg, inte nuvarande blockerare:** om användaren separat
+  bekräftar fortsatt ljud efter att PWA:n svepts bort, be om sanerade
+  `sr-diag-log`-poster för audio/pagehide/pageshow/visibility/freeze och
+  MediaSession från den installerade iPhone-appen. Fram till dess görs ingen
+  ny livscykeländring och normal låsskärmsuppspelning betraktas som korrekt.
 
 ### Riktig enhetsvalidering — PARTIAL
 - iPhone (verifierat via användarskärmdump): DVR-seek, ±15 s, LIVE-etikett,
   knappplacering, zoom, långtryckskort, expanderad spelare, gest-fixar.
-- iPhone (öppet): episod-låtmetadata-panelen (headless UI-symptom reproducerat,
-  source fix implemented but new production/device retest needed), episodens
-  seek-drag/träffyta (implemented, not iPhone-verified), och låsskärm/PWA-
-  ljudlivscykel (diagnostic log needed; see above).
+- iPhone (öppet): lock-screen control opens another installed PWA again;
+  P1→P2 expanded-header mismatch; P2 song/artist visibility;
+  podcast-track artwork; actual episode audio seek across a known track
+  boundary. Podcast slider dragging itself is confirmed working by the user.
+- Playback reliability: P2 Musik FLAC did not fall back to AAC 320 on the
+  user's corporate Wi-Fi under limited bandwidth; not yet reproduced.
+- Lock screen: playback continuing while locked is expected; tapping the
+  lock-screen control opening another PWA is a reported regression and needs
+  reproduction. Keep it separate from any swipe-away audio behavior.
 - Android Chrome: ej validerat (hls.js-vägen; no Android device available in
   this session). Required support: Android phone with Chrome; install/open
   PWA and test HLS live, DVR, episode play/seek/drag, metadata transitions,
@@ -267,8 +331,10 @@ startsidan — inte via Inställningar.
 - MediaSession-metadata + action handlers implementerade och deployade
   (2026-09-22). Ikonen full-bleed square (verifierad md5 + hörnpixel).
 - Användaren bekräftade: "SR-ikoner visas nu på låsskärm + i spelaren".
-- Kvarstår: fel-PWA-öppningen vid låsskärm (se PWA-ljudlivscykel ovan —
-  samma rotorsaksutredning).
+- Uppdatering 2026-09-24: ljudet fortsätter när låsskärmen öppnas — detta är
+  förväntat, inte en bugg. Fel PWA efter tryck på låsskärmens spelarknapp
+  verkade tillfälligt vara löst efter Face ID, men har enligt användaren
+  återkommit; följ regressionen i aktiv arbetskö ovan.
 
 ---
 
