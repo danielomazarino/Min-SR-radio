@@ -360,6 +360,33 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   };
   diagLog(`page-load href=${location.href} standalone=${window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true}`);
 
+  // ---- WS0 metadata diagnostics: capture holders ----
+  // ALWAYS allocated, ALWAYS written (pure in-memory integer/object writes: no
+  // DOM mutation, no fetch, no timers, no localStorage). Read ONLY by the
+  // gated hook at the bottom of this file, which is inert unless two keys are
+  // present. Counters must run unconditionally because they observe
+  // registrations that happened long before any snapshot could be requested.
+  const META_DIAG = {
+    expandPanelSeq: 0,          // monotonic id: same id = same node survived
+    listenerAdds: Object.create(null),
+    listenerRemoves: Object.create(null),
+    lastRightNowRaw: null,      // full playlists/rightnow body (previoussong/nextsong)
+    lastRightNowAt: null,
+    lastScheduleRaw: null,      // full scheduledepisodes body
+    lastScheduleAt: null,
+    lastScheduleChannelId: null,
+    lastScheduleParsed: null,
+  };
+
+  // Instrumented at the APP'S OWN registration sites only. EventTarget.prototype
+  // and every built-in are left untouched.
+  function metaDiagCountAdd(type) {
+    META_DIAG.listenerAdds[type] = (META_DIAG.listenerAdds[type] || 0) + 1;
+  }
+  function metaDiagCountRemove(type) {
+    META_DIAG.listenerRemoves[type] = (META_DIAG.listenerRemoves[type] || 0) + 1;
+  }
+
   const audioEl = new Audio();
   audioEl.preload = 'none';
   diagLog(`audio-element-created id=${DIAG_ID}`);
@@ -747,6 +774,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
 
   // Observe the window while HLS is playing. Cheap: only runs when a live
   // HLS track is active, piggybacks on timeupdate.
+  metaDiagCountAdd('timeupdate');
   audioEl.addEventListener('timeupdate', () => {
     if (state.current && state.current.kind === 'live'
       && state.current.transport === 'hls') {
@@ -873,6 +901,12 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     try {
       const data = await apiFetch(`${SR_API}/playlists/rightnow?channelid=${channelId}&format=json`);
       if (seq !== nowPlayingSeq) return; // stale — channel changed meanwhile
+      // WS0 diagnostics: retain the RAW body at the point of receipt. The
+      // parser below keeps only playlist.song, so previoussong / nextsong
+      // (with their starttimeutc / stoptimeutc) are otherwise unobservable.
+      // Capture only — NOT wired to any display path. Pure reference.
+      META_DIAG.lastRightNowRaw = data;
+      META_DIAG.lastRightNowAt = new Date().toISOString();
       const pl = data?.playlist || {};
       const song = pl.song || null; // null = talk/program content — normal
       nowPlaying.song = song ? {
@@ -1197,6 +1231,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     updateNewsFold(); // playback ended → News returns to fully expanded
   }
 
+  metaDiagCountAdd('error');
   audioEl.addEventListener('error', () => {
     // Resolver fallback: try the next candidate before giving up.
     if (advanceCandidate()) return;
@@ -1268,23 +1303,27 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     });
   }
 
-  ['play', 'pause', 'ended'].forEach((ev) => audioEl.addEventListener(ev, () => {
-    diagLog(`audio-${ev} src=${(audioEl.currentSrc || audioEl.src || 'none').slice(-50)} t=${audioEl.currentTime?.toFixed(1)}`);
-    if (ev === 'play') {
-      armPlaybackWatchdog();
-    } else if (ev === 'pause' || ev === 'ended') {
-      clearPlaybackWatchdog();
-    }
-    updatePlayingMarks();
-    if (ev === 'pause' || ev === 'play') {
-      renderPlayer();
-      updateMediaSession(); // keep lock-screen play/pause state in sync
-    }
-  }));
+  ['play', 'pause', 'ended'].forEach((ev) => {
+    metaDiagCountAdd(ev);
+    audioEl.addEventListener(ev, () => {
+      diagLog(`audio-${ev} src=${(audioEl.currentSrc || audioEl.src || 'none').slice(-50)} t=${audioEl.currentTime?.toFixed(1)}`);
+      if (ev === 'play') {
+        armPlaybackWatchdog();
+      } else if (ev === 'pause' || ev === 'ended') {
+        clearPlaybackWatchdog();
+      }
+      updatePlayingMarks();
+      if (ev === 'pause' || ev === 'play') {
+        renderPlayer();
+        updateMediaSession(); // keep lock-screen play/pause state in sync
+      }
+    });
+  });
 
   // Once audio is actually flowing, remember the working candidate and stop
   // the watchdog. The badge re-renders from cur.audioUrl, so it follows the
   // active candidate automatically (FLAC → MP3 shift is visible to the user).
+  metaDiagCountAdd('playing');
   audioEl.addEventListener('playing', () => {
     clearPlaybackWatchdog();
     const cur = state.current;
@@ -1516,6 +1555,12 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       const data = await apiFetch(
         `${SR_API}/scheduledepisodes?channelid=${channelId}&date=${dateStr}&format=json&pagination=false`
       );
+      // WS0 diagnostics: retain the RAW body for the active channel, reusing a
+      // response that already arrived. Capture only — the feature path below
+      // is unchanged and still reads the same parsed array.
+      META_DIAG.lastScheduleRaw = data;
+      META_DIAG.lastScheduleAt = new Date().toISOString();
+      META_DIAG.lastScheduleChannelId = channelId;
       const events = Array.isArray(data?.schedule) ? data.schedule : [];
       const parsed = events
         .map((ev) => {
@@ -1534,6 +1579,12 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         })
         .filter(Boolean)
         .sort((a, b) => a.startMs - b.startMs);
+      value = parsed.length ? parsed : null;
+      // WS0 diagnostics: the parsed [{startMs, endMs, title}] view of the
+      // capture above, so a snapshot can show raw AND parsed side by side.
+      // NOTE: a cache hit returns early above, so it does not refresh the raw
+      // capture — lastScheduleAt always states when the body was received.
+      META_DIAG.lastScheduleParsed = value;
       value = parsed.length ? parsed : null;
     } catch {
       value = null; // API down / rate-limited → feature hides
@@ -1580,9 +1631,12 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     renderPlayer();
   }
 
-  ['waiting', 'stalled'].forEach((ev) => audioEl.addEventListener(ev, () => {
-    if (state.current && audioEl.paused === false) setBadgeBuffering(true);
-  }));
+  ['waiting', 'stalled'].forEach((ev) => {
+    metaDiagCountAdd(ev);
+    audioEl.addEventListener(ev, () => {
+      if (state.current && audioEl.paused === false) setBadgeBuffering(true);
+    });
+  });
 
   function renderPlayer() {
     const cur = state.current;
@@ -1715,6 +1769,14 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
 
     const buildExpandPanel = () => {
       const panel = el('div', { class: 'player-expand', role: 'region', 'aria-label': 'Programinformation' });
+      // WS0 diagnostics: STABLE IDENTITY for this panel node. Assigned when the
+      // node is created here, and therefore NEW whenever renderPlayer() rebuilds
+      // the panel. A snapshot showing the same id before and after a channel
+      // switch proves THE SAME NODE SURVIVED; a changed id proves the panel was
+      // REBUILT FROM STATE. That distinction is what WS0 exists to make
+      // observable. Read-only bookkeeping — no rendering effect.
+      META_DIAG.expandPanelSeq += 1;
+      panel._srPanelSeq = META_DIAG.expandPanelSeq;
       const content = el('div', { class: 'expand-content' });
       panel.appendChild(content);
       // Fas 4 v3 (2026-09-23): the expanded player shows NOW-PLAYING
@@ -1844,8 +1906,9 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         timeLeft.textContent = fmtDur(t) || '0:00';
         timeRight.textContent = d ? fmtDur(d) : '';
       };
-      if (audioEl._srUpd) audioEl.removeEventListener('timeupdate', audioEl._srUpd);
+      if (audioEl._srUpd) { metaDiagCountRemove('timeupdate'); audioEl.removeEventListener('timeupdate', audioEl._srUpd); }
       audioEl._srUpd = upd;
+      metaDiagCountAdd('timeupdate');
       audioEl.addEventListener('timeupdate', upd);
       upd();
 
@@ -1946,8 +2009,9 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         if (f === null) { timeLeft.textContent = ''; fill.style.width = '0%'; return; }
         paint(f);
       };
-      if (audioEl._srDvrUpd) audioEl.removeEventListener('timeupdate', audioEl._srDvrUpd);
+      if (audioEl._srDvrUpd) { metaDiagCountRemove('timeupdate'); audioEl.removeEventListener('timeupdate', audioEl._srDvrUpd); }
       audioEl._srDvrUpd = upd;
+      metaDiagCountAdd('timeupdate');
       audioEl.addEventListener('timeupdate', upd);
       upd();
 
@@ -2142,6 +2206,23 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // Wire program-skip buttons once the schedule resolves (DVR only).
     // Re-render is NOT needed: the buttons live in this render instance.
     if (isDvr && cur.id && prevProgramBtn && nextProgramBtn) {
+      // LEAK FIX (WS1): drop the PREVIOUS render's programme-skip updater
+      // before this render can register its own. Without this, every
+      // renderPlayer() call added another `timeupdate` listener on the
+      // singleton audioEl and never removed any, so closures (and the
+      // orphaned button trees they capture) accumulated for the life of the
+      // page. Same convention as _srUpd / _srDvrUpd above.
+      //
+      // This removal MUST stay synchronous in renderPlayer(), NOT inside the
+      // fetchSchedule callback: syncNext is registered asynchronously, so a
+      // cleanup that ran after an `await` would be racing the registration it
+      // is meant to prevent. The property guard makes it safe when no listener
+      // was ever registered.
+      if (audioEl._srNextUpd) {
+        metaDiagCountRemove('timeupdate');
+        audioEl.removeEventListener('timeupdate', audioEl._srNextUpd);
+        audioEl._srNextUpd = null;
+      }
       fetchSchedule(cur.id).then((schedule) => {
         if (!schedule || !document.contains(prevProgramBtn)) return;
         const posMs = () => Date.now() - (cur.seekableEnd - (audioEl.currentTime || 0)) * 1000;
@@ -2164,8 +2245,12 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
           }
         };
         if (prevEv) syncNext();
-        // Keep next-button state fresh as playback moves.
+        // Keep next-button state fresh as playback moves. Paired with the
+        // synchronous removal above, so exactly one such listener is ever
+        // attached to audioEl.
+        metaDiagCountAdd('timeupdate');
         audioEl.addEventListener('timeupdate', syncNext);
+        audioEl._srNextUpd = syncNext;
       }).catch(() => { /* schedule unavailable — buttons stay hidden */ });
     }
 
@@ -3324,6 +3409,263 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     loadItems(tab);
     renderList();
   }
+
+  // ================= WS0: metadata diagnostics hook =================
+  // DIAGNOSTICS ONLY — INERT BY DEFAULT. Installed by Workstream 0 to make the
+  // open channel-switch and programme-skip metadata reports observable. It
+  // fixes nothing and changes no behaviour; root-cause work is Workstream 1.
+  //
+  // GATE (deliberately two keys, both required):
+  //   1. the URL query string contains diag=metadata, AND
+  //   2. localStorage['sr-meta-diag'] === 'on'.
+  // Reasoning: the query parameter alone travels in links, screenshots, bug
+  // reports and browser history, so it must never be sufficient to switch
+  // diagnostics on in someone's normal session. The localStorage flag is
+  // something a person sets deliberately on the device they are debugging.
+  // Requiring both means a stray or shared link does nothing on its own.
+  // With the gate closed this function returns null immediately: no
+  // listeners, no timers, no fetches, no polling, no DOM mutation, no
+  // localStorage writes.
+  const META_DIAG_FLAG = 'sr-meta-diag';
+  const META_DIAG_QUERY = 'diag=metadata';
+  const META_DIAG_RAW_MAX_CHARS = 4000;
+
+  function metaDiagGateOpen() {
+    let q = '';
+    try { q = String(location.search || ''); } catch { q = ''; }
+    if (q.indexOf(META_DIAG_QUERY) === -1) return false;
+    let flag = null;
+    try { flag = localStorage.getItem(META_DIAG_FLAG); } catch { flag = null; }
+    return flag === 'on';
+  }
+
+  // Bound a captured raw API body so a snapshot stays readable in a console.
+  // Truncation is ANNOUNCED, never silent.
+  function metaDiagCapRaw(value) {
+    if (value == null) return { body: null, truncated: false, chars: 0 };
+    let text;
+    try { text = JSON.stringify(value); } catch {
+      return { body: null, truncated: true, chars: 0, note: 'unserialisable' };
+    }
+    if (text.length <= META_DIAG_RAW_MAX_CHARS) {
+      return { body: value, truncated: false, chars: text.length };
+    }
+    return {
+      body: `${text.slice(0, META_DIAG_RAW_MAX_CHARS)}…[TRUNCATED]`,
+      truncated: true,
+      chars: text.length,
+      shownChars: META_DIAG_RAW_MAX_CHARS,
+    };
+  }
+
+  function metaDiagText(root, selector) {
+    const n = root.querySelector(selector);
+    return n ? (n.textContent || '').trim() : null;
+  }
+
+  function metaDiagAttr(root, selector, attr) {
+    const n = root.querySelector(selector);
+    return n ? n.getAttribute(attr) : null;
+  }
+
+  // Build the snapshot. Called only when metaDiagGateOpen() is true.
+  function metaDiagBuildSnapshot() {
+    const cur = state.current;
+    let buffered = [];
+    try {
+      const b = audioEl.buffered;
+      for (let i = 0; b && i < b.length; i += 1) buffered.push({ start: b.start(i), end: b.end(i) });
+    } catch { buffered = []; }
+
+    const panel = $player.querySelector('.player-expand');
+    const playingIcons = [];
+    document.querySelectorAll('[data-stream-key]').forEach((n) => {
+      if (!n.classList.contains('playing')) return;
+      playingIcons.push({
+        streamKey: n.dataset.streamKey || null,
+        ariaPressed: n.getAttribute('aria-pressed'),
+        ariaLabel: n.getAttribute('aria-label'),
+      });
+    });
+
+    // Wall-clock time of the heard position inside the DVR window. Read-only:
+    // dvrPositionToDate() only reads cur.seekableEnd.
+    let positionWallClock = null;
+    try {
+      const d = dvrPositionToDate(audioEl.currentTime);
+      if (d) positionWallClock = d.toISOString();
+    } catch { positionWallClock = null; }
+
+    return {
+      tool: 'sr-meta-diag (WS0) — read-only snapshot, fixes nothing',
+      gate: { query: META_DIAG_QUERY, flagKey: META_DIAG_FLAG, open: true },
+      takenAt: new Date().toISOString(),
+
+      playback: {
+        current: cur ? {
+          kind: cur.kind ?? null,
+          id: cur.id ?? null,
+          title: cur.title ?? null,
+          subtitle: cur.subtitle ?? null,
+          _srProgramTitle: cur._srProgramTitle ?? null,
+          audioUrl: cur.audioUrl ?? null,
+          codec: cur.codec ?? null,
+          bitrate: cur.bitrate ?? null,
+          transport: cur.transport ?? null,
+          dvr: cur.dvr ?? null,
+          candidateIndex: cur.candidateIndex ?? null,
+          duration: cur.duration ?? null,
+          dvrAvailable: cur.dvrAvailable ?? null,
+          candidates: Array.isArray(cur.candidates) ? cur.candidates : [],
+        } : null,
+        lastPlayingKey,
+      },
+
+      audioEl: {
+        currentTime: audioEl.currentTime,
+        duration: Number.isFinite(audioEl.duration) ? audioEl.duration : null,
+        paused: audioEl.paused,
+        readyState: audioEl.readyState,
+        networkState: audioEl.networkState,
+        buffered,
+        src: audioEl.getAttribute('src'),
+        currentSrc: audioEl.currentSrc || null,
+      },
+
+      nowPlaying: {
+        parsed: {
+          song: nowPlaying.song
+            ? {
+                title: nowPlaying.song.title,
+                artist: nowPlaying.song.artist,
+                startMs: nowPlaying.song.startMs,
+                stopMs: nowPlaying.song.stopMs,
+              }
+            : null,
+          artwork: nowPlaying.artwork,
+          channelId: nowPlaying.channelId,
+        },
+        nowPlayingSeq,
+        artworkSeq,
+        nowPlayingTimer: nowPlayingTimer ? 'present' : 'absent',
+        rawRightNow: metaDiagCapRaw(META_DIAG.lastRightNowRaw),
+        rawRightNowReceivedAt: META_DIAG.lastRightNowAt,
+        note: 'previoussong/nextsong are captured in rawRightNow only; '
+          + 'the app parses playlist.song exclusively and nothing else reads them.',
+      },
+
+      schedule: {
+        channelId: META_DIAG.lastScheduleChannelId,
+        rawScheduledEpisodes: metaDiagCapRaw(META_DIAG.lastScheduleRaw),
+        rawReceivedAt: META_DIAG.lastScheduleAt,
+        parsed: (META_DIAG.lastScheduleParsed || []).map((e) => ({
+          startMs: e.startMs, endMs: e.endMs, title: e.title,
+        })),
+      },
+
+      episodeTracks: {
+        currentTrack: episodeCurrentTrack,
+        cacheKeys: Array.from(episodeTracksCache.keys()),
+        trackSeq: episodeTrackSeq,
+      },
+
+      dvr: {
+        atLiveEdge: cur?.atLiveEdge ?? null,
+        distanceFromLiveEdge: cur?.distanceFromLiveEdge ?? null,
+        seekableStart: cur?.seekableStart ?? null,
+        seekableEnd: cur?.seekableEnd ?? null,
+        seekableDuration: cur?.seekableDuration ?? null,
+        positionWallClockIso: positionWallClock,
+      },
+
+      dom: {
+        playerTitle: metaDiagText($player, '.player-title'),
+        playerSub: metaDiagText($player, '.player-sub'),
+        nowPlayingLine: metaDiagText($player, '.now-playing-line'),
+        playerMode: metaDiagText($player, '.player-mode'),
+        playerQuality: metaDiagText($player, '.player-quality'),
+        playerMini: metaDiagText($player, '.player-mini'),
+        playerMinimized,
+        expandButtonAriaExpanded: metaDiagAttr($player, '.player-expand-btn', 'aria-expanded'),
+        expand: panel ? {
+          isOpen: true,
+          // STABLE IDENTITY. Assigned once per created node, so the same value
+          // across two snapshots = the SAME node survived whatever happened in
+          // between; a different value = the panel was REBUILT from state.
+          panelSeq: panel._srPanelSeq ?? null,
+          panelSeqBuiltCount: META_DIAG.expandPanelSeq,
+          label: metaDiagText(panel, '.expand-label'),
+          title: metaDiagText(panel, '.expand-title'),
+          sub: metaDiagText(panel, '.expand-sub'),
+          img: metaDiagAttr(panel, '.expand-img', 'src'),
+        } : { isOpen: false, panelSeq: null, panelSeqBuiltCount: META_DIAG.expandPanelSeq },
+        playerClassName: $player.className,
+        playerInlineTransform: $player.style.transform,
+        playingIcons,
+      },
+
+      // Counts of the listeners THE APP registers on the singleton audioEl,
+      // instrumented at the app's own registration sites only. No
+      // EventTarget.prototype patching. netLive = adds − removes, i.e. how
+      // many are still attached to the element right now.
+      listeners: (() => {
+        const adds = { ...META_DIAG.listenerAdds };
+        const removes = { ...META_DIAG.listenerRemoves };
+        const net = Object.create(null);
+        Object.keys(adds).forEach((k) => {
+          net[k] = (adds[k] || 0) - (removes[k] || 0);
+        });
+        return { registered: adds, removed: removes, netLive: net };
+      })(),
+
+      environment: {
+        DIAG_ID,
+        href: location.href,
+        standalone: (() => {
+          try {
+            return window.matchMedia('(display-mode: standalone)').matches
+              || window.navigator.standalone === true;
+          } catch { return null; }
+        })(),
+        userAgent: navigator.userAgent,
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+        performanceNow: performance.now(),
+      },
+    };
+  }
+
+  // Console entry point. Returns the snapshot, or null when the gate is shut.
+  // Read-only with respect to playback: it never touches audioEl.src, hls,
+  // state.current, timers or the network.
+  function srMetaDiagSnapshot() {
+    if (!metaDiagGateOpen()) return null; // inert: no side effects of any kind
+    let snap = null;
+    try {
+      snap = metaDiagBuildSnapshot();
+      console.log('%cSR-METADIAG', 'color:#0a0', JSON.stringify(snap, null, 2));
+      // One compact line in the existing always-on log, so the snapshot
+      // carries the existing DIAG_ID and is distinguishable by its prefix.
+      diagLog(`meta-snapshot ${JSON.stringify({
+        takenAt: snap.takenAt,
+        kind: snap.playback.current?.kind ?? null,
+        id: snap.playback.current?.id ?? null,
+        channelId: snap.nowPlaying.parsed.channelId,
+        song: snap.nowPlaying.parsed.song?.title ?? null,
+        programTitle: snap.playback.current?._srProgramTitle ?? null,
+        expandPanelSeq: snap.dom.expand.panelSeq,
+        atLiveEdge: snap.dvr.atLiveEdge,
+        listeners: snap.listeners.netLive,
+      })}`);
+    } catch (e) {
+      console.log('SR-METADIAG failed', e);
+      return null;
+    }
+    return snap;
+  }
+
+  // Exposed for the console. Assigning is inert; calling is gated.
+  window.srMetaDiag = srMetaDiagSnapshot;
+  window.srMetaDiagGateOpen = metaDiagGateOpen;
 
   // ---------------- boot ----------------
   async function boot() {

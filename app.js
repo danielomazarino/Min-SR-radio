@@ -2206,6 +2206,23 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // Wire program-skip buttons once the schedule resolves (DVR only).
     // Re-render is NOT needed: the buttons live in this render instance.
     if (isDvr && cur.id && prevProgramBtn && nextProgramBtn) {
+      // LEAK FIX (WS1): drop the PREVIOUS render's programme-skip updater
+      // before this render can register its own. Without this, every
+      // renderPlayer() call added another `timeupdate` listener on the
+      // singleton audioEl and never removed any, so closures (and the
+      // orphaned button trees they capture) accumulated for the life of the
+      // page. Same convention as _srUpd / _srDvrUpd above.
+      //
+      // This removal MUST stay synchronous in renderPlayer(), NOT inside the
+      // fetchSchedule callback: syncNext is registered asynchronously, so a
+      // cleanup that ran after an `await` would be racing the registration it
+      // is meant to prevent. The property guard makes it safe when no listener
+      // was ever registered.
+      if (audioEl._srNextUpd) {
+        metaDiagCountRemove('timeupdate');
+        audioEl.removeEventListener('timeupdate', audioEl._srNextUpd);
+        audioEl._srNextUpd = null;
+      }
       fetchSchedule(cur.id).then((schedule) => {
         if (!schedule || !document.contains(prevProgramBtn)) return;
         const posMs = () => Date.now() - (cur.seekableEnd - (audioEl.currentTime || 0)) * 1000;
@@ -2228,12 +2245,12 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
           }
         };
         if (prevEv) syncNext();
-        // Keep next-button state fresh as playback moves.
-        // NOTE (WS0, NOT FIXED): registered on the singleton audioEl inside
-        // renderPlayer(), and re-registered on every render without a matching
-        // remove. Counted by the diagnostics hook; left exactly as it is.
+        // Keep next-button state fresh as playback moves. Paired with the
+        // synchronous removal above, so exactly one such listener is ever
+        // attached to audioEl.
         metaDiagCountAdd('timeupdate');
         audioEl.addEventListener('timeupdate', syncNext);
+        audioEl._srNextUpd = syncNext;
       }).catch(() => { /* schedule unavailable — buttons stay hidden */ });
     }
 
