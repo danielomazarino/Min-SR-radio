@@ -772,6 +772,19 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     }
   }
 
+  // ---- expand-panel open/close STATE (WS2) ----
+  // Single source of truth for the chevron's `aria-expanded` and `open` class.
+  // BUG 3 FIX (WS2) part 1: the swipe path's commit-expand branch used to set
+  // NEITHER, so after a swipe the panel was visible while the button still
+  // claimed to be closed. Both the chevron path and the gesture path now go
+  // through here, so the two cannot drift apart again.
+  function setExpandOpen(open) {
+    const btn = $player.querySelector('.player-expand-btn');
+    if (!btn) return;
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    btn.classList.toggle('open', open);
+  }
+
   // Observe the window while HLS is playing. Cheap: only runs when a live
   // HLS track is active, piggybacks on timeupdate.
   metaDiagCountAdd('timeupdate');
@@ -1065,6 +1078,14 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // Do not display the previous live song/artwork while the new channel's
     // rightnow request is pending. The sequence guards also kill late replies.
     stopNowPlayingPoll();
+    // BUG 2 FIX (WS2): a fresh playback must always open the FULL player.
+    // playerMinimized is only set by minimizePlayer() and cleared by
+    // restorePlayer() / stopAndClosePlayer(). Tapping a DIFFERENT channel
+    // while the previous one sat in the mini-bar skipped both of those, so the
+    // new track rendered in the minimised layout. Reset it here alongside the
+    // other per-session resets, matching the intent already documented in
+    // stopAndClosePlayer() ("a fresh play must never open as mini-bar").
+    playerMinimized = false;
     state.current = track;
     lastPlayingKey = `${track.kind}:${track.id}`;
     // New playback session → the news auto-collapse may fire once again.
@@ -1489,15 +1510,30 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     audioEl.currentTime = target;
   }
 
-  // "Till Direkt": seek to the current seekable end (the live edge). Does
-  // NOT reload the stream, does NOT create a new HLS session, and preserves
-  // the current paused/playing state.
+  // "Till Direkt": seek back to the live edge. Does NOT reload the stream,
+  // does NOT create a new HLS session, and preserves the paused/playing state.
+  //
+  // BUG 1 FIX (WS2): this used to seek to `cur.seekableEnd` EXACTLY — the
+  // precise end of the buffered range. That is the live edge, and Safari /
+  // native HLS treat a seek onto the buffered BOUNDARY as a no-op or refuse
+  // it, so the final step back to live appeared to do nothing. Programme skips
+  // work precisely because they target a position in the MIDDLE of the buffer.
+  // So we aim slightly BEHIND the edge instead. LIVE_EDGE_TOLERANCE_S is the
+  // same tolerance updateSeekableState() uses to decide "at live", so the
+  // result is still classified as live while giving the browser a real,
+  // non-boundary target.
+  //
+  // Clamped against seekableStart so it can never fall outside the buffer.
   function seekToLive() {
     const cur = state.current;
     if (!cur) return;
     const end = cur.dvrAvailable ? cur.seekableEnd : null;
     if (!Number.isFinite(end)) return;
-    audioEl.currentTime = end;
+    const start = Number.isFinite(cur.seekableStart) ? cur.seekableStart : 0;
+    // Stay behind the boundary, but never behind the start of the window.
+    const target = Math.max(start, end - LIVE_EDGE_TOLERANCE_S);
+    if (!Number.isFinite(target)) return;
+    audioEl.currentTime = target;
     updateSeekableState();
     renderPlayer();
   }
@@ -1791,20 +1827,30 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       // REMOVED — the channel name is already in the icon, and the program
       // name is the useful info here.
       const renderSongView = () => {
+        // BUG 3 FIX (WS2) — read the track from LIVE STATE, not the closure.
+        // This panel used to close over `cur`, the track that was playing when
+        // the panel was BUILT. A panel opened by a swipe, then left open across
+        // a channel switch, kept repainting the PREVIOUS channel forever: it is
+        // still a child of $player, so paintNowPlaying()/paintProgramTitle()
+        // found it and called _srRepaint(), but that repaint re-rendered from
+        // the captured track. Reading state.current at paint time means an
+        // already-visible stale panel corrects itself on the next repaint.
+        // Falls back to the captured `cur` only if live state is somehow gone.
+        const live = state.current || cur;
         // Same source of truth as paintNowPlaying: episodes read the
         // ondemand track at the current position; live reads rightnow.
-        const isEpisode = cur.kind === 'episode';
+        const isEpisode = live.kind === 'episode';
         const song = isEpisode ? episodeCurrentTrack : nowPlaying.song;
         if (!song || !song.title) {
           content.appendChild(el('div', { class: 'expand-row' },
-            cur.artwork
-              ? el('img', { class: 'expand-img', src: cur.artwork, alt: '' })
+            live.artwork
+              ? el('img', { class: 'expand-img', src: live.artwork, alt: '' })
               : el('div', { class: 'expand-img expand-img-placeholder', 'aria-hidden': 'true' }, '♪'),
             el('div', { class: 'expand-text' },
               el('div', { class: 'expand-label', text: 'Spelas just nu' }),
-              el('div', { class: 'expand-title', text: isEpisode ? (cur.title || '') : (cur._srProgramTitle || cur.title || '') }),
-              !isEpisode && cur._srProgramTitle && cur.title && cur._srProgramTitle !== cur.title
-                ? el('div', { class: 'expand-sub', text: cur.title }) : null)));
+              el('div', { class: 'expand-title', text: isEpisode ? (live.title || '') : (live._srProgramTitle || live.title || '') }),
+              !isEpisode && live._srProgramTitle && live.title && live._srProgramTitle !== live.title
+                ? el('div', { class: 'expand-sub', text: live.title }) : null)));
           return;
         }
         const songArtwork = isEpisode ? null : nowPlaying.artwork;
@@ -1827,8 +1873,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       const existing = $player.querySelector('.player-expand');
       if (existing) {
         existing.remove();
-        expandBtn.setAttribute('aria-expanded', 'false');
-        expandBtn.classList.remove('open');
+        setExpandOpen(false);
         return;
       }
       const panel = buildExpandPanel();
@@ -1838,12 +1883,10 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       const grabZone = el('div', { class: 'expand-grab-zone' }, el('div', { class: 'sheet-grab' }));
       panel.insertBefore(grabZone, panel.firstChild);
       $player.insertBefore(panel, $player.firstChild); // grows UPWARD — bottom stays put
-      expandBtn.setAttribute('aria-expanded', 'true');
-      expandBtn.classList.add('open');
+      setExpandOpen(true);
       const fold = () => {
         panel.remove();
-        expandBtn.setAttribute('aria-expanded', 'false');
-        expandBtn.classList.remove('open');
+        setExpandOpen(false);
       };
       enableSwipeToClose(panel, panel, fold, { axis: 'y' });
       // The grab zone must not scroll — it owns the vertical gesture.
@@ -2298,15 +2341,18 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     const THRESHOLD = 0.22; // 22 % of viewport height commits the gesture
     const FLICK_MS = 260;
 
-    surface.addEventListener('touchstart', (e) => {
+    // Named handlers (not inline arrows) so enablePlayerGestures can keep a
+    // reference to each one and remove it on the next call — see the leak fix
+    // at the end of this function.
+    const onTouchStart = (e) => {
       if (e.touches.length !== 1) return;
       startY = e.touches[0].clientY;
       startX = e.touches[0].clientX;
       t0 = Date.now();
       axis = null;
-    }, { passive: true });
+    };
 
-    surface.addEventListener('touchmove', (e) => {
+    const onTouchMove = (e) => {
       if (e.touches.length !== 1) return;
       const dy = e.touches[0].clientY - startY;
       const dx = e.touches[0].clientX - startX;
@@ -2338,7 +2384,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         // Dragging down: player follows the finger toward minimized state.
         surface.style.transform = `translateY(${Math.min(dy, window.innerHeight * 0.5)}px)`;
       }
-    }, { passive: false });
+    };
 
     const finish = (e) => {
       if (axis !== 'y') return;
@@ -2351,8 +2397,19 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       const panel = surface.querySelector('.player-expand');
       if (dy < -window.innerHeight * THRESHOLD || (Date.now() - t0 < 260 && dy < -40)) {
         // Commit EXPAND: panel snaps to full height.
-        if (panel) panel.style.height = '';
-        return; // panel already open via onExpand
+        // BUG 3 FIX (WS2) part 1: this branch previously only reset the height
+        // and returned, leaving the chevron's aria-expanded="false" and no
+        // `open` class — a visible panel whose button claimed to be closed.
+        // It must now leave the same state the chevron path produces.
+        if (panel) {
+          panel.style.height = '';
+          // Only claim "expanded" when a panel actually exists: a renderPlayer()
+          // during the drag (channel switch, buffering event) wipes the whole
+          // player subtree, so the panel the swipe created can already be gone
+          // by commit time. Setting aria-expanded with no panel would be a lie.
+          setExpandOpen(true);
+        }
+        return;
       }
       if (dy > window.innerHeight * THRESHOLD || (Date.now() - t0 < 260 && dy > 40)) {
         // Commit MINIMIZE.
@@ -2366,13 +2423,36 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         // Not dragged far enough up — fold the panel back.
         panel.style.height = '';
         panel.remove();
-        const btn = surface.querySelector('.player-expand-btn');
-        btn?.setAttribute('aria-expanded', 'false');
-        btn?.classList.remove('open');
+        setExpandOpen(false);
       }
     };
     surface.addEventListener('touchend', finish, { passive: true });
     surface.addEventListener('touchcancel', finish, { passive: true });
+
+    // LEAK FIX (WS2): this function is called from renderPlayer() on the
+    // SINGLETON $player on every render, and each call added four more touch
+    // listeners with no matching removal — so they accumulated for the life of
+    // the page and one swipe could be handled by several stacked handlers.
+    // Same class of defect as the WS1 audioEl timeupdate leak. The WS0
+    // counters are defined for audioEl, so the app's own registration is
+    // tracked the same way, keyed on the element, and the removal is paired
+    // with the counter so the diagnostics keep telling the truth.
+    if (surface._srGestureHandlers) {
+      const prev = surface._srGestureHandlers;
+      prev.forEach(({ type, fn, opts }) => {
+        surface.removeEventListener(type, fn, opts);
+        metaDiagCountRemove(type);
+      });
+    }
+    const registered = [
+      { type: 'touchstart', fn: onTouchStart, opts: { passive: true } },
+      { type: 'touchmove', fn: onTouchMove, opts: { passive: false } },
+      { type: 'touchend', fn: finish, opts: { passive: true } },
+      { type: 'touchcancel', fn: finish, opts: { passive: true } },
+    ];
+    registered.forEach(({ type, fn, opts }) => surface.addEventListener(type, fn, opts));
+    registered.forEach(({ type }) => metaDiagCountAdd(type));
+    surface._srGestureHandlers = registered;
   }
 
   // ---- minimize: player shrinks to a mini-bar; page visible; audio keeps playing ----
@@ -2382,8 +2462,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     playerMinimized = true;
     // Fold the expand panel if open.
     $player.querySelector('.player-expand')?.remove();
-    $player.querySelector('.player-expand-btn')?.setAttribute('aria-expanded', 'false');
-    $player.querySelector('.player-expand-btn')?.classList.remove('open');
+    setExpandOpen(false);
     $player.classList.add('minimized');
     // Mini-bar content: artwork, title, play/pause, expand, stop.
     renderPlayer();

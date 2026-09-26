@@ -368,21 +368,30 @@ test('snapshot: listener accounting is present, per type, add and remove', () =>
   // Every app-owned addEventListener site on audioEl is counted: no add site
   // may lack its count call. Two of these sites are forEach loops over several
   // event names, so the call count (8) is by SOURCE SITE, not by listener.
+  // WS2 added a second registration surface ($player touch handlers, stored in
+  // the `registered` array), so the count calls are no longer equal to the
+  // audioEl sites alone. What must hold is that every audioEl add site has a
+  // count call, and that the surplus is accounted for by the $player block.
   const addSites = APP_CODE.split('audioEl.addEventListener').length - 1;
   const countCalls = (APP_CODE.match(/metaDiagCountAdd\(/g) || []).length
     - (APP_CODE.match(/function metaDiagCountAdd\(/g) || []).length;
   assert.equal(addSites, 8, 'expected 8 audioEl.addEventListener source sites');
-  assert.equal(countCalls, addSites,
+  assert.ok(countCalls >= addSites,
     'every audioEl.addEventListener site must have a matching metaDiagCountAdd call');
+  // The surplus must be exactly the $player gesture registrations (one call
+  // site, looping over 4 event types).
+  assert.equal(countCalls - addSites, 1,
+    'the only surplus count call is the $player gesture-registration loop');
   // Removals counted too. WS1 added a third site (the programme-skip updater
-  // that used to leak), so the expected count moved 2 → 3. What matters is the
-  // invariant: no removal site may exist without its count call.
-  const remSites = APP_CODE.split('audioEl.removeEventListener').length - 1;
+  // that used to leak); WS2 added a fourth ($player gesture handlers). What
+  // matters is the invariant: no removal site may exist without its count call.
+  const remSites = APP_CODE.split('audioEl.removeEventListener').length - 1
+    + (APP_CODE.split('surface.removeEventListener').length - 1);
   const remCalls = (APP_CODE.match(/metaDiagCountRemove\(/g) || []).length
     - (APP_CODE.match(/function metaDiagCountRemove\(/g) || []).length;
-  assert.equal(remSites, 3, 'expected 3 audioEl.removeEventListener source sites');
+  assert.equal(remSites, 4, 'expected 4 listener-removal source sites (3 audioEl + 1 $player)');
   assert.equal(remCalls, remSites,
-    'every audioEl.removeEventListener site must have a matching metaDiagCountRemove call');
+    'every listener-removal site must have a matching metaDiagCountRemove call');
   // The timeupdate listener in renderPlayer() that WS0 must leave alone is
   // still present — counted, but not refactored or removed.
   assert.ok(APP_JS.includes("audioEl.addEventListener('timeupdate', syncNext)"),
@@ -624,4 +633,221 @@ test('WS1: the leak is fixed on every audioEl listener, not just this one', () =
     'the module-scope timeupdate observer must be registered exactly once');
   assert.ok(!/removeEventListener\('timeupdate', \(\) =>/.test(APP_CODE),
     'the module-scope observer must never be removed — nothing re-registers it');
+});
+
+// =====================================================================
+// Workstream 2 — three confirmed bugs, fixed 2026-09-27.
+//
+//  Bug 1: "Till Direkt" sought to `cur.seekableEnd` EXACTLY — the buffered
+//         boundary, which Safari/native HLS treat as a no-op.
+//  Bug 2: playTrack() never reset `playerMinimized`, so tapping a different
+//         channel while the previous one sat in the mini-bar opened mini.
+//  Bug 3: swipe-up opened the panel via a path that never set the chevron's
+//         open state, and renderSongView re-rendered from the `cur` captured
+//         at BUILD time, so a panel left open across a channel switch showed
+//         the PREVIOUS channel and never self-corrected.
+//  Plus: enablePlayerGestures() stacked four touch listeners on the singleton
+//         $player on every renderPlayer() with no removal (same class as the
+//         WS1 audioEl leak).
+// =====================================================================
+
+// Region markers often live in comments, so each region below is located in the
+// RAW file and then comment-stripped — matching the idiom used above.
+const SEEK_TO_LIVE = stripComments(region(
+  'function seekToLive()', '// ---- DVR transport', APP_JS));
+const PLAY_TRACK = stripComments(region(
+  'function playTrack(track)', '// ---- playback watchdog', APP_JS));
+const RENDER_SONG_VIEW = stripComments(region(
+  'const renderSongView = () => {', 'renderSongView();', APP_JS));
+const GESTURES = stripComments(region(
+  'function enablePlayerGestures(', '// ---- minimize:', APP_JS));
+const GESTURE_FINISH = stripComments(region(
+  'const finish = (e) => {', 'const registered = [', APP_JS));
+const EXPAND_BTN = stripComments(region(
+  "expandBtn.addEventListener('click'", '// Direct AAC streams', APP_JS));
+
+test('WS2 Bug 1: seekToLive targets just BEHIND the edge, not onto the boundary', () => {
+  // The defect: `audioEl.currentTime = end` — exactly the buffered end.
+  assert.ok(!/audioEl\.currentTime = end;/.test(SEEK_TO_LIVE),
+    'seekToLive must NOT assign the exact buffered end (the no-op boundary seek)');
+  // The fix: aim behind the edge by the same tolerance updateSeekableState()
+  // uses to classify "at live", so the result still counts as live.
+  assert.ok(/end - LIVE_EDGE_TOLERANCE_S/.test(SEEK_TO_LIVE),
+    'the target must sit behind the edge by LIVE_EDGE_TOLERANCE_S');
+  // Clamped so it can never fall below the start of the window.
+  assert.ok(/Math\.max\(start,/.test(SEEK_TO_LIVE),
+    'the target must be clamped against seekableStart');
+  assert.ok(/Number\.isFinite\(cur\.seekableStart\) \? cur\.seekableStart : 0/.test(SEEK_TO_LIVE),
+    'seekableStart must be read defensively, defaulting to 0');
+  assert.ok(/Number\.isFinite\(target\)/.test(SEEK_TO_LIVE),
+    'the computed target must be validated before use');
+  assert.ok(/audioEl\.currentTime = target;/.test(SEEK_TO_LIVE),
+    'the clamped target is what gets assigned');
+});
+
+test('WS2 Bug 1: existing guards survive and paused/playing is untouched', () => {
+  // The !cur and non-finite-end early returns must both remain.
+  assert.ok(/if \(!cur\) return;/.test(SEEK_TO_LIVE), 'the !cur guard must survive');
+  assert.ok(/const end = cur\.dvrAvailable \? cur\.seekableEnd : null;/.test(SEEK_TO_LIVE),
+    'the dvrAvailable gate must survive');
+  assert.ok(/if \(!Number\.isFinite\(end\)\) return;/.test(SEEK_TO_LIVE),
+    'the non-finite-end guard must survive');
+  // Contract: this is a SEEK ONLY. No reload, no new HLS session, no play().
+  ['play(', 'pause(', 'load(', 'hlsAttach(', 'hlsDetach('].forEach((forbidden) => {
+    assert.ok(!SEEK_TO_LIVE.includes(forbidden),
+      `seekToLive must not call ${forbidden} — it is a seek, nothing more`);
+  });
+  assert.ok(!/audioEl\.src\s*=/.test(SEEK_TO_LIVE), 'seekToLive must not reassign the source');
+  assert.ok(!/removeAttribute\('src'\)/.test(SEEK_TO_LIVE), 'seekToLive must not clear the source');
+  // The UI must still follow the new position.
+  assert.ok(/updateSeekableState\(\);\s*renderPlayer\(\);/.test(SEEK_TO_LIVE),
+    'updateSeekableState() + renderPlayer() must still run after the seek');
+});
+
+test('WS2 Bug 2: playTrack resets playerMinimized so a fresh play opens full', () => {
+  assert.ok(/playerMinimized = false;/.test(PLAY_TRACK),
+    'playTrack must reset playerMinimized for every new session');
+  // It must sit among the other per-session resets, BEFORE the state assignment,
+  // so nothing renders between the reset and the new track.
+  const resetAt = PLAY_TRACK.indexOf('playerMinimized = false;');
+  const assignAt = PLAY_TRACK.indexOf('state.current = track');
+  assert.ok(resetAt !== -1 && assignAt !== -1);
+  assert.ok(resetAt < assignAt,
+    'the reset must happen before state.current is assigned');
+  assert.ok(PLAY_TRACK.indexOf('stopNowPlayingPoll();') < resetAt,
+    'the reset belongs with the other per-session resets');
+  // The stopAndClosePlayer reset must NOT have been removed.
+  const close = stripComments(region('function stopAndClosePlayer()', 'audioEl.addEventListener', APP_JS));
+  assert.ok(/playerMinimized = false;/.test(close),
+    'stopAndClosePlayer must keep its own playerMinimized reset');
+});
+
+test('WS2 Bug 3: swipe commit-expand leaves the same state as the chevron path', () => {
+  // The defect: the commit branch only reset the height and returned, so
+  // aria-expanded stayed "false" and the `open` class was never added.
+  assert.ok(/setExpandOpen\(true\);/.test(GESTURE_FINISH),
+    'the commit-expand branch must mark the panel open');
+  // AND the spring-back branch must mark it closed again.
+  assert.ok(/setExpandOpen\(false\);/.test(GESTURE_FINISH),
+    'the spring-back branch must mark the panel closed');
+  // Both must live in finish(), i.e. AFTER the drag, not during it.
+  assert.ok(GESTURE_FINISH.indexOf('setExpandOpen(true)')
+    > GESTURE_FINISH.indexOf('const dy ='),
+  'open state is set at commit time, after the drag is measured');
+  // The open state may only be claimed when a panel actually EXISTS. A
+  // renderPlayer() during the drag (channel switch, buffering event) wipes the
+  // player subtree, so the panel can be gone by commit time — claiming
+  // "expanded" with no panel would put the button and the DOM out of sync
+  // again, which is the very class of bug this fix removes.
+  // The commit-expand branch, sliced precisely. It is anchored on CODE, not on
+  // its `// Commit EXPAND` comment — this region is comment-stripped, so that
+  // marker is gone. The expand condition is the first `dy < -` test in finish().
+  const commitAt = GESTURE_FINISH.indexOf('if (dy < -window.innerHeight * THRESHOLD');
+  assert.notEqual(commitAt, -1, 'the commit-expand branch must exist');
+  const commit = GESTURE_FINISH.slice(commitAt, GESTURE_FINISH.indexOf('return;', commitAt));
+  assert.ok(/if \(panel\) \{/.test(commit),
+    'the commit branch must guard on the panel still existing');
+  assert.ok(commit.indexOf('if (panel) {') < commit.indexOf('setExpandOpen(true)'),
+    'setExpandOpen(true) must be inside the panel-exists guard');
+  // One shared helper, used by BOTH paths — the whole point of the fix.
+  assert.ok(/function setExpandOpen\(open\)/.test(APP_CODE),
+    'a shared setExpandOpen() helper must exist');
+  assert.ok(EXPAND_BTN.includes('setExpandOpen(true);')
+    && EXPAND_BTN.includes('setExpandOpen(false);'),
+  'the chevron path must use the same helper for both open and close');
+  // The helper must be the only place that writes the PLAYER's state, so the
+  // two paths cannot drift apart again. Scoped to the player: the News
+  // section has its own unrelated aria-expanded on its toggle button.
+  const rawAria = APP_CODE.split("btn.setAttribute('aria-expanded', open ? 'true' : 'false')").length - 1;
+  assert.equal(rawAria, 1,
+    "the player's aria-expanded must be written in exactly one place (the shared helper)");
+  const rawOpen = APP_CODE.split("classList.toggle('open'").length - 1;
+  assert.equal(rawOpen, 1,
+    "the player's `open` class must be toggled in exactly one place (the shared helper)");
+  // The only other aria-expanded writer must be the News toggle, not the player.
+  const otherAria = (APP_CODE.match(/\.setAttribute\('aria-expanded'/g) || []).length - 1;
+  assert.equal(otherAria, 1,
+    'the only other aria-expanded writer is the News section toggle');
+  assert.ok(APP_CODE.includes("btn.setAttribute('aria-expanded', String(newsExpanded))"),
+    'that other writer is the News toggle, which is unrelated to the player panel');
+});
+
+test('WS2 Bug 3: renderSongView reads the channel from LIVE state, not the closure', () => {
+  // The defect: renderSongView re-rendered from `cur`, captured when the panel
+  // was BUILT, so a panel left open across a channel switch kept showing the
+  // previous channel forever.
+  assert.ok(/const live = state\.current \|\| cur;/.test(RENDER_SONG_VIEW),
+    'renderSongView must read the current track from state.current');
+  // Every identity-bearing field must come from `live`, not `cur`.
+  ['live.kind', 'live.artwork', 'live.title', 'live._srProgramTitle'].forEach((f) => {
+    assert.ok(RENDER_SONG_VIEW.includes(f),
+      `renderSongView must derive ${f} from live state`);
+  });
+  // No bare `cur.` may remain in the identity reads (cur may only be the
+  // fallback on the same line as the state.current read).
+  const bareCur = (RENDER_SONG_VIEW.match(/\bcur\./g) || []).length;
+  assert.equal(bareCur, 0,
+    'renderSongView must not read any field from the closure-captured cur');
+  // The repaint hook must still exist, so a visible stale panel can correct.
+  assert.ok(/panel\._srRepaint = \(\) => \{ content\.textContent = ''; renderSongView\(\); \};/
+    .test(APP_CODE),
+  'the repaint hook must still re-run renderSongView, so a stale panel self-corrects');
+  // Displayed content must be unchanged: same label, song, artist, artwork.
+  assert.ok(RENDER_SONG_VIEW.includes("text: 'Spelas just nu'"),
+    'the panel label must be unchanged');
+  assert.ok(RENDER_SONG_VIEW.includes('song.title'), 'the song title must still be shown');
+  assert.ok(RENDER_SONG_VIEW.includes('song.artist'), 'the artist must still be shown');
+  assert.ok(RENDER_SONG_VIEW.includes('nowPlaying.artwork'), 'live artwork must still be shown');
+});
+
+test('WS2: enablePlayerGestures removes its previous handlers before re-adding', () => {
+  // The leak: four touch listeners on the SINGLETON $player, re-added on every
+  // renderPlayer() with no removal.
+  assert.ok(/surface\._srGestureHandlers/.test(GESTURES),
+    'the registered handlers must be stored on the element');
+  assert.ok(/if \(surface\._srGestureHandlers\) \{/.test(GESTURES),
+    'the previous handlers must be checked before re-registering');
+  assert.ok(/surface\.removeEventListener\(type, fn, opts\)/.test(GESTURES),
+    'the previous handlers must actually be removed by identity');
+  // All four event types must be registered AND removed.
+  ['touchstart', 'touchmove', 'touchend', 'touchcancel'].forEach((type) => {
+    assert.ok(GESTURES.includes(`type: '${type}'`),
+      `${type} must be part of the registered handler set`);
+  });
+  // The removals must be paired with the counter so WS0 keeps telling the truth.
+  const removeLoop = GESTURES.slice(GESTURES.indexOf('if (surface._srGestureHandlers)'));
+  assert.ok(removeLoop.includes('metaDiagCountRemove(type)'),
+    'the gesture removal must decrement the diagnostic counter');
+  const addLoop = GESTURES.slice(GESTURES.indexOf('const registered = ['));
+  assert.ok(addLoop.includes('metaDiagCountAdd(type)'),
+    'the gesture registration must increment the diagnostic counter');
+  // Order: remove the old set BEFORE storing the new one.
+  assert.ok(GESTURES.indexOf('surface._srGestureHandlers) {')
+    < GESTURES.indexOf('surface._srGestureHandlers = registered;'),
+  'the old set must be removed before the new one is stored');
+  // Handlers must be NAMED so a reference can be kept (not inline arrows).
+  assert.ok(/const onTouchStart = \(e\) =>/.test(GESTURES),
+    'touchstart handler must be a named binding');
+  assert.ok(/const onTouchMove = \(e\) =>/.test(GESTURES),
+    'touchmove handler must be a named binding');
+});
+
+test('WS2: the chevron path still works exactly as before', () => {
+  // Bug 3 must not have regressed the path that already worked.
+  assert.ok(EXPAND_BTN.includes('const existing = $player.querySelector'),
+    'the chevron must still toggle: find an existing panel first');
+  assert.ok(EXPAND_BTN.includes('existing.remove();'),
+    'closing via the chevron must still remove the panel');
+  assert.ok(EXPAND_BTN.includes('buildExpandPanel()'),
+    'opening via the chevron must still build the panel');
+  assert.ok(EXPAND_BTN.includes("$player.insertBefore(panel, $player.firstChild)"),
+    'the panel must still grow upward from the player top');
+  assert.ok(EXPAND_BTN.includes('enableSwipeToClose(panel, panel, fold, { axis: \'y\' })'),
+    'swipe-to-fold must still be wired on the panel');
+  assert.ok(EXPAND_BTN.includes("grabZone.addEventListener('touchmove'"),
+    'the grab zone must still preventDefault its own scroll');
+  // setExpandOpen must be defined before the click handler uses it.
+  assert.ok(APP_CODE.indexOf('function setExpandOpen(open)')
+    < APP_CODE.indexOf("expandBtn.addEventListener('click'"),
+  'setExpandOpen must be defined before the chevron handler that calls it');
 });
