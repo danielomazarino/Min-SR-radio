@@ -2226,13 +2226,32 @@ test('WS10 Part A: the build id is injected at build time, and the root stays a 
   // overwritten by the build and would be a stale lie waiting to happen.
   assert.ok(/const APP_BUILD = '__APP_BUILD_ID__';/.test(APP_JS),
     'the repo-root app.js must keep the placeholder, not a hardcoded hash');
-  assert.ok(!/__APP_BUILD_ID__/.test(BUILD_SCRIPT.replace(/BUILD_PLACEHOLDER/g, ''))
-    || true, 'placeholder constant is referenced by name in the build script');
+  // The injection must ACTUALLY happen. The previous version of this assertion
+  // was `!X || true`, which is unconditionally true -- mutation M3 (deleting the
+  // injection) went green because of it. Assert the substitution itself.
+  assert.ok(/const BUILD_PLACEHOLDER = '__APP_BUILD_ID__';/.test(BUILD_SCRIPT),
+    'the build must name the authoring placeholder as a constant');
+  assert.ok(/source = source\.replaceAll\(BUILD_PLACEHOLDER, build\.id\);/.test(BUILD_SCRIPT),
+    'the build must substitute the placeholder with the real id');
+  assert.ok(/source = source\.replace\(declaration, `const APP_BUILD = '\$\{build\.id\}';`\);/.test(BUILD_SCRIPT),
+    'the build must also overwrite an already-injected value (idempotent path)');
   // The build derives it from GIT, which is external to app.js's bytes. Using
   // the content hash here would be circular: injecting it changes the content,
   // which changes the hash, which changes the id, forever.
-  assert.ok(/execFileSync\('git', \['rev-parse', '--short=8', 'HEAD'\]/.test(BUILD_SCRIPT),
-    'the build id must come from the git commit');
+  assert.ok(/execFileSync\('git', \[/.test(BUILD_SCRIPT),
+    'the build id must come from a git command');
+  // The validation that decides whether the id is TRUSTED. Removing it let a
+  // garbage id through as if it were a commit: mutation M4 was green.
+  const RESOLVE = stripComments(region(
+    'function resolveBuildId()', 'const build = resolveBuildId()', BUILD_SCRIPT));
+  // The gate: an unvalidated `sha` must never be returned as a commit id. The
+  // ONLY path that returns a git id is guarded by the hex test; everything else
+  // falls through to a labelled timestamp. A first version of this assertion
+  // also forbade the guarded `return` entirely, which can never pass.
+  assert.ok(/if \(\/\^\[0-9a-f\]\{7,40\}\$\/\.test\(sha\)\) return \{ id: sha, source: 'git \(app\.js\)' \};/.test(RESOLVE),
+    'only a validated hex SHA may be returned as a git build id');
+  assert.ok(/return \{ id: `t\$\{Date\.now\(\)\.toString\(36\)\}`, source: 'timestamp \(git gave no SHA\)' \};/.test(RESOLVE),
+    'an unvalidated sha must fall through to the labelled timestamp');
   assert.ok(!/hash\(.*distApp|hash\(source\)/.test(BUILD_SCRIPT),
     'the build id must NOT be derived from app.js content (circular)');
   // Fallback must be visible, so a degraded build is never read as real.
@@ -2291,6 +2310,48 @@ test('WS10: the About overlay shows the real build identity', () => {
     'the independent-app disclaimer must survive');
   assert.ok(!/class: 'build-line'/.test(ABOUT_BODY),
     'the About overlay uses .about-version, not the home-screen .build-line');
+});
+
+test('WS10: the id names the SOURCE commit, not the artifact commit', () => {
+  // The tracked bundle lives IN the repository, so the commit that STORES it
+  // cannot be the id inside it -- a first version used HEAD and therefore
+  // always showed the PARENT's SHA (observed: bundle app.c4d7f88e.js carried
+  // 0e6e89b0 while HEAD was 16fa6ba). The id must therefore be the last commit
+  // that touched app.js, which exists before the build runs and is what an
+  // owner can actually `git log` to.
+  const BS = stripComments(region('function resolveBuildId()', 'const build = resolveBuildId()', BUILD_SCRIPT));
+  assert.ok(/'log', '-1', '--format=%h', '--', 'app\.js'/.test(BS),
+    'the id must come from the last commit that touched app.js');
+  // A fallback to HEAD is allowed ONLY when the file has no history, and the
+  // result must be validated as a SHA either way.
+  assert.ok(/rev-parse/.test(BS), 'a HEAD fallback is permitted for a history-less repo');
+  assert.ok(/\[0-9a-f\]\{7,40\}/.test(BS),
+    'the id must be validated as a real hex SHA before being trusted');
+  // A fallback must SAY SO, so a degraded build is never mistaken for a real id.
+  assert.ok(/timestamp \(git gave no SHA\)/.test(BS) && /timestamp \(git unavailable\)/.test(BS),
+    'a non-git fallback must be labelled as a timestamp in both cases');
+  // The reported source must be visible in the build output.
+  assert.ok(APP_JS.includes('__APP_BUILD_ID__'),
+    'the root app.js must keep the authoring placeholder');
+  // The root must not carry a real SHA -- that would be a stale literal lying
+  // about which code is running.
+  assert.ok(!/const APP_BUILD = '[0-9a-f]{7,40}'/.test(APP_JS),
+    'the root app.js must NOT contain a hardcoded build hash');
+});
+
+test('WS10: the About overlay keeps its wording (only the value changed)', () => {
+  // The brief permits changing the version VALUE only. Nothing asserted the
+  // rest of the line, so mutation M8 (deleting "· Utvecklad av ...") was green.
+  const ABOUT = stripComments(region('function openAbout(', '// ----', APP_JS));
+  assert.ok(/APP_DEVELOPER/.test(ABOUT),
+    'the About overlay must still name the developer');
+  assert.ok(/Utvecklad av/.test(ABOUT),
+    'the About overlay must keep its Swedish wording');
+  assert.ok(/APP_BUILD/.test(ABOUT) && /APP_VERSION/.test(ABOUT),
+    'the About overlay must show both the version and the build id');
+  // And the independent-app disclaimer that WS5 deliberately left there.
+  assert.ok(APP_CODE.includes('oberoende av och inte utgiven av Sveriges Radio'),
+    'the independent-app disclaimer must survive');
 });
 
 test('WS10: out of scope -- playback, seek, metadata and DVR are byte-identical', () => {

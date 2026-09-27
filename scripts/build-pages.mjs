@@ -67,17 +67,42 @@ const hashed = new Map();
 // It must NOT be the content hash of app.js: injecting that would change the
 // content, which would change the hash, which would change the id, forever.
 //
+// ---- WHY THIS IS NOT `HEAD` (WS10 follow-up, owner-visible defect) ----
+// A first version used `HEAD`. That is wrong, and it was wrong in a way the
+// owner would have hit immediately: the tracked bundle lives IN the repository,
+// so the commit that stores the bundle cannot be the id inside it. The build
+// runs before the artifact commit exists, so the screen showed the PARENT's
+// SHA -- an id that resolves to a real commit but never to the one the owner
+// is looking at. Observed exactly: bundle `app.c4d7f88e.js` carried
+// `0e6e89b0` while HEAD was `16fa6ba`.
+//
+// The id must therefore name the commit whose SOURCE produced this bundle,
+// which is the last commit that touched app.js. That commit exists before the
+// build runs, it is exactly what an owner can `git log` to, and it is stable
+// across rebuilds of an unchanged tree. Artifact-only commits (which touch no
+// source) do not move it, so re-committing a rebuilt bundle does not
+// invalidate the id on screen.
+//
 // The repo-root app.js keeps the `__APP_BUILD_ID__` placeholder; only the
 // generated dist/app.js (which is what Pages serves) gets the real value.
 function resolveBuildId() {
   try {
-    const sha = execFileSync('git', ['rev-parse', '--short=8', 'HEAD'], {
+    // The last commit that touched the authored source, not HEAD. Falls back to
+    // HEAD only when the file has no history at all (fresh repo).
+    let sha = execFileSync('git', [
+      'log', '-1', '--format=%h', '--', 'app.js',
+    ], {
       cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
+    if (!/^[0-9a-f]{7,40}$/.test(sha)) {
+      sha = execFileSync('git', ['rev-parse', '--short=8', 'HEAD'], {
+        cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+    }
     // A 7-40 char hex SHA is a real id. Anything else means git answered with
     // something unexpected (a shallow/empty repo, a tarball), so fall back
     // rather than print a plausible-looking lie.
-    if (/^[0-9a-f]{7,40}$/.test(sha)) return { id: sha, source: 'git' };
+    if (/^[0-9a-f]{7,40}$/.test(sha)) return { id: sha, source: 'git (app.js)' };
     return { id: `t${Date.now().toString(36)}`, source: 'timestamp (git gave no SHA)' };
   } catch {
     // No git at all, or not a repository. A timestamp keeps the build working
