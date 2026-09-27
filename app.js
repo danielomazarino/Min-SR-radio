@@ -1652,9 +1652,16 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         ? [programme, channel].filter(Boolean).join(' · ')
         : (programme || channel);
       // Artwork: real now-playing artwork when it exists, then the track's own
-      // image, then the PWA icon. Episodes deliberately set artwork: null
-      // (ENHANCEMENTS.md), so the programme/icon fallback is what a podcast
-      // shows -- no artwork is invented.
+      // image, then the PWA icon.
+      //
+      // WS12 Part C: for an EPISODE the first term is skipped deliberately,
+      // because `nowPlaying.artwork` is only ever filled for live channels --
+      // refreshNowPlayingArtwork() is reached solely from fetchNowPlaying(),
+      // which is only called when kind === 'live'. So it is null for an episode
+      // BY CONSTRUCTION, not by policy. The second term is the real one there:
+      // every episode track is built with `artwork: pod.image` /
+      // `item.imageUrl` / `ev.image`, so a podcast shows its programme cover
+      // on the lock screen too. Nothing is invented; the icon is last resort.
       const artworkSrc = (cur.kind === 'live' ? nowPlaying.artwork : null)
         || cur.artwork
         || 'icons/icon-512.png';
@@ -2125,7 +2132,11 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         el('div', { class: 'player-meta', onclick: restorePlayer },
           el('div', { class: 'player-title', text: cur.title || '' }),
           el('div', { class: 'player-sub', text: cur._srProgramTitle || cur.subtitle || (live ? 'Direkt' : '') }),
-          live ? el('div', { class: 'now-playing-line', 'aria-live': 'polite' }) : null),
+          // WS12 Part C: the mini-bar's song line is also no longer live-only,
+          // for the same reason as the full player above. The scoped reset
+          // `.player-mini .now-playing-line { margin-left: 0; }` is untouched,
+          // so the mini-bar's own 40px/10px geometry is unaffected.
+          el('div', { class: 'now-playing-line', 'aria-live': 'polite' })),
         miniPlay, miniExpand, miniStop);
       $player.appendChild(mini);
       // Self-healing repaint (see full-player branch below): re-renders must
@@ -2284,7 +2295,29 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
                 ? el('div', { class: 'expand-sub', text: live.title }) : null)));
           return;
         }
-        const songArtwork = isEpisode ? null : nowPlaying.artwork;
+        // WS12 Part C: for an EPISODE with a current track, the cover is the
+        // PROGRAMME image -- the same `live.artwork` the no-song branch above
+        // already uses. For a podcast the programme image IS the album cover,
+        // the app already has it, and nothing new has to be fetched.
+        //
+        // Why NOT the iTunes artwork lookup that live channels use
+        // (refreshNowPlayingArtwork): that function is reached only from
+        // fetchNowPlaying, which is only called when `cur.kind === 'live'`, so
+        // for an episode `nowPlaying.artwork` is ALWAYS null and removing the
+        // discard below would expose a second null -- no visible change at all.
+        // Extending the iTunes path to episodes was measured and is a trap: it
+        // searches "<artist> <title>" where title is the EPISODE name, and
+        // returns an unrelated song's cover. Verified against real SR names --
+        // "P3 Soul" -> PARTYNEXTDOOR "Not Nice", "Breakfastvärd" and "Humlan
+        // Helmer" -> MISS. Showing a stranger's album under a Swedish radio
+        // programme is worse than the placeholder, so the live path is left
+        // strictly alone.
+        //
+        // If there is no programme image either, the ♪ placeholder stays.
+        // Never a broken image and never an unrelated cover.
+        const songArtwork = isEpisode
+          ? (live.artwork || null)
+          : nowPlaying.artwork;
         content.appendChild(el('div', { class: 'expand-row' },
           songArtwork
             ? el('img', { class: 'expand-img expand-img-song', src: songArtwork, alt: '' })
@@ -2687,19 +2720,10 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     controls.appendChild(playPause);
     if (fwdBtn) controls.appendChild(fwdBtn);
     if (nextProgramBtn) controls.appendChild(nextProgramBtn);
-    // ---- WS11a: the chevron and the close move ONTO this row ----
-    // The owner wants them at the right-hand end of the transport, in the same
-    // relative order as the minimised bar: ... play · chevron · close. The
-    // minimised order is miniPlay, miniExpand, miniStop (app.js ~2123), so
-    // chevron first, close last.
-    //
-    // `margin-left: auto` is NOT used: the transport buttons are already evenly
-    // spaced and centred in the row, and a leading auto-margin here would push
-    // the whole cluster left and misalign it with the mini-bar. The two
-    // buttons are appended after the existing gaps instead, so they simply
-    // extend the row.
-    controls.appendChild(expandBtn);
-    controls.appendChild(closeBtn);
+    // WS12 Part B: expandBtn and closeBtn are NO LONGER appended here. They
+    // belong to the header row above the transport, which is where the owner
+    // put them back. Adding them here was what squeezed .player-meta to 0px
+    // in the DVR state.
 
     // Wire program-skip buttons once the schedule resolves (DVR only).
     // Re-render is NOT needed: the buttons live in this render instance.
@@ -2892,20 +2916,37 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // the right-hand end instead, matching the minimised bar
     // (thumb · meta · play · chevron · close). They now live in `controls`.
     //
-    // WS11a CRITICAL — DO NOT DELETE THE SPACER. The text column is not a
-    // padding-left literal: the close button occupied the artwork's own width
-    // (--player-art) and the row gap is the shared --player-gap, so flexbox
-    // put the title and the programme on the artwork's right edge — the same
-    // left edge as the quality pill and the song line. Removing the button
-    // without replacing it does not remove the space, it removes the thing
-    // that CREATES the space, and the WS5b alignment collapses to 0 with every
-    // test still green. The spacer is that same width, derived from the same
-    // custom property, so the column holds by construction and the header row
-    // also loses the 44px that the button's height was contributing.
+    // ---- WS12 Part B: the two buttons are back on the header row ----
+    // The owner: "the close button and chevron were not to be placed on the
+    // player icons line. they should be above."
     //
-    // The spacer is width-only (no height) on purpose: the header row's height
-    // must collapse to the text, which is what makes the player SHORTER when a
-    // row of buttons is removed from it.
+    // The brief that authorised WS11a said "on the same row as the transport
+    // buttons". That was a transcription error in the brief, by the reviewer --
+    // NOT a change of mind by the owner -- and the minimised bar's arrangement
+    // is a different layout and is not the model. So this is a straight revert
+    // of the WS11a move, with the damage it did reversed too.
+    //
+    // THE SPACER IS GONE BECAUSE THE REAL BUTTON IS BACK. Exactly one of the
+    // two may occupy the artwork column. WS11a left a width-only
+    // .player-header-spacer (var(--player-art)) standing in for the close
+    // button. Keeping both would add 44px of dead space and push the text
+    // RIGHT of the artwork's edge, past the quality pill and the song line.
+    // The close button itself is the spacer again: it is sized from
+    // --player-art by .player-header .player-btn-close, and the shared
+    // --player-gap after it is what lands the title and programme on the
+    // artwork's right edge. That is structural, not a padding-left literal.
+    //
+    // WHY THE BUTTONS WERE ON THE TRANSPORT ROW AT ALL (measured, 390px):
+    // .player-quality is not in the controls row -- it is built inside `meta`,
+    // and `meta` is a sibling of `thumb` and `controls` inside .player-row. So
+    // putting two more 44px buttons in the controls row squeezed .player-meta
+    // instead of overflowing the row: with the DVR state (7 buttons) meta went
+    // to 0px, the row overflowed 388 > 358, and the pill wrapped to two lines
+    // (17px -> 32px tall). Chromium has no audio output and no DVR transport,
+    // so this was invisible in every desktop check, and the "no horizontal
+    // overflow" check is TRUE here regardless, because flex items shrink
+    // rather than overflow. The detectable signals are row.scrollWidth >
+    // row.clientWidth and meta.getBoundingClientRect().width.
     //
     // CLASS NAMES AND PARENTING ARE LOAD-BEARING: paintProgramTitle() writes
     // into '.player-sub' and paintNowPlaying() into '.now-playing-line', both
@@ -2914,19 +2955,30 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // silently stops programme titles and song lines painting — with green
     // tests. Keep them as two separate elements: merging the title and
     // programme into one text node would break paintProgramTitle entirely.
-    const headerSpacer = el('div', { class: 'player-header-spacer', 'aria-hidden': 'true' });
     const headerLine = el('div', { class: 'player-header' },
-      headerSpacer,
+      closeBtn,
       el('div', { class: 'player-title', text: cur.title || '' }),
-      el('div', { class: 'player-sub', text: cur._srProgramTitle || cur.subtitle || (live ? 'Direkt' : '') }));
+      el('div', { class: 'player-sub', text: cur._srProgramTitle || cur.subtitle || (live ? 'Direkt' : '') }),
+      expandBtn);
 
     // Song line: BELOW the player content, ABOVE the seek row. aria-live and
     // the :empty / .has-song CSS behaviour are preserved, so a talk channel
-    // with no song collapses the row entirely instead of leaving a gap. Live
-    // channels only, exactly as before.
-    const songLine = live
-      ? el('div', { class: 'now-playing-line', 'aria-live': 'polite' })
-      : null;
+    // with no song collapses the row entirely instead of leaving a gap.
+    //
+    // WS12 Part C: this is NO LONGER live-only. It used to be gated on `live`,
+    // so for an EPISODE the element was never created at all --
+    // paintNowPlaying()'s `if (line)` was then false and there was nothing to
+    // paint into, which is why a podcast showed no song in the mid player even
+    // though the expanded panel showed one. The element is now created
+    // UNCONDITIONALLY and left empty when there is no song; the existing
+    // :empty collapse already handles the "no song" case, so a talk channel
+    // and a podcast between tracks still take no vertical space.
+    //
+    // paintNowPlaying() already reads the right source per kind (live ->
+    // pickByPosition(nowPlaying.timeline, playheadWallMs()), episode ->
+    // episodeCurrentTrack), so no painting logic changed here -- only the gate
+    // that prevented the line from existing.
+    const songLine = el('div', { class: 'now-playing-line', 'aria-live': 'polite' });
 
     $player.appendChild(headerLine);
     $player.appendChild(el('div', { class: 'player-row' }, thumb, meta, controls));
@@ -3473,23 +3525,33 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // already carries the same attribution plus the independent-app
     // disclaimer, so nothing is lost. Intentionally NOT re-added here.
 
-    // ---- WS11 Part B: the build line has MOVED out of the content flow ----
-    // WS10 put it at the very bottom of the home screen, where it was only
-    // visible when the player happened to be closed and it scrolled away. It
-    // now lives in the top bar, beside the settings affordance, where it
-    // cannot be occluded or scrolled out of sight.
+    // ---- WS12 Part A: the build line is back under NYHETER, by request ----
+    // The owner's words: "you have now to move back the build number i see
+    // that you moved up on screen by myself and put it back under NYHETER
+    // (but without the stale 1.5.0), the cog wheel should go back to where
+    // we had it".
     //
-    // This is still NOT the WS5 attribution footer: no attribution, no link, no
-    // disclaimer -- those remain in the About overlay only.
-    const buildLine = el('p', {
+    // So this reverses WS11 Part B, which moved the line into .topbar. That
+    // move was the reviewer's, not the owner's, and the owner has now seen it
+    // and rejected it. `.topbar` is `justify-content: space-between` with two
+    // children (brand, cog); adding a third put the COG IN THE MIDDLE, because
+    // space-between centres whatever sits between its two ends. Moving the
+    // line out of the topbar is what returns the cog to the right edge.
+    //
+    // #main's children are, in order: channels, podcasts, news -- so
+    // appending here puts the line directly under NYHETER, which is the
+    // position the owner asked for and the one WS10 had.
+    //
+    // The owner's parenthetical is binding: NO "Version 1.5.0 ·" prefix. That
+    // literal never moved, so presenting it as a version was a lie; it stays
+    // banned. The build id alone is what actually identifies a build.
+    //
+    // This is still NOT the WS5 attribution footer: no attribution, no link,
+    // no disclaimer -- those remain in the About overlay only.
+    $main.appendChild(el('p', {
       class: 'build-line',
       text: `bygg ${APP_BUILD}`,
-    });
-    // `.topbar` is the header row in index.html (brand + settings button).
-    // Appended rather than inserted so it lands after the button, at the far
-    // right -- the one place on the home screen that is always on screen.
-    const bar = document.querySelector('.topbar');
-    if (bar) bar.appendChild(buildLine);
+    }));
 
     updatePlayingMarks();
   }

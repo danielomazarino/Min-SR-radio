@@ -131,8 +131,78 @@ test('episode-to-episode starts invalidate the previous episode track state', ()
 });
 
 test('episode expanded artwork never borrows a live channel song artwork', () => {
-  assert.ok(APP_JS.includes('const songArtwork = isEpisode ? null : nowPlaying.artwork;'),
-    'only live songs may use rightnow/iTunes artwork');
+  // WS12 Part C kept this rule and changed only WHICH image an episode uses.
+  // The original intent stands: an episode must never show the iTunes
+  // artwork of a live channel's song. Episodes now show `live.artwork`, the
+  // PROGRAMME image (pod.image / item.imageUrl / ev.image), which is the
+  // podcast's own album cover and is already on the track.
+  //
+  // The iTunes path is not merely unsuitable for episodes, it is unreachable:
+  // refreshNowPlayingArtwork() is called only from fetchNowPlaying(), which
+  // runs only when kind === 'live', so nowPlaying.artwork is null for an
+  // episode BY CONSTRUCTION. Measured against real SR names, the lookup also
+  // returns unrelated songs ("P3 Soul" -> PARTYNEXTDOOR "Not Nice"), so
+  // extending it would show a stranger's cover under a Swedish programme.
+  const EXPAND = APP_JS.slice(APP_JS.indexOf('const renderSongView = () => {'));
+  assert.ok(/const songArtwork = isEpisode\s*\?/.test(EXPAND),
+    'the episode branch of songArtwork must remain explicit and separate');
+  assert.ok(/live\.artwork/.test(EXPAND),
+    "an episode's cover must be the programme image (live.artwork)");
+  // The live branch must still read nowPlaying.artwork and nothing else.
+  const decl = /const songArtwork = isEpisode[\s\S]*?;/.exec(EXPAND);
+  assert.ok(decl, 'songArtwork must be a single readable declaration');
+  assert.ok(/nowPlaying\.artwork/.test(decl[0]),
+    'a live song must still use the rightnow/iTunes artwork');
+  // The episode arm must be the PROGRAMME image and the live arm must be the
+  // iTunes/rightnow image -- read them positionally, not just by presence, so
+  // swapping the two cannot pass.
+  const arms = /isEpisode\s*\?\s*\(([^)]*)\)\s*:\s*([\s\S]*?);/.exec(decl[0]);
+  assert.ok(arms, 'songArtwork must be a readable isEpisode ternary');
+  assert.ok(/live\.artwork/.test(arms[1]),
+    "the EPISODE arm must be the programme image (live.artwork)");
+  assert.ok(!/nowPlaying/.test(arms[1]),
+    'the episode arm must NOT read the live now-playing artwork');
+  assert.ok(/nowPlaying\.artwork/.test(arms[2]),
+    'the LIVE arm must still read the rightnow/iTunes artwork');
+  // Episodes must not trigger an iTunes lookup at all. Comments are stripped
+  // first: the WS12 comment NAMES refreshNowPlayingArtwork() while explaining
+  // why it is unreachable, and a raw-text scan would trip over its own
+  // documentation. This is the "a pattern containing a comment can never match
+  // a stripComments()ed slice" trap, in reverse.
+  // Comments are stripped first: the WS12 comment NAMES
+  // refreshNowPlayingArtwork() while explaining why it is unreachable, and a
+  // raw-text scan would trip over its own documentation.
+  const code = APP_JS.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  // ONE call site, and it must be inside fetchNowPlaying -- which is itself
+  // only ever reached for a live channel (pollNowPlaying returns early unless
+  // `cur.kind === 'live'`). That is what makes nowPlaying.artwork null for an
+  // episode by construction rather than by policy.
+  //
+  // Sliced by FUNCTION, not by neighbouring markers: fetchNowPlaying happens to
+  // be defined between updateEpisodeTrack and paintNowPlaying, so a slice
+  // bounded by those two names CONTAINS the live call site and the assertion
+  // would fail for a slicing reason while the code was correct. Anchor on the
+  // function that must own the call.
+  const calls = code.split('refreshNowPlayingArtwork()').length - 1;
+  assert.equal(calls, 2, 'exactly one call site plus the definition');
+  // Sliced by FUNCTION, with the end marker taken from the code itself rather
+  // than from neighbouring names: stopNowPlayingPoll is defined BEFORE
+  // fetchNowPlaying, so a slice bounded by those two is EMPTY and every
+  // assertion over it is vacuously red. pollNowPlaying is the real next
+  // function after fetchNowPlaying.
+  const fetchFn = code.slice(code.indexOf('async function fetchNowPlaying'),
+    code.indexOf('function pollNowPlaying'));
+  assert.ok(fetchFn.length > 0 && /refreshNowPlayingArtwork\(\)/.test(fetchFn),
+    'the iTunes lookup must hang off fetchNowPlaying');
+  // ...and that function is live-gated, which is the whole reason.
+  const pollFn = code.slice(code.indexOf('function pollNowPlaying'));
+  assert.ok(/kind !== 'live'/.test(pollFn),
+    "pollNowPlaying must still refuse to run for anything but a live channel");
+  // updateEpisodeTrack itself must never reach for artwork.
+  const epFn = code.slice(code.indexOf('function updateEpisodeTrack'),
+    code.indexOf('async function fetchNowPlaying'));
+  assert.ok(epFn.length > 0 && !/refreshNowPlayingArtwork/.test(epFn),
+    'the episode-track path must not touch the iTunes artwork lookup');
 });
 
 test('stopping live metadata invalidates pending artwork lookups', () => {

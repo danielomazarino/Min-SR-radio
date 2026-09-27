@@ -712,23 +712,19 @@ body.player-gesture-lock {
   .player { transition: none; }
 }
 
-/* WS11 Part B: the build line lives in the .topbar row now, not the content
-   flow (WS10 put it at the bottom of the home screen, where the player covered
-   it). Small, dim, and out of the way -- diagnostic chrome, not content. It
-   must not widen the header on a narrow phone, so it truncates instead. */
+/* WS12 Part A: the build line is a plain block at the bottom of the content
+   flow again, directly under NYHETER. WS11 Part B moved it into .topbar, which
+   was the reviewer's decision rather than the owner's; the owner saw it and
+   asked for it back, and the cog wheel to return to the right edge with it.
+   (With three children, `.topbar`'s space-between centred the cog.) */
 .build-line {
-  margin: 0 0 0 8px;
-  font-size: 10px;
-  line-height: 1.2;
+  margin: 18px 0 4px;
+  font-size: 11px;
+  line-height: 1.4;
   color: var(--text-secondary);
-  opacity: 0.6;
+  opacity: 0.75;
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 0 1 auto;
-  min-width: 0;
-  align-self: center;
+  word-break: break-all;
 }
 
 /* ---------- WS5b: header row with the corner buttons ---------- */
@@ -752,20 +748,27 @@ body.player-gesture-lock {
   min-width: 0;
   padding: 0 0 4px;
 }
-/* ---- WS11a: the close button moved to the controls row ----
-   The close button USED to sit here and double as the artwork-column spacer.
-   The owner asked for it on the transport row instead, so the header now holds
-   a width-only spacer of exactly the same size.
-   The spacer is load-bearing, not decoration: it is the same --player-art
-   width with the same --player-gap after it, so the title and the programme
-   still land on the artwork's right edge — the column the quality pill and the
-   song line share. Delete it and the WS5b alignment collapses to zero with
-   every test still green.
-   It carries NO height, which is what lets the header row collapse to the text
-   once a row of 44px buttons has been removed from it. */
-.player-header .player-header-spacer {
+/* ---- WS12 Part B: the close button is back on the header row ----
+   It doubles as the artwork-column spacer, sized from --player-art so that the
+   shared --player-gap after it lands the title and the programme on the
+   artwork's right edge — the same left edge as the quality pill and the song
+   line. That alignment is STRUCTURAL, not a padding-left literal, so do not
+   "simplify" it into an indent.
+
+   WS11a removed the button from here and left a width-only .player-header-spacer
+   in its place. Both are now the real button again and the spacer is GONE:
+   exactly one element may occupy that column, and leaving both live would add
+   44px of dead space and push the text right of the artwork edge. */
+.player-header .player-btn-close {
   width: var(--player-art);
+  height: var(--player-art);
   flex: none;
+}
+/* The chevron keeps the far-right corner. `margin-left: auto` pushes it past
+   the shrinking text rather than relying on a fixed width for the text. */
+.player-header .player-expand-btn {
+  flex: none;
+  margin-left: auto;
 }
 /* Both texts share the line and ellipsize. No max-width percentage: the old
    40% cap truncated the channel name on narrow phones for no reason. The title
@@ -827,6 +830,15 @@ body.player-gesture-lock {
   font-weight: 700;
   letter-spacing: 0.04em;
   line-height: 1.5;
+  /* WS12 Part B DEFENCE IN DEPTH — this is a guard, NOT the cure.
+     The cure was restoring the width: in the DVR state .player-meta was
+     squeezed to 0px and this pill wrapped onto two lines (17px -> 32px tall).
+     `.player-title` and `.player-sub` both set nowrap, so they degraded to an
+     ellipsis; this pill did not, so it wrapped instead. Same guard as those
+     two: if the column is ever squeezed again, clip rather than wrap. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Mode pill: where in time am I (LIVE now; DVR states in Phase 3) */
@@ -841,6 +853,10 @@ body.player-gesture-lock {
   font-weight: 700;
   letter-spacing: 0.04em;
   line-height: 1.5;
+  /* Same WS12 Part B defence as .player-quality: never wrap to a second line. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Buffering: badge pulses while audio loads or re-buffers */
