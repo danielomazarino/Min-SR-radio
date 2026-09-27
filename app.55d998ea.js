@@ -40,7 +40,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // change the content, which would change the hash, which would change the id
   // -- an infinite loop. The git SHA is external to the bundle's bytes.
   const APP_VERSION = '1.5.0';
-  const APP_BUILD = '6fa22551';
+  const APP_BUILD = '745493c6';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
