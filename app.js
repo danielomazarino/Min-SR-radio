@@ -27,7 +27,20 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   const MAX_FAVORITES = 4;
   const FETCH_TIMEOUT_MS = 10000;
   const SEEK_STEP_S = 15;
+  // ---- WS10: build identity, INJECTED at build time ----
+  // This placeholder is replaced in dist/app.js by scripts/build-pages.mjs with
+  // the short git SHA the build was made from (or a timestamp when git
+  // metadata is unavailable). The repo-root app.js is the AUTHORING input and
+  // must never contain a real build id: it would be overwritten by the build,
+  // and a stale literal here would be a lie waiting to happen. A test asserts
+  // that.
+  //
+  // The id is deliberately NOT derived from app.js's own content hash. The
+  // build computes that hash AFTER writing dist/app.js, so injecting it would
+  // change the content, which would change the hash, which would change the id
+  // -- an infinite loop. The git SHA is external to the bundle's bytes.
   const APP_VERSION = '1.5.0';
+  const APP_BUILD = '__APP_BUILD_ID__';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -3394,6 +3407,20 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // already carries the same attribution plus the independent-app
     // disclaimer, so nothing is lost. Intentionally NOT re-added here.
 
+    // ---- WS10: the build identity, in the slot the footer used to occupy ----
+    // This is NOT the old attribution footer. No attribution, no link and no
+    // disclaimer are restored here -- those live in the About overlay, and
+    // WS5 removed them from this screen deliberately. Only the build id.
+    //
+    // The owner asked for it on the main screen because `APP_VERSION` has read
+    // "1.5.0" on every build since before WS6, so neither of us could tell
+    // which code a device was running. `APP_BUILD` is the short git SHA the
+    // bundle was built from, injected by scripts/build-pages.mjs.
+    $main.appendChild(el('p', {
+      class: 'build-line',
+      text: `Version ${APP_VERSION} · bygg ${APP_BUILD}`,
+    }));
+
     updatePlayingMarks();
   }
 
@@ -3414,7 +3441,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     const body = el('div', { class: 'reader-body about-body' });
 
     body.appendChild(el('h2', { class: 'about-title', text: 'Om Min Radio' }));
-    body.appendChild(el('p', { class: 'about-version', text: `Version ${APP_VERSION} · Utvecklad av ${APP_DEVELOPER}` }));
+    body.appendChild(el('p', { class: 'about-version', text: `Version ${APP_VERSION} · bygg ${APP_BUILD} · Utvecklad av ${APP_DEVELOPER}` }));
 
     body.appendChild(el('h3', { class: 'about-heading', text: 'Så fungerar appen' }));
     const items = [

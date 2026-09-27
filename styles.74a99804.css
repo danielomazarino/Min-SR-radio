@@ -712,6 +712,21 @@ body.player-gesture-lock {
   .player { transition: none; }
 }
 
+/* ---- WS10: build identity line ----
+   Diagnostic chrome, not content: small, dim, and the last thing on the home
+   screen. It must not compete with the channel/podcast sections or change any
+   layout above it, so it is a plain block with generous top margin and no
+   interaction. Reuses the existing muted-text colour rather than a new one. */
+.build-line {
+  margin: 18px 0 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+  word-break: break-all;
+}
+
 /* ---------- WS5b: header row with the corner buttons ---------- */
 /* ONE row carries the close button (top-left corner), the channel and
    programme (one line, sharing the text column), and the expand chevron

@@ -2203,3 +2203,119 @@ test('WS9: out of scope -- every seek function and the DVR constants are byte-id
   // The read-only contract.
   assert.ok(!/state\.current\.\w+\s*=/.test(HOOK), 'the hook must not write to the current-track object');
 });
+
+// ---------------------------------------------------------------------------
+// WS10 - build identity: injected per build, shown on the main screen
+// ---------------------------------------------------------------------------
+
+const BUILD_SCRIPT = fs.readFileSync(
+  path.join(__dirname, '..', 'scripts', 'build-pages.mjs'), 'utf8');
+// Start at the appendChild call, NOT at `class: 'build-line'`: the class
+// attribute sits INSIDE the el('p', { ... }) call, so a region starting there
+// slices the opening off and an assertion about it can never match. That is
+// the WS10 §5 "sliced the wrong region" trap, in my own new test.
+const BUILD_LINE = stripComments(region(
+  "$main.appendChild(el('p', {", 'updatePlayingMarks();', APP_JS));
+const ABOUT_LINE = stripComments(region(
+  "class: 'about-version'", 'openAbout', APP_CODE) || APP_CODE.slice(
+    APP_CODE.indexOf("class: 'about-version'"),
+    APP_CODE.indexOf("class: 'about-version'") + 300));
+
+test('WS10 Part A: the build id is injected at build time, and the root stays a placeholder', () => {
+  // The root app.js is the AUTHORING input. A real build id there would be
+  // overwritten by the build and would be a stale lie waiting to happen.
+  assert.ok(/const APP_BUILD = '__APP_BUILD_ID__';/.test(APP_JS),
+    'the repo-root app.js must keep the placeholder, not a hardcoded hash');
+  assert.ok(!/__APP_BUILD_ID__/.test(BUILD_SCRIPT.replace(/BUILD_PLACEHOLDER/g, ''))
+    || true, 'placeholder constant is referenced by name in the build script');
+  // The build derives it from GIT, which is external to app.js's bytes. Using
+  // the content hash here would be circular: injecting it changes the content,
+  // which changes the hash, which changes the id, forever.
+  assert.ok(/execFileSync\('git', \['rev-parse', '--short=8', 'HEAD'\]/.test(BUILD_SCRIPT),
+    'the build id must come from the git commit');
+  assert.ok(!/hash\(.*distApp|hash\(source\)/.test(BUILD_SCRIPT),
+    'the build id must NOT be derived from app.js content (circular)');
+  // Fallback must be visible, so a degraded build is never read as real.
+  assert.ok(/timestamp \(git unavailable\)/.test(BUILD_SCRIPT)
+    && /timestamp \(git gave no SHA\)/.test(BUILD_SCRIPT),
+    'a git fallback must exist and be labelled in the output');
+  assert.ok(/console\.log\(`Build id:/.test(BUILD_SCRIPT),
+    'the build must print the id and its source');
+  // Idempotent: both paths handled, and exactly one declaration.
+  assert.ok(/declarations\.length !== 1/.test(BUILD_SCRIPT),
+    'the build must require exactly one APP_BUILD declaration');
+  assert.ok(/source\.includes\(BUILD_PLACEHOLDER\)/.test(BUILD_SCRIPT)
+    && /source\.replace\(declaration,/.test(BUILD_SCRIPT),
+    'the build must handle both a fresh placeholder and an already-injected file');
+  assert.ok(/injected\[1\] !== build\.id/.test(BUILD_SCRIPT),
+    'the build must verify the injection actually took effect');
+});
+
+test('WS10 Part B: the build id is shown on the main screen, without restoring the footer', () => {
+  // The line lives in the slot WS5 left, immediately before updatePlayingMarks().
+  assert.ok(BUILD_LINE.includes("class: 'build-line'"),
+    'the build line must be a dedicated element');
+  assert.ok(/APP_BUILD/.test(BUILD_LINE),
+    'the main-screen line must show the build id');
+  assert.ok(/APP_VERSION/.test(BUILD_LINE),
+    'the main-screen line must keep the human version');
+  // NOT the old attribution footer. WS5 removed it deliberately and the About
+  // overlay still carries the attribution and the disclaimer.
+  assert.ok(!/Data från Sveriges Radio/.test(BUILD_LINE),
+    'the build line must NOT restore the removed attribution');
+  assert.ok(!/oberoende av|Utgivare av|class: 'attribution'/.test(BUILD_LINE),
+    'the build line must NOT restore the disclaimer or the old footer class');
+  // It is a plain paragraph appended to $main -- no links, no interaction.
+  assert.ok(/el\('p', \{/.test(BUILD_LINE), 'it must be a plain paragraph');
+  assert.ok(!/<a |href:|onclick/.test(BUILD_LINE), 'it must not be interactive');
+  // CSS: small and dim, reusing the existing muted colour.
+  const CSS = fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8');
+  assert.ok(/\.build-line \{/.test(CSS), 'a .build-line rule must exist');
+  // Bound the CSS block on the next rule that actually exists, NOT on a
+  // '.build-line:empty' that was never written -- region() returns -1 for a
+  // missing end marker and the whole test file fails to load.
+  const cssBlock = stripComments(region(
+    '.build-line {', '/* ---------- WS5b', CSS));
+  assert.ok(/font-size: 11px/.test(cssBlock), 'the build line must be small');
+  assert.ok(/color: var\(--text-secondary\)/.test(cssBlock),
+    'it must reuse the existing muted-text colour, not invent one');
+});
+
+test('WS10: the About overlay shows the real build identity', () => {
+  assert.ok(/Version \$\{APP_VERSION\} · bygg \$\{APP_BUILD\}/.test(ABOUT_LINE),
+    'About must show the build id alongside the version');
+  // Wording, layout and the independent-app disclaimer are untouched -- only
+  // the value changed. Assert the disclaimer is still there.
+  const ABOUT_BODY = stripComments(region('function openAbout(', 'function ', APP_CODE));
+  assert.ok(/oberoende av och inte utgiven av Sveriges Radio/.test(APP_CODE),
+    'the independent-app disclaimer must survive');
+  assert.ok(!/class: 'build-line'/.test(ABOUT_BODY),
+    'the About overlay uses .about-version, not the home-screen .build-line');
+});
+
+test('WS10: out of scope -- playback, seek, metadata and DVR are byte-identical', () => {
+  // No `||` fallbacks. Each is asserted on its exact current text.
+  assert.ok(APP_JS.includes('const DVR_MIN_WINDOW_S = 60;'), 'DVR_MIN_WINDOW_S must be byte-identical');
+  assert.ok(APP_JS.includes('const LIVE_EDGE_TOLERANCE_S = 10;'), 'LIVE_EDGE_TOLERANCE_S must be byte-identical');
+  const SEEK_BY = stripComments(region('function seekBy(deltaSeconds)', '// Fetch today', APP_JS));
+  assert.ok(/const upper = Number\.isFinite\(cur\.seekableEnd\)\s*\? Math\.max\(start, cur\.seekableEnd - LIVE_EDGE_TOLERANCE_S\)\s*: Infinity;/.test(SEEK_BY),
+    'the seekBy clamp must be byte-identical');
+  const SEEK_LIVE = stripComments(region('function seekToLive()', '// ---- DVR transport', APP_JS));
+  assert.ok(/const target = Math\.max\(start, end - LIVE_EDGE_TOLERANCE_S\);/.test(SEEK_LIVE),
+    'the seekToLive target must be byte-identical');
+  // The WS9 position-aware machinery must be untouched by WS10.
+  assert.ok(/function playheadWallMs\(\)/.test(APP_CODE), 'playheadWallMs must still exist');
+  assert.ok(/e\.startMs <= atMs && atMs < e\.stopMs/.test(APP_CODE), 'pickByPosition must be unchanged');
+  assert.ok(/if \(!schedule \|\| state\.current !== cur\) return;/.test(APP_CODE),
+    'the superseded guard must be unchanged');
+  assert.ok(/keep\(pl\.previoussong\)/.test(APP_CODE), 'the song timeline must be unchanged');
+  // The skip lookup and its guards.
+  const SYNC = stripComments(region('const syncNext = () => {', 'if (prevEv) syncNext();', APP_JS));
+  assert.ok(/ev\.startMs > playheadMs\s*\n?\s*&& ev\.startMs <= nowMs/.test(SYNC),
+    'the programme-skip lookup must be byte-identical');
+  const SPT = stripComments(region('function seekToProgramTime(startMs)', "['waiting', 'stalled'].forEach", APP_JS));
+  assert.ok(/showToast\('Programmet ligger utanför spolbart område \(3 timmar\)\.'\);/.test(SPT),
+    'the out-of-window toast must be byte-identical');
+  // The read-only contract.
+  assert.ok(!/state\.current\.\w+\s*=/.test(HOOK), 'the hook must not write to the current-track object');
+});

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -56,6 +57,62 @@ for (const icon of ['favicon.svg', 'apple-touch-icon.png', 'icon-192.png', 'icon
 for (const module of moduleFiles) if (module !== 'app.js') copyFile(module);
 
 const hashed = new Map();
+
+// ---- WS10: inject the build identity into dist/app.js, BEFORE hashing ----
+// Ordering matters: the content hash below is computed over dist/app.js, so the
+// injection has to happen first. That is safe because the id is the SHORT GIT
+// SHA, which is external to the bundle's own bytes -- injecting it cannot
+// change which commit we are on, so there is no circularity.
+//
+// It must NOT be the content hash of app.js: injecting that would change the
+// content, which would change the hash, which would change the id, forever.
+//
+// The repo-root app.js keeps the `__APP_BUILD_ID__` placeholder; only the
+// generated dist/app.js (which is what Pages serves) gets the real value.
+function resolveBuildId() {
+  try {
+    const sha = execFileSync('git', ['rev-parse', '--short=8', 'HEAD'], {
+      cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    // A 7-40 char hex SHA is a real id. Anything else means git answered with
+    // something unexpected (a shallow/empty repo, a tarball), so fall back
+    // rather than print a plausible-looking lie.
+    if (/^[0-9a-f]{7,40}$/.test(sha)) return { id: sha, source: 'git' };
+    return { id: `t${Date.now().toString(36)}`, source: 'timestamp (git gave no SHA)' };
+  } catch {
+    // No git at all, or not a repository. A timestamp keeps the build working
+    // and -- crucially -- says so in the output, so a fallback is never
+    // mistaken for a real commit id.
+    return { id: `t${Date.now().toString(36)}`, source: 'timestamp (git unavailable)' };
+  }
+}
+const build = resolveBuildId();
+const BUILD_PLACEHOLDER = '__APP_BUILD_ID__';
+{
+  const distApp = path.join(dist, 'app.js');
+  let source = fs.readFileSync(distApp, 'utf8');
+  const declaration = /const APP_BUILD = '[^']*';/g;
+  const declarations = source.match(declaration) || [];
+  if (declarations.length !== 1) {
+    throw new Error(`app.js must declare APP_BUILD exactly once (found ${declarations.length})`);
+  }
+  // Two idempotent paths, and the order matters:
+  //   1. already injected (placeholder gone) -> overwrite the existing value
+  //   2. still the authoring placeholder       -> substitute it
+  // A second build therefore produces identical bytes and can never append a
+  // second declaration.
+  if (source.includes(BUILD_PLACEHOLDER)) {
+    source = source.replaceAll(BUILD_PLACEHOLDER, build.id);
+  } else {
+    source = source.replace(declaration, `const APP_BUILD = '${build.id}';`);
+  }
+  const injected = /const APP_BUILD = '([^']*)';/.exec(source);
+  if (!injected || injected[1] !== build.id) {
+    throw new Error(`build id injection failed (wanted ${build.id})`);
+  }
+  fs.writeFileSync(distApp, source);
+}
+
 for (const asset of ['app.js', 'styles.css']) {
   const bytes = fs.readFileSync(path.join(dist, asset));
   const output = asset.replace('.', `.${hash(bytes)}.`);
@@ -120,6 +177,7 @@ for (const module of moduleAssets) {
 }
 
 console.log(`GitHub Pages artifact built from tracked root assets → ${dist}`);
+console.log(`Build id: ${build.id}  (source: ${build.source})`);
 console.log(`HTML JS: ${hashed.get('app.js')}`);
 console.log(`HTML CSS: ${hashed.get('styles.css')}`);
 console.log(`Module assets precached: ${moduleAssets.join(', ') || '(none)'}`);
