@@ -2583,3 +2583,217 @@ closed. `app.js` and `styles.css` md5-verified byte-identical after every one.
   midnight-schedule fix remains proven only against a fixture.
 - The **roll animation and the pill geometry were verified in Chromium**, not on
   the iPhone. Safari and the lock-screen chrome are untested by me.
+
+---
+
+## 2026-09-28 — WS20: two WS19 regressions reverted, the roll fixed, and the pre-midnight programme gap logged for a later pass
+
+Commits `42f225d` (source+tests) -> `c1c6d20` (artifacts). Live:
+`app.9c8c5dd8.js` / `styles.5636e438.css` / SW `minradio-8e0983e2` / build id
+`42f225d`. 197 -> **199 tests**. Clean worktree verified before push. Pages was
+live on the 2nd poll attempt this time.
+
+**Summary of the pass: the owner found two regressions I had introduced in
+WS19, and both were correct. The roll — a WS19 feature the owner had asked for
+— was also broken. All three are fixed here.**
+
+### 1. THE PODCAST EPISODE NAME WAS REMOVED FROM THE HEADER (my regression)
+
+**Owner:** *"i wanted the episode name to stay there where it was as shown in
+attachment 2, so now you need to get it back. never said you should take it away
+and instead implement a double dip the info we already have above the mp3
+pill."*
+
+WS19 replaced the header's podcast branch with `cur.programName`, which is the
+**PODCAST** name. So the header read "P3 Soul" while the meta row directly below
+it also read "P3 Soul" — precisely the double dip the owner describes.
+
+**The mechanism, which is the actual lesson.** Before WS19 the header had **no
+podcast branch at all**, because `.player-sub` was live-only and the EPISODE
+NAME lived in the bold `.player-title` beside it. Removing the bold cell to
+kill the bold DUPLICATE therefore removed the only place the episode name was
+displayed. I fixed the symptom the owner named — "remove the bold duplicate" —
+without checking what else that cell was carrying. **The duplicate was a
+channel name; the cell I deleted held a channel name AND an episode name,
+because the two kinds took different branches.**
+
+Restored with `cur.title`: the episode name on an episode, the channel name on
+a live track — the same single expression WS15b shipped. No duplication
+remains, because the two rows now carry different facts:
+
+```
+HEADER    : "Kehlani och Kärleken till Frida"   (the episode)
+META ROW  : "P3 Soul"                          (the show)
+```
+
+Verified on the live origin, screenshot matches the owner's attachment 2.
+
+### 2. THE "Avsnitt" CAPTION IS REVERTED IN FULL
+
+**Owner:** *"i never ever complained about the pod icon to start the latest
+podcast. that is by design and was decided in the start of the project."*
+
+Tap-plays-the-latest-episode is correct and untouched. The WS19 caption was
+never requested: removed the span, the `aria-label` override, and the
+`.icon-hint` CSS (deleted rather than left as a dead selector). The long-press
+episode list is pre-existing, deliberate, and unchanged.
+
+**The lesson, stated plainly:** the owner HAD reported a real problem (an older
+episode is hard to find), and I responded by adding to a design they had
+already told me was settled, instead of asking. A real observation is not a
+mandate to act. WS19's own commit message framed the caption as "additive and
+reversible" — which was true, and irrelevant. Reversible is not the same as
+wanted.
+
+### 3. THE ROLL WAS BROKEN — THE OWNER'S SCREENSHOT WAS THE EVIDENCE
+
+**Owner:** *"it shows attached only a note and dots, and doesn't roll as the
+lock screen does also including the artist."*
+
+Reproduced exactly, and the cause is a **unit error**. The keyframe was:
+
+```css
+to { transform: translateX(calc(-100% + var(--roll-box))); }
+```
+
+Inside `translateX`, a percentage resolves against the **element's own border
+box**, so `-100%` is the TRACK's width. But `--roll-box` was stored as
+`line.clientWidth / track.scrollWidth * 100` — a ratio of the **WINDOW** to the
+track. Two terms, two different bases.
+
+Sampled at 50% and 100% of the animation on a short title ("A"), the computed
+transform was `matrix(1,0,0,1,122,0)` and then **+244px**: a POSITIVE
+translation that slides the text RIGHT, out of the clipped window, leaving only
+the note. That is the `♪ ...` in the screenshot.
+
+The trigger does not even require a genuine overflow. `.rolling` is set by a
+rAF and cleared by the next paint, so a resize, a song change or a re-render can
+leave the class on a title that no longer overflows. A stale `3150px` value on
+a short title produced a `-1575px` throw.
+
+**Fixed by removing the ambiguity rather than correcting the ratio.** JS
+measures the real pixel distance — track width minus the width available to it,
+i.e. net of the `♪ ` note — and stores it in `--roll-shift`. The keyframe is a
+single unambiguous `calc(-1 * var(--roll-shift, 0px))`. The `0px` default is
+load-bearing: a missing variable must not launch the text out of view.
+
+The old measurement was independently wrong: it compared the whole window
+against itself, ignoring the note that shares the window, and `line.scrollWidth`
+is clamped to `clientWidth` by `overflow: hidden` anyway.
+
+**Verified in the browser after the fix, sampling the real animation:**
+
+| case | result |
+|---|---|
+| long title | tx `0` -> `-72` -> `-144px`, landing exactly on the computed `-144` |
+| short titles | overflow negative, never roll |
+| stale class + stale value | tx `0`, cannot slide |
+
+**A MISREADING WORTH RECORDING.** I first measured `transform` staying at `0`
+for 7.2 s and concluded the animation was inert. It was not — the page was
+backgrounded (`document.hidden: true`), which freezes CSS animations. The real
+diagnosis came from `getAnimations()[0].currentTime` plus sampling `currentTime`
+directly. **A backgrounded page invalidates any animation timing measurement
+taken through it.** Chromium headless/background tabs are especially prone to
+this.
+
+### 4. TESTS: 197 -> 199, and 6 mutations all red
+
+Four superseded assertions updated WITH reasons, none deleted:
+
+- WS5 Item 1 and WS11 Part C asserted the header shows the **podcast** name for
+  an episode. **Inverted** to require the episode name and to explicitly
+  REJECT `cur.programName` there, since that is the double dip.
+- The WS19 roll-measurement test now requires the measurement to be on the
+  track and net of the note.
+- The WS19 caption test is replaced by an **inverted** guard: the caption must
+  stay gone AND the tap-plays-latest behaviour plus the long-press route must
+  survive.
+- Two new tests: the shift must be pixels and never a percentage; a title that
+  fits must never be able to slide.
+
+**Hit the documented comment trap twice, in the opposite direction:** my own
+explanatory comments naming `.icon-hint` and `--roll-box` made the "must be
+absent" assertions fail. The file documents that a comment breaks a
+`stripComments()`ed match; it did not warn that a comment also breaks a
+**negative** match on RAW source. Both now strip comments first.
+
+| # | Mutation | Result |
+|---|---|---|
+| M1 | restore the original percentage keyframe (**the `♪ ...` bug**) | red |
+| M2 | keyframe fallback `0px` -> `100%` | red |
+| M3 | measure the window instead of the track | red |
+| M4 | forget to exclude the note from the available width | red |
+| M5 | podcast header back to the podcast name (the double dip) | red (x2) |
+| M6 | bring the `Avsnitt` caption back | red |
+
+`app.js` and `styles.css` md5-verified byte-identical after every one.
+
+---
+
+## OPEN FOR A LATER PASS — programme information before midnight (owner, 2026-09-28)
+
+**Owner:** *"i still couldn't get program information before midnight and don't
+believe it is impossible to solve, but put that in the enhancements.md file for
+fixing in later passes if not easily fixed."*
+
+**Status: NOT fixed. Deliberately parked, and the owner is right that it should
+not be assumed impossible.**
+
+### What WS18 already established
+
+`fetchSchedule` now loads **yesterday as well as today**, merged and sorted
+(`960a975`). That was verified against a fixture: 5 of 7 positions inside a
+3-hour window were unresolvable before the change, and all 7 resolve after it.
+So the *schedule data* for a pre-midnight position is now present in
+`cur._srSchedule`.
+
+### Why the owner still sees nothing — NOT YET DIAGNOSED
+
+The gap between "yesterday's schedule is loaded" and "the title updates" has
+**not** been investigated. Candidate causes, none confirmed:
+
+1. **The window gate may not open.** `fetchSchedule` only fetches yesterday
+   when `Date.now() - seekableStart * 1000 > 1h`. If `seekableStart` is
+   reported in a different time base, or the window is reported as null at the
+   moment of the fetch, the gate stays shut and only today is loaded. **This is
+   the first thing to check: log the gate's inputs on a real device after
+   midnight.**
+2. **The merge may be right but the selection wrong.** The programme-skip
+   boundary lookup and `pickByPosition` both assume start-order. WS18 sorted
+   the merge, but only the merge — a same-day schedule arriving from a
+   different code path may still be unsorted.
+3. **The `seeked` event may not fire** for a native-HLS drag on iOS. The
+   re-resolve hangs off one `seeked` listener (`audioEl._srSeekedUpd`); the
+   seek functions themselves never call `resolveMetadataForPosition`. On
+   Chromium this could not be tested at all (`dvrAvailable: false`).
+4. **The programme may genuinely be absent from SR's data** for the hours
+   before midnight on that channel. Not disproven.
+
+### What a decisive next pass needs
+
+- **Device evidence, not inference.** The owner's own screenshot or
+  `srMetaDiag()` output (`schedule`, `dvr`, `playback` sections) taken while
+  the playhead is **before midnight**. That single capture separates (1) from
+  (3) immediately.
+- **The live SR API.** Unavailable from this environment throughout WS18–WS20
+  (`ERR_NAME_NOT_RESOLVED`), so no leg of the midnight work has touched real
+  `scheduledepisodes` data.
+- **Chromium cannot test this at all** — it has no DVR transport, so the seek
+  row and the pre-midnight playhead are unreachable there. This is a
+  device-only defect and should be treated as one.
+
+### Standing constraints
+
+`seekBy`, `seekToLive`, `seekToProgramTime`, `posMs`, `liveEdgeWallMs`,
+`pickByPosition`, `resolveMetadataForPosition`, the programme-skip lookup and
+the DVR constants remain **byte-identical to `745493c`**. Any fix that needs to
+edit them requires the owner's explicit approval and a comment saying why the
+exemption is being broken.
+
+### Still open, unchanged by owner instruction
+
+On a **talk** radio channel with no song, `metaTitle` and `metaArtist` both
+fall back to the programme name, so the lock screen and the car show it twice
+(`Vaken` / `Vaken`, re-observed live during WS20). One-line fix if ever
+approved. Not to be touched without instruction.
