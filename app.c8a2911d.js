@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '9ad30c2';
+  const APP_BUILD = '6bb7563';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -3910,6 +3910,27 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
           btn.appendChild(el('img', { src: item.image, alt: '', loading: 'lazy', draggable: 'false' }));
         } else {
           btn.appendChild(el('span', { class: 'icon-letter', text: item.name.slice(0, 1) }));
+        }
+        // ---- WS19: make the episode list DISCOVERABLE on a podcast icon ----
+        // The owner: "i still can't verify what p3 soul from yesterday looks
+        // like". The cause is not a missing feature -- `openPodcastCard` has
+        // always listed every episode newest-first, yesterday's included. It
+        // is reachable only by a 500 ms LONG-PRESS, with no visible hint
+        // anywhere, so from the outside the icon can do exactly one thing.
+        //
+        // A tap still plays the newest episode. Changing that would be a
+        // product decision, and the owner has not made it, so this adds the
+        // smallest possible affordance instead: a caption that names the
+        // gesture, and the same words in the accessible name so the hint is
+        // not purely visual.
+        //
+        // `aria-label` is extended rather than replaced: a screen-reader user
+        // otherwise gets the same dead end, and the hint is the only route to
+        // an older episode.
+        if (isPod) {
+          btn.appendChild(el('span', { class: 'icon-hint', 'aria-hidden': 'true', text: 'Avsnitt' }));
+          btn.setAttribute('aria-label',
+            `Spela senaste avsnittet av ${item.name}. Håll klick för att se alla avsnitt.`);
         }
         scroller.appendChild(btn);
       }
