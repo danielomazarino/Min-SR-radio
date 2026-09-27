@@ -69,9 +69,21 @@ test('±15s buttons exist in the main controls row flanking play/pause (2026-09-
   }
 });
 
-test('LIVE label button removed from DVR row (pill + right-edge tap instead)', () => {
+test('LIVE label button and the invisible right-edge tap zone are both gone (WS4)', () => {
   assert.ok(!APP_JS.includes("class: 'player-live-label'"), 'no live-label button');
-  assert.ok(APP_JS.includes('frac >= 0.88) seekToLive()'), 'right-edge tap zone wired');
+  // WS4: the right 12 % of the DVR bar used to be an INVISIBLE back-to-live
+  // tap zone (`frac >= 0.88`). It had no visual affordance, the owner never
+  // hit it, and it cost two workstreams of misdiagnosis. It is removed, and
+  // the next-programme button now doubles as "Till Direkt" (see WS4 tests in
+  // tests/metadata-diag.test.mjs).
+  assert.ok(!APP_JS.includes('frac >= 0.88'),
+    'the invisible right-edge tap zone must be removed');
+  assert.ok(!/bar\.addEventListener\('click'/.test(APP_JS),
+    'the DVR bar must no longer carry a click-to-live handler');
+  // Drag-to-seek must be untouched.
+  assert.ok(APP_JS.includes('seekToWindowFraction'), 'drag-to-seek must remain');
+  assert.ok(APP_JS.includes("class: 'seek-thumb'"), 'the slider thumb must remain');
+  assert.ok(APP_JS.includes("class: 'player-time'"), 'the clock label must remain');
 });
 
 test('seekBy clamps to the seekable window start (no negative positions)', () => {

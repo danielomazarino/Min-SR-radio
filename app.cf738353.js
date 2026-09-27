@@ -1645,7 +1645,18 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     const cur = state.current;
     if (!cur || !cur.dvrAvailable) return;
     const start = Number.isFinite(cur.seekableStart) ? cur.seekableStart : 0;
-    const target = Math.max(start, (audioEl.currentTime || 0) + deltaSeconds);
+    // UPPER CLAMP (WS4). seekBy() only ever clamped the lower bound, so a
+    // forward step from a position near the live edge produced a target
+    // BEYOND seekableEnd — the buffered boundary, which Safari rejects or
+    // silently clamps. That makes the final +15 s back to live do nothing,
+    // the same defect class the WS2 attempt at seekToLive() did not solve.
+    // Aim just BEHIND the edge by the same tolerance updateSeekableState()
+    // uses to classify "at live", so the result still counts as live while
+    // giving the browser a real, non-boundary target.
+    const upper = Number.isFinite(cur.seekableEnd)
+      ? Math.max(start, cur.seekableEnd - LIVE_EDGE_TOLERANCE_S)
+      : Infinity;
+    const target = Math.min(upper, Math.max(start, (audioEl.currentTime || 0) + deltaSeconds));
     if (!Number.isFinite(target)) return;
     audioEl.currentTime = target;
     updateSeekableState();
@@ -2120,8 +2131,9 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       // ±15 s step buttons + program skip now live in the MAIN controls row
       // (flanking play/pause) per user request 2026-09-23 — the seek row
       // keeps only the slider + clock label. LIVE label removed: the mode
-      // pill shows LIVE/−time and tapping the bar's right edge returns to
-      // live (seekToLive is wired on the bar's right 12 % zone below).
+      // pill shows LIVE/−time, and the FORWARD SKIP button doubles as
+      // "Till Direkt" when there is no later programme (see syncNext below),
+      // so returning to live is a visible, labelled control.
 
       // Program-skip buttons live in the MAIN controls row now (created
       // below); the schedule wiring happens after they exist.
@@ -2131,16 +2143,13 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       const fill = bar.querySelector('.seek-fill');
       const thumb = bar.querySelector('.seek-thumb');
 
-      // Right-edge tap zone on the bar = "back to live" (replaces the old
-      // LIVE button). A tap (not drag) in the right 12 % of the bar while
-      // behind live snaps to the live edge — same gesture surface, no extra
-      // button to mis-hit.
-      bar.addEventListener('click', (e) => {
-        if (cur.atLiveEdge !== false) return; // already live
-        const rect = bar.getBoundingClientRect();
-        const frac = (e.clientX - rect.left) / rect.width;
-        if (frac >= 0.88) seekToLive();
-      });
+      // The right 12 % of the bar used to be an INVISIBLE "back to live" tap
+      // zone. It had no visual affordance at all, the owner never managed to
+      // hit it, and it cost two workstreams of misdiagnosis (WS2 and WS3 both
+      // chased the wrong button). It is REMOVED (WS4): the next-programme
+      // button now doubles as "Till Direkt" when there is no later programme,
+      // which is a visible, labelled control. Drag-to-seek, the fill/thumb and
+      // the clock label are untouched.
 
       // Drag state: while dragging, the UI previews the target position and
       // does NOT fight the rolling window; the seek is committed on release
@@ -2401,14 +2410,27 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         }
         const syncNext = () => {
           const nextEv = programBoundary(schedule, posMs(), +1);
-          // "Next" only lights up when behind live AND a later programme exists.
+          // "Next" only lights up when behind live AND a later programme exists
+          // — OR when behind live with no later programme, in which case the
+          // button becomes "Till Direkt" (owner intent 2026-09-27: no separate
+          // live button, to save screen space; the forward skip button IS the
+          // live button once the playhead is inside the current programme).
           const behindLive = cur.atLiveEdge === false
             || (Number.isFinite(cur.seekableEnd) && cur.seekableEnd - (audioEl.currentTime || 0) > 60);
           if (nextEv && behindLive) {
             nextProgramBtn.style.display = '';
             nextProgramBtn.title = nextEv.title || 'Nästa program';
+            nextProgramBtn.setAttribute('aria-label', 'Till nästa programs start');
             nextProgramBtn.onclick = () => seekToProgramTime(nextEv.startMs);
+          } else if (behindLive) {
+            // No next programme, but behind live: go to live. Before WS4 this
+            // case HID the button entirely, leaving no discoverable way back.
+            nextProgramBtn.style.display = '';
+            nextProgramBtn.title = 'Till Direkt';
+            nextProgramBtn.setAttribute('aria-label', 'Till Direkt');
+            nextProgramBtn.onclick = () => seekToLive();
           } else {
+            // Already live: hide it, so there is no button that does nothing.
             nextProgramBtn.style.display = 'none';
           }
         };
@@ -2468,6 +2490,19 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     const THRESHOLD = 0.22; // 22 % of viewport height commits the gesture
     const FLICK_MS = 260;
 
+    // STRANDING FIX (WS4) part 2: the single place that guarantees the player
+    // is never left displaced. Every terminal path — commit, spring-back,
+    // touchcancel, pointercancel, page hidden, window blur — routes through
+    // this, so the inline transform cannot survive a gesture that ended
+    // without the app noticing. Thresholds are deliberately NOT touched: the
+    // bug was the missing reset, not the drag distance.
+    const releaseDragStyles = () => {
+      surface.classList.remove('gesture-owning');
+      document.body.classList.remove('player-gesture-lock');
+      surface.style.transition = '';
+      surface.style.transform = '';
+    };
+
     // Named handlers (not inline arrows) so enablePlayerGestures can keep a
     // reference to each one and remove it on the next call — see the leak fix
     // at the end of this function.
@@ -2521,11 +2556,15 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     };
 
     const finish = (e) => {
+      // STRANDING FIX (WS4) part 1: `finish()` used to open with
+      // `if (axis !== 'y') return;`. If iOS never delivered `touchend` — or a
+      // renderPlayer() mid-drag reset `axis` — the clearing line was skipped
+      // and the player stayed translated down the screen with no way to pin it
+      // back. The gesture is over by the time ANY terminal event arrives, so
+      // the reset now runs unconditionally, BEFORE the axis check.
+      releaseDragStyles();
       if (axis !== 'y') return;
       axis = null;
-      surface.classList.remove('gesture-owning');
-      document.body.classList.remove('player-gesture-lock');
-      surface.style.transition = '';
       const dy = e.changedTouches?.[0] ? e.changedTouches[0].clientY - startY : 0;
       const flick = Date.now() - t0 < 260 && Math.abs(dy) > 40;
       const panel = surface.querySelector('.player-expand');
@@ -2569,7 +2608,14 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     surface.addEventListener('touchend', finish, { passive: true });
     surface.addEventListener('touchcancel', finish, { passive: true });
 
-    // LEAK FIX (WS2): this function is called from renderPlayer() on the
+    // STRANDING FIX (WS4) part 3: the gestures are touch events, but a
+    // pointer device or a stolen touch can end without a touchend. These
+    // terminal signals are bound on the WINDOW (not the surface) so they fire
+    // even when the finger has left the element entirely, and they reuse
+    // releaseDragStyles() so there is exactly one reset implementation.
+    const onPointerCancel = () => { releaseDragStyles(); axis = null; };
+    const onHidden = () => { if (document.hidden) { releaseDragStyles(); axis = null; } };
+    const onBlur = () => { releaseDragStyles(); axis = null; };
     // SINGLETON $player on every render, and each call added four more touch
     // listeners with no matching removal — so they accumulated for the life of
     // the page and one swipe could be handled by several stacked handlers.
@@ -2577,20 +2623,24 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // counters are defined for audioEl, so the app's own registration is
     // tracked the same way, keyed on the element, and the removal is paired
     // with the counter so the diagnostics keep telling the truth.
+    const registered = [
+      { type: 'touchstart', fn: onTouchStart, opts: { passive: true }, target: surface },
+      { type: 'touchmove', fn: onTouchMove, opts: { passive: false }, target: surface },
+      { type: 'touchend', fn: finish, opts: { passive: true }, target: surface },
+      { type: 'touchcancel', fn: finish, opts: { passive: true }, target: surface },
+      { type: 'pointercancel', fn: onPointerCancel, opts: true, target: window },
+      { type: 'visibilitychange', fn: onHidden, opts: true, target: document },
+      { type: 'blur', fn: onBlur, opts: true, target: window },
+    ];
+    // Remove from whichever target each handler was bound to.
     if (surface._srGestureHandlers) {
       const prev = surface._srGestureHandlers;
-      prev.forEach(({ type, fn, opts }) => {
-        surface.removeEventListener(type, fn, opts);
+      prev.forEach(({ type, fn, opts, target }) => {
+        (target || surface).removeEventListener(type, fn, opts);
         metaDiagCountRemove(type);
       });
     }
-    const registered = [
-      { type: 'touchstart', fn: onTouchStart, opts: { passive: true } },
-      { type: 'touchmove', fn: onTouchMove, opts: { passive: false } },
-      { type: 'touchend', fn: finish, opts: { passive: true } },
-      { type: 'touchcancel', fn: finish, opts: { passive: true } },
-    ];
-    registered.forEach(({ type, fn, opts }) => surface.addEventListener(type, fn, opts));
+    registered.forEach(({ type, fn, opts, target }) => (target || surface).addEventListener(type, fn, opts));
     registered.forEach(({ type }) => metaDiagCountAdd(type));
     surface._srGestureHandlers = registered;
   }

@@ -383,10 +383,13 @@ test('snapshot: listener accounting is present, per type, add and remove', () =>
   assert.equal(countCalls - addSites, 1,
     'the only surplus count call is the $player gesture-registration loop');
   // Removals counted too. WS1 added a third site (the programme-skip updater
-  // that used to leak); WS2 added a fourth ($player gesture handlers). What
-  // matters is the invariant: no removal site may exist without its count call.
+  // that used to leak); WS2 added a fourth ($player gesture handlers). WS4
+  // changed only the FORM of the gesture removal (it now honours a per-handler
+  // `target`, because three terminal signals bind on window/document), so the
+  // site count stays 4. What matters is the invariant: no removal site may
+  // exist without its count call.
   const remSites = APP_CODE.split('audioEl.removeEventListener').length - 1
-    + (APP_CODE.split('surface.removeEventListener').length - 1);
+    + (APP_CODE.split('removeEventListener(type, fn, opts)').length - 1);
   const remCalls = (APP_CODE.match(/metaDiagCountRemove\(/g) || []).length
     - (APP_CODE.match(/function metaDiagCountRemove\(/g) || []).length;
   assert.equal(remSites, 4, 'expected 4 listener-removal source sites (3 audioEl + 1 $player)');
@@ -813,9 +816,12 @@ test('WS2: enablePlayerGestures removes its previous handlers before re-adding',
     'the registered handlers must be stored on the element');
   assert.ok(/if \(surface\._srGestureHandlers\) \{/.test(GESTURES),
     'the previous handlers must be checked before re-registering');
-  assert.ok(/surface\.removeEventListener\(type, fn, opts\)/.test(GESTURES),
+  assert.ok(/\(target \|\| surface\)\.removeEventListener\(type, fn, opts\)/.test(GESTURES),
     'the previous handlers must actually be removed by identity');
-  // All four event types must be registered AND removed.
+  // All four TOUCH event types must still be registered AND removed. WS4 added
+  // three more terminal signals (pointercancel/visibilitychange/blur) on
+  // window/document — those are covered by the WS4 stranding tests, not here,
+  // which stays scoped to the touch gesture set.
   ['touchstart', 'touchmove', 'touchend', 'touchcancel'].forEach((type) => {
     assert.ok(GESTURES.includes(`type: '${type}'`),
       `${type} must be part of the registered handler set`);
@@ -956,8 +962,8 @@ test('WS3 Part 1: the WS2 gesture leak fix survives and arms exactly once', () =
     'enablePlayerGestures must still exist');
   assert.ok(GESTURES.includes('surface._srGestureHandlers'),
     'the WS2 handler-storage leak fix must survive');
-  assert.ok(GESTURES.includes('surface.removeEventListener(type, fn, opts)'),
-    'the previous handlers must still be removed by identity');
+  assert.ok(/\(target \|\| surface\)\.removeEventListener\(type, fn, opts\)/.test(GESTURES),
+    'the previous handlers must still be removed by identity, from their target');
   assert.ok(GESTURES.includes('const onTouchStart = (e) =>'),
     'handlers must still be named bindings');
   assert.ok(GESTURES.includes('const onTouchMove = (e) =>'),
@@ -1112,4 +1118,185 @@ test('WS3 Part 3: the verified-correct MediaSession code is untouched', () => {
   assert.ok(/if \(!cur\) \{[\s\S]*mediaSession\.metadata = null;[\s\S]*playbackState = 'none'/.test(
     stripComments(region('function updateMediaSession()', '// ---- buffering', APP_JS))),
   "the withdrawal branch must still null metadata and set 'none'");
+});
+
+// =====================================================================
+// Workstream 4 — go-to-live on the skip button, ±15 s upper clamp, removal
+// of the invisible 12 % bar zone, and the transform stranding fix.
+//
+// Owner intent (2026-09-27): there must be NO separate "Till Direkt" button —
+// to save screen space the forward skip button IS the live button once the
+// playhead is inside the current programme. That fallback was never
+// implemented; the button was hidden instead, leaving no way back to live.
+// =====================================================================
+
+const SEEK_BY = stripComments(region('function seekBy(deltaSeconds)', '// Fetch today', APP_JS));
+const SYNC_NEXT = stripComments(region(
+  'const syncNext = () => {', 'if (prevEv) syncNext();', APP_JS));
+const DVR_BAR = stripComments(region(
+  "class: 'seek-bar dvr-bar'", '// Drag state', APP_JS));
+
+test('WS4 Item 1: the skip button becomes "Till Direkt" when behind live with no next programme', () => {
+  // The gap: `if (nextEv && behindLive) {...} else { hide }` — so behind-live
+  // with no later programme hid the button, leaving no way back to live.
+  assert.ok(/else if \(behindLive\)/.test(SYNC_NEXT),
+    'there must be a behind-live branch that is independent of nextEv');
+  assert.ok(SYNC_NEXT.includes("nextProgramBtn.title = 'Till Direkt'"),
+    "the fallback button must be titled 'Till Direkt'");
+  assert.ok(/nextProgramBtn\.onclick = \(\) => seekToLive\(\);/.test(SYNC_NEXT),
+    'the fallback must call seekToLive()');
+  assert.ok(/nextProgramBtn\.style\.display = '';/.test(
+    SYNC_NEXT.slice(SYNC_NEXT.indexOf('else if (behindLive)'))),
+  'the fallback button must be VISIBLE, not hidden');
+  // The aria-label must change too, so a screen reader announces the real action.
+  assert.ok(SYNC_NEXT.includes("nextProgramBtn.setAttribute('aria-label', 'Till Direkt')"),
+    "the fallback must set aria-label 'Till Direkt'");
+  // The programme-skip case must be unchanged.
+  assert.ok(/seekToProgramTime\(nextEv\.startMs\)/.test(SYNC_NEXT),
+    'the next-programme case must still seek to the programme start');
+  assert.ok(SYNC_NEXT.includes("nextProgramBtn.title = nextEv.title || 'Nästa program'"),
+    'the programme-skip title must be unchanged');
+  assert.ok(SYNC_NEXT.includes("nextProgramBtn.setAttribute('aria-label', 'Till nästa programs start')"),
+    "the skip case must set its own aria-label, distinct from 'Till Direkt'");
+  // NOT behind live must still hide it — no button that does nothing.
+  const hideBranch = SYNC_NEXT.slice(SYNC_NEXT.lastIndexOf('else {'));
+  assert.ok(hideBranch.includes("nextProgramBtn.style.display = 'none'"),
+    'the button must still be hidden when already live');
+  assert.ok(!hideBranch.includes('seekToLive'),
+    'the hidden branch must not wire a live action');
+  // The owner explicitly rejected a separate live button.
+  assert.ok(!/class: 'player-live-label'/.test(APP_CODE),
+    'no separate live button may be added');
+  // behindLive computation must be untouched.
+  assert.ok(/cur\.atLiveEdge === false/.test(SYNC_NEXT) && /\> 60/.test(SYNC_NEXT),
+    'the behindLive computation must be unchanged');
+});
+
+test('WS4 Item 2: seekBy clamps to the live edge as well as the window start', () => {
+  // The defect: only the lower bound was clamped, so a forward step near the
+  // live edge produced a target BEYOND seekableEnd — the buffered boundary,
+  // which Safari rejects or clamps silently.
+  assert.ok(/seekableEnd - LIVE_EDGE_TOLERANCE_S/.test(SEEK_BY),
+    'the upper bound must sit behind the edge by LIVE_EDGE_TOLERANCE_S');
+  assert.ok(/Math\.min\(upper, Math\.max\(start,/.test(SEEK_BY),
+    'the final target must be clamped at BOTH ends');
+  // The lower clamp must survive.
+  assert.ok(/const start = Number\.isFinite\(cur\.seekableStart\) \? cur\.seekableStart : 0;/.test(SEEK_BY),
+    'the lower bound must still default to 0 when seekableStart is unusable');
+  // Without a finite seekableEnd there must be NO upper clamp (non-DVR safety).
+  assert.ok(/: Infinity;/.test(SEEK_BY),
+    'a non-finite seekableEnd must leave the upper bound open');
+  // Still a seek only.
+  ['play(', 'pause(', 'load(', 'hlsAttach(', 'hlsDetach('].forEach((f) => {
+    assert.ok(!SEEK_BY.includes(f), `seekBy must stay a seek — no ${f}`);
+  });
+  assert.ok(!/audioEl\.src\s*=/.test(SEEK_BY), 'seekBy must not reassign the source');
+  // The step size and the guard must be untouched.
+  assert.ok(/if \(!cur \|\| !cur\.dvrAvailable\) return;/.test(SEEK_BY),
+    'the dvrAvailable guard must survive');
+  assert.ok(/updateSeekableState\(\);/.test(SEEK_BY) && /renderPlayer\(\);/.test(SEEK_BY),
+    'the update+render sequence must remain');
+});
+
+test('WS4 Item 3: the invisible 12 % back-to-live hit zone is gone', () => {
+  assert.ok(!/0\.88/.test(APP_CODE), 'the frac >= 0.88 comparison must be gone');
+  assert.ok(!/bar\.addEventListener\('click'/.test(APP_CODE),
+    'the DVR bar must no longer carry a click-to-live handler');
+  // No comment may still claim the zone CURRENTLY exists. A comment saying it
+  // was removed is correct and required — a comment describing behaviour that
+  // no longer exists is itself a defect.
+  const claimsZoneExists = /12 ?%(?! of the bar used to be an INVISIBLE)/.test(APP_JS)
+    && !/The right 12 % of the bar used to be an INVISIBLE/.test(APP_JS);
+  assert.ok(!claimsZoneExists,
+    'no comment may claim the right-edge zone still exists');
+  assert.ok(!/tapping the bar's right edge returns to live/.test(APP_JS),
+    'the stale comment claiming the bar edge returns to live must be corrected');
+  assert.ok(/FORWARD SKIP button doubles as/.test(APP_JS),
+    'the replacement comment must point at the real affordance');
+  // Drag-to-seek and its furniture must be untouched.
+  assert.ok(APP_CODE.includes('seekToWindowFraction'), 'drag-to-seek must remain');
+  assert.ok(APP_CODE.includes("class: 'seek-fill'") && APP_CODE.includes("class: 'seek-thumb'"),
+    'the fill and thumb must remain');
+  assert.ok(APP_CODE.includes("class: 'player-time'"), 'the clock label must remain');
+  assert.ok(APP_CODE.includes('pointerdown') && APP_CODE.includes('pointermove'),
+    'the pointer-drag handlers must remain');
+  // The affordance now lives on a visible, labelled control.
+  assert.ok(APP_CODE.includes("'aria-label': 'Till nästa programs start'"),
+    'the skip button must still be labelled at creation');
+});
+
+test('WS4 Item 4: the player transform cannot be stranded', () => {
+  // The defect: finish() opened with `if (axis !== 'y') return;`, so a
+  // touchend that never arrived (iOS steals the gesture) left the inline
+  // translateY in place with no way to pin the player back.
+  const gest = GESTURES;
+  // ONE shared reset, used by every terminal path.
+  assert.ok(/const releaseDragStyles = \(\) => \{/.test(gest),
+    'there must be a single shared reset helper');
+  assert.ok(/const releaseDragStyles = \(\) => \{[\s\S]*?surface\.style\.transform = '';/.test(gest),
+    'the shared reset must clear the inline transform');
+  // finish() must call it BEFORE the axis check, not after.
+  const finish = gest.slice(gest.indexOf('const finish = (e) => {'));
+  const resetAt = finish.indexOf('releaseDragStyles()');
+  const axisGuard = finish.indexOf("if (axis !== 'y') return;");
+  assert.ok(resetAt !== -1, 'finish() must call the reset');
+  assert.ok(axisGuard !== -1, 'the axis guard must still exist');
+  assert.ok(resetAt < axisGuard,
+    'the reset must run BEFORE the axis early-return, or it is still reachable-but-skipped');
+  // The three extra terminal signals must exist and reach the reset.
+  [['onPointerCancel', 'pointercancel'], ['onHidden', 'visibilitychange'], ['onBlur', 'blur']]
+    .forEach(([fnName, type]) => {
+      assert.ok(gest.includes(`const ${fnName} = `), `${fnName} handler must exist`);
+      assert.ok(gest.includes(`type: '${type}'`), `${type} must be registered`);
+      assert.ok(new RegExp(`const ${fnName} = \\(\\)[\\s\\S]*?releaseDragStyles\\(\\);`).test(gest),
+        `${fnName} must call the shared reset`);
+    });
+  // They must be bound on window/document so they fire when the finger leaves.
+  assert.ok(/type: 'pointercancel'[^\n]*target: window/.test(gest),
+    'pointercancel must be bound on window');
+  assert.ok(/type: 'visibilitychange'[^\n]*target: document/.test(gest),
+    'visibilitychange must be bound on document');
+  assert.ok(/type: 'blur'[^\n]*target: window/.test(gest),
+    'blur must be bound on window');
+  // Thresholds must NOT have been tuned — that would be a guess, and a
+  // threshold-shaped fix already failed on the owner's device.
+  assert.ok(/const THRESHOLD = 0\.22;/.test(gest), 'THRESHOLD must be unchanged at 0.22');
+  assert.ok(/window\.innerHeight \* 0\.5/.test(gest), 'the drag multiplier must be unchanged');
+  // renderPlayer must still heal a stranded player, early and unconditional.
+  const rpTop = APP_JS.slice(APP_JS.indexOf('function renderPlayer()'));
+  assert.ok(rpTop.indexOf("$player.style.transform = '';") < rpTop.indexOf('const live ='),
+    "renderPlayer must clear the transform before it branches on the layout");
+  // The gesture bookkeeping must stay accurate for the new window/document
+  // handlers, or the WS0 counters would drift.
+  assert.ok(/\(target \|\| surface\)\.addEventListener\(type, fn, opts\)/.test(gest),
+    'registration must honour the per-handler target');
+  assert.ok(/\(target \|\| surface\)\.removeEventListener\(type, fn, opts\)/.test(gest),
+    'removal must honour the per-handler target');
+  assert.ok(gest.includes('metaDiagCountAdd(type)') && gest.includes('metaDiagCountRemove(type)'),
+    'counters must stay paired for every registered handler');
+});
+
+test('WS4: the _srNextUpd leak bookkeeping is intact', () => {
+  // WS4 touched syncNext's BODY (the branch logic) but not its lifecycle.
+  assert.ok(APP_CODE.includes('if (audioEl._srNextUpd)'),
+    'the previous syncNext must still be removed behind a property guard');
+  assert.ok(APP_CODE.includes("audioEl.removeEventListener('timeupdate', audioEl._srNextUpd)"),
+    'syncNext must still be removed by identity');
+  assert.ok(APP_CODE.includes('audioEl._srNextUpd = syncNext;'),
+    'the new syncNext must still be stored');
+  assert.ok(APP_CODE.includes('audioEl._srNextUpd = null;'),
+    'the property must still be cleared so it cannot be removed twice');
+  // Guards and helpers WS4 was told not to touch.
+  assert.ok(APP_CODE.includes('function programBoundary('), 'programBoundary must survive');
+  assert.ok(APP_CODE.includes('function seekToProgramTime('), 'seekToProgramTime must survive');
+  assert.ok(/const LIVE_EDGE_TOLERANCE_S = 10;/.test(APP_CODE),
+    'LIVE_EDGE_TOLERANCE_S must be unchanged at 10');
+  assert.ok(APP_CODE.includes('function updateSeekableState('), 'updateSeekableState must survive');
+  assert.ok(APP_CODE.includes('function setExpandOpen(open)'), 'the WS2 setExpandOpen must survive');
+  assert.ok(APP_CODE.includes('const live = state.current || cur;'),
+    'the WS2 live-state panel fix must survive');
+  const MANIFEST_WS4 = JSON.parse(fs.readFileSync(
+    path.join(__dirname, '..', 'manifest.webmanifest'), 'utf8'));
+  assert.equal(MANIFEST_WS4.id, 'https://danielomazarino.github.io/Min-SR-radio/',
+    'the WS3 absolute manifest id must be untouched');
 });
