@@ -748,27 +748,35 @@ body.player-gesture-lock {
   min-width: 0;
   padding: 0 0 4px;
 }
-/* ---- WS12 Part B: the close button is back on the header row ----
-   It doubles as the artwork-column spacer, sized from --player-art so that the
-   shared --player-gap after it lands the title and the programme on the
-   artwork's right edge — the same left edge as the quality pill and the song
-   line. That alignment is STRUCTURAL, not a padding-left literal, so do not
-   "simplify" it into an indent.
+/* ---- WS13 Part A: the header holds a WIDTH-ONLY SPACER ----
+   The close button moved to the transport row, at the owner's request, to
+   mimic the minimised bar (thumb . text . play . chevron . close).
 
-   WS11a removed the button from here and left a width-only .player-header-spacer
-   in its place. Both are now the real button again and the spacer is GONE:
-   exactly one element may occupy that column, and leaving both live would add
-   44px of dead space and push the text right of the artwork edge. */
-.player-header .player-btn-close {
+   It used to sit HERE and double as the artwork-column spacer: sized from
+   --player-art, with the row's shared --player-gap after it, it is what lands
+   the title and the programme on the artwork's right edge — the same left edge
+   as the quality pill and the song line. That alignment is STRUCTURAL, not a
+   padding-left literal, so it must survive the button leaving.
+
+   The spacer is that same width, from the same custom property. Never a pixel
+   literal: 44px would drift the moment --player-art changes, which is the one
+   thing this design exists to prevent.
+
+   EXACTLY ONE element may occupy that column. The real button and this spacer
+   must never both be present — that would add 44px of dead space and push the
+   text right of the artwork edge.
+
+   Width only, and deliberately NO height: the spacer exists to hold the
+   column, not to keep a row of buttons tall, so the header still collapses to
+   the text once the buttons have moved down.
+
+   `.player-header .player-btn-close` and `.player-header .player-expand-btn`
+   were DELETED rather than left behind. A rule that matches nothing is worse
+   than no rule, because it would silently re-apply if a button ever returned
+   to the header. */
+.player-header .player-header-spacer {
   width: var(--player-art);
-  height: var(--player-art);
   flex: none;
-}
-/* The chevron keeps the far-right corner. `margin-left: auto` pushes it past
-   the shrinking text rather than relying on a fixed width for the text. */
-.player-header .player-expand-btn {
-  flex: none;
-  margin-left: auto;
 }
 /* Both texts share the line and ellipsize. No max-width percentage: the old
    40% cap truncated the channel name on narrow phones for no reason. The title
