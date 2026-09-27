@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '6098c1b';
+  const APP_BUILD = '960a975';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -2033,8 +2033,45 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     scheduleCache.set(key, { value, at: Date.now() });
     return value;
   }
+  // ---- WS18: a DVR window can reach back past local midnight ----
+  // The owner reported that dragging the P3 seek bar back stopped changing the
+  // programme title. Measured cause: `fetchSchedule` requested TODAY only, but
+  // `playheadWallMs()` maps the DVR position to a WALL-CLOCK time, and with a
+  // 3-hour window that is routinely yesterday's date after midnight. So
+  // `pickByPosition(cur._srSchedule, ...)` had no entry to find, the title
+  // silently stayed on whatever was on air, and nothing looked broken -- the
+  // pill and the clock still moved correctly, so the failure was invisible
+  // except to someone who knew the programme had changed.
+  //
+  // `localDateStrOffset(1)` already existed (the expand panel used it) and the
+  // per-day cache is already keyed `${channelId}:${dateStr}`, so the second day
+  // costs one extra request ONCE per 10 minutes, not per seek.
+  //
+  // Yesterday's day is fetched only when the playhead can actually reach it:
+  // computed from the DVR window rather than fetched unconditionally, so a
+  // channel with no DVR state does not pay for it. The two days are merged
+  // into ONE sorted array, because `pickByPosition` and `programBoundary` both
+  // assume start-order -- an unsorted merge would make the programme-skip
+  // buttons pick the wrong neighbour across the midnight boundary.
   async function fetchSchedule(channelId) {
-    return fetchScheduleDay(channelId, localDateStr());
+    const today = await fetchScheduleDay(channelId, localDateStr());
+    const cur = state.current;
+    const start = cur ? cur.seekableStart : null;
+    // How far back the window reaches, in ms. `start` is a media timestamp
+    // and the live edge is ~now, so this is the span of wall-clock time the
+    // DVR can show.
+    const windowMs = Number.isFinite(start)
+      ? Math.max(0, Date.now() - start * 1000)
+      : 0;
+    const needsYesterday = windowMs > 60 * 60 * 1000; // more than an hour back
+    if (!needsYesterday) return today || [];
+    const yesterday = await fetchScheduleDay(channelId, localDateStrOffset(1));
+    if (!yesterday || !yesterday.length) return today || [];
+    if (!today || !today.length) return yesterday;
+    // Merge and sort by start time. `[...a, ...b].sort(...)` on the two arrays
+    // is cheaper than a merge routine and cannot get the ordering wrong; the
+    // combined length is a day's worth of programmes at most.
+    return [...today, ...yesterday].sort((a, b) => a.startMs - b.startMs);
   }
 
   // Find the programme boundary to seek to. direction -1 = start of the
@@ -2387,9 +2424,12 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // as siblings in a block context the auto margin is eaten by inline space
     // and the pill would sit right next to the name. A podcast has no time
     // state, so its row 1 has one child and lays out exactly as before.
-    const metaRowTop = el('div', { class: 'player-meta-row' },
-      identityName,
-      isLive ? mode : null);
+    // WS18: the time state is no longer a child of this row -- it lives on the
+    // song row (see `timeRow`). The row is KEPT rather than collapsed to a bare
+    // `identityName`, because it is the flex line that gives the channel name
+    // its ellipsis context, and `paintProgramTitle()` and the WS0 diagnostics
+    // both read through this subtree.
+    const metaRowTop = el('div', { class: 'player-meta-row' }, identityName);
     const meta = el('div', { class: 'player-meta' },
       metaRowTop,
       // Row 2: the quality pill, in the podcast's position.
@@ -3244,11 +3284,38 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // pickByPosition(nowPlaying.timeline, playheadWallMs()), episode ->
     // episodeCurrentTrack), so no painting logic changed here -- only the gate
     // that prevented the line from existing.
+    // WS18: the time state moves onto the SONG row, at its right-hand end --
+    // the owner's correction: "to the right hand of the position of song and
+    // artist information ... row 4 rightmost". WS16 had put it on row 1
+    // (the channel-name row) on my reading of the request; on a talk channel
+    // with no song that row holds only the channel, and the pill read as if it
+    // described the channel rather than the playhead.
+    //
+    // The song row is a flex line with the pill as its second child, so
+    // `margin-left: auto` on the pill puts it at the far right of THAT row
+    // rather than the far right of the meta column. The song line keeps its
+    // own ellipsis and `min-width: 0`, so a long song+artist string truncates
+    // instead of pushing the pill off the edge.
+    //
+    // With no song the line collapses to height 0 (existing `.has-song` /
+    // :empty CSS), which would take the pill with it. So on a talk channel the
+    // pill needs a row of its own -- hence `songRow` below.
     const songLine = el('div', { class: 'now-playing-line', 'aria-live': 'polite' });
+    // The pill's container. Rendered for a live channel regardless of song, so
+    // the time state is never invisible; `songLine` is passed in as a child so
+    // the two always share one row and one ellipsis context.
+    const timeRow = live
+      ? el('div', { class: 'player-time-row' },
+          el('div', { class: 'player-time-song' }, songLine),
+          mode)
+      : null;
 
     $player.appendChild(headerLine);
     $player.appendChild(el('div', { class: 'player-row' }, thumb, meta, controls));
-    if (songLine) $player.appendChild(songLine);
+    // A podcast has no time state, so the song line stands alone and keeps
+    // exactly the margin-left it had before WS18.
+    if (timeRow) $player.appendChild(timeRow);
+    else if (songLine) $player.appendChild(songLine);
     if (seekRow) $player.appendChild(seekRow);
 
     // ---- Self-healing repaint (blink fix 2026-09-23) ----

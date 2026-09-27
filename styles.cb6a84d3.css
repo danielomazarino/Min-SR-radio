@@ -1263,6 +1263,47 @@ body.player-gesture-lock {
 }
 .now-playing-line:empty { display: none; }
 .now-playing-line.has-song { color: var(--accent); }
+
+/* ---- WS18: the song row, and the time state at its right-hand end ----
+   The owner put the LIVE / "−N min" pill on the SONG row, rightmost, after
+   WS16 had put it on the channel-name row. So `.now-playing-line` gains a
+   sibling that shares its line.
+
+   `.player-time-song` is the flex child that carries the song text. It exists
+   as a wrapper rather than putting `margin-left: auto` straight on the pill
+   because the pill must be pushed right by the SONG's width, and the song is
+   the one that must be allowed to truncate first. `flex: 1` plus `min-width: 0`
+   gives the song all the leftover space and lets the ellipsis do its job; the
+   pill is `flex: none` so it can never be squeezed or wrapped.
+
+   The row is `display: flex` at the FULL player's indent, so `.now-playing-
+   line`'s own `margin-left: var(--player-col)` is zeroed HERE and applied to
+   the row instead -- otherwise the song would be indented twice.
+
+   The row carries no margin-top of its own: `.now-playing-line` keeps
+   `margin-top: 3px` for the single-line podcast case, and the time row's own
+   spacing comes from the pill's line box, so a talk channel with no song
+   collapses to the pill alone rather than reserving an empty line. */
+.player-time-row {
+  display: flex;
+  align-items: center;
+  gap: var(--player-gap);
+  margin-left: var(--player-col);
+  min-width: 0;
+}
+.player-time-row .now-playing-line {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-left: 0;
+  margin-top: 3px;
+}
+/* Compound selector on purpose -- see the note on the `.player-meta-row >
+   .player-mode` rule above. A bare `.player-mode {` block earlier in the file
+   would be matched first by a forward search and the real rule lost. */
+.player-time-row > .player-mode {
+  margin-left: auto;
+  flex: none;
+}
 /* The indent above is for the FULL player, where the song line sits on its own
    row under the artwork. The minimised mini-bar builds a compact text stack of
    its own (40px thumb, 10px gap) whose title and programme are NOT indented, so
