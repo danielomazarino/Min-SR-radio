@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = 'bd11dc7';
+  const APP_BUILD = '6098c1b';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -419,6 +419,18 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   document.body.appendChild($player);
 
   let lastPlayingKey = null; // `${kind}:${id}` of what's loaded
+
+  // WS17: the podcast id whose latest-episode fetch is in flight, or null.
+  // Declared HERE, beside lastPlayingKey, because stopAndClosePlayer() clears
+  // it and is defined ~2000 lines earlier. A `let` further down the file would
+  // only be safe because the function runs after the whole IIFE body has been
+  // evaluated -- which is true, and is exactly the kind of accident that
+  // breaks the moment someone calls it from a top-level statement.
+  //
+  // Cleared in a `finally`, so a FAILED fetch cannot wedge the podcast
+  // permanently: a guard only cleared on success turns one network error into
+  // "this podcast never plays again until the app is restarted".
+  let podFetchInFlight = null;
 
   // ---- stream format badge ----
   // Derives a short format label (MP3/AAC/FLAC/HLS) from the stream URL.
@@ -1441,6 +1453,13 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     diagLog(`audio-src-cleared (stopAndClosePlayer)`);
     audioEl.removeAttribute('src');
     state.current = null;
+    // WS17: the podcast id must die with the player. It is the value the
+    // playPodcast() guard compares, and leaving it set while nothing is loaded
+    // is a stale flag that outlives the thing it describes. (Harmless today
+    // only because the guard also requires `state.current`, which this
+    // function just nulled -- two pieces of state that must agree.)
+    audioEl._podProgramId = null;
+    podFetchInFlight = null;
     lastPlayingKey = null;
     playerMinimized = false; // a fresh play must never open as mini-bar
     stopPositionSync(); // no position refresh may outlive the player
@@ -3451,12 +3470,49 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   async function playPodcast(programId) {
     const pod = state.podcasts.find((p) => p.id === programId);
     if (!pod) return;
-    if (isCurrent('episode', programId) === false && audioEl._podProgramId === programId && state.current) {
-      // same program already loaded → just toggle
-      toggleTrack(state.current);
-      return;
+    // ---- WS17: the "already loaded" guard compared the WRONG ids ----
+    // This read:
+    //   isCurrent('episode', programId) === false && audioEl._podProgramId === programId
+    // `programId` is the PODCAST id. `isCurrent(kind, id)` compares against
+    // `state.current.id`, which for an episode is the EPISODE id
+    // (playTrack({ id: ep.id })). So the two sides were structurally
+    // different numbers and isCurrent() could never be true here: the
+    // `=== false` half was always true, and the guard's real question
+    // ("is the podcast we were asked for the one already loaded?") was never
+    // actually asked.
+    //
+    // Consequence, exactly as the owner reported: play a podcast, switch to a
+    // radio channel, then tap the podcast again. state.current is now the
+    // radio channel, so `state.current` is truthy and
+    // `audioEl._podProgramId` still equals programId -- but isCurrent() is
+    // false, so the code took the TOGGLE branch and called
+    // toggleTrack(state.current) on the LIVE CHANNEL. The podcast was never
+    // restarted; the tap either paused the channel or did nothing visible.
+    //
+    // The fix compares the two things that are actually the same kind of id.
+    // `_podProgramId` is the podcast id, so that is the only comparison that
+    // can answer the question. The extra `state.current` truthiness check is
+    // kept so a cleared player (stopAndClosePlayer sets state.current = null)
+    // still falls through to a fresh fetch.
+    if (audioEl._podProgramId === programId && state.current) {
+      // Same podcast already loaded AND still the thing playing → just toggle
+      // pause/resume, without refetching the latest episode.
+      if (state.current.kind === 'episode') {
+        toggleTrack(state.current);
+        return;
+      }
+      // Loaded earlier but something else is playing now: fall through and
+      // restart the podcast, which is what the tap was asking for.
     }
     showToast('Hämtar senaste avsnittet…', 2000);
+    // WS17: the in-flight guard. Two taps before the first fetch resolves ran
+    // two independent fetches, and whichever resolved last won -- on a slow
+    // connection the second could land after the user had already tapped
+    // again, leaving the player showing one episode and playing another, or
+    // restarting from 0. The podcast id is the natural key: a second tap for
+    // the SAME podcast is a duplicate, a tap for a different one is not.
+    if (podFetchInFlight === programId) return;
+    podFetchInFlight = programId;
     try {
       const ep = await fetchLatestEpisode(programId);
       if (!ep || !ep.audioUrl) {
@@ -3478,6 +3534,11 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       });
     } catch (err) {
       showToast(err.message || 'Kunde inte hämta avsnittet.');
+    } finally {
+      // Only clear our own slot: a tap for a different podcast may have taken
+      // over while this one was in flight, and nulling it would drop that
+      // one's guard too.
+      if (podFetchInFlight === programId) podFetchInFlight = null;
     }
   }
 
