@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '219c38a';
+  const APP_BUILD = '732260a';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -2787,8 +2787,35 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // the space, not the space, and the text column collapses to 0 with every
     // test still green. The spacer is that same width, from the same custom
     // property -- never a pixel literal.
-    controls.appendChild(expandBtn);
-    controls.appendChild(closeBtn);
+    // ---- WS14: the chevron and the close LEAVE the transport row ----
+    // Owner (2026-09-27), correcting WS13 Part A: the chevron and the close
+    // belong on the header row, grouped at the RIGHT end, "visually look as
+    // the minimised player", on the same line as the channel and programme
+    // title, for radio AND podcasts.
+    //
+    // WHY WS13 PART A WAS REVERTED — this is a measurement, not a preference.
+    // The owner reported the 7-button DVR state cramping the row; the brief
+    // attributed it to a missing comma ("not to, the right on a row above the
+    // title"). That explanation was WRONG. WS12 had already put both buttons
+    // back on the header row, with a comment recording this exact measurement:
+    // "with the DVR state (7 buttons) meta went to 0px, the row overflowed
+    // 388 > 358". WS13 Part A re-broke a defect I had already found, because
+    // the comma-less "to mimic the ui for the minimised player" read as a fresh
+    // instruction and overrode my own prior finding. Ignore no measurement
+    // because a later sentence sounds like a command.
+    //
+    // The arithmetic at 390px, measured live, both states DVR:
+    //   WS12 (5 controls, close+chevron in header): 44+12+66.1+12+224 = 358 = fits
+    //   WS13 (7 controls):                          44+12+   0+12+304 = 372 > 358
+    // The two rows differ ONLY by the two buttons WS13 moved into the row.
+    // .player-meta is `flex: 1 1 0%` with `min-width: 0`, so it absorbs the
+    // entire deficit to 0 and never pushes back. The text is not truncated —
+    // it PAINTS outside its box (overflow: visible), which is why the defect
+    // looks milder than it is while the close button is genuinely clipped.
+    //
+    // NOTE: `document.documentElement.scrollWidth > window.innerWidth` is FALSE
+    // in every one of these cases. The only signals that detect it are
+    // row.scrollWidth > row.clientWidth and meta.getBoundingClientRect().width.
 
     // Wire program-skip buttons once the schedule resolves (DVR only).
     // Re-render is NOT needed: the buttons live in this render instance.
@@ -3021,10 +3048,26 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // tests. Keep them as two separate elements: merging the title and
     // programme into one text node would break paintProgramTitle entirely.
     const headerSpacer = el('div', { class: 'player-header-spacer', 'aria-hidden': 'true' });
+    // ---- WS14: chevron + close, right-grouped, on the header row ----
+    // Order is the minimised bar's: text, then chevron, then close. The
+    // header KEEPS the width-only SPACER in the artwork column: exactly one
+    // element may occupy that column, and the spacer is what lands the title
+    // and programme on the artwork's right edge (structurally, via the row's
+    // shared --player-gap -- not a padding-left literal). The spacer is
+    // width-only with NO height, so the header still collapses to the text's
+    // line height instead of adding a 44px empty row.
+    //
+    // WHY RIGHT-GROUPED RATHER THAN THE WS11a/WS12 LEFT-CLOSE: the owner
+    // asked for the minimised bar's arrangement, which puts both buttons
+    // after the text. The left-close variant was measured as working
+    // (meta 66.1px) but groups them at opposite ends of the line, which is
+    // not what "visually look as the minimised player" describes.
     const headerLine = el('div', { class: 'player-header' },
       headerSpacer,
       el('div', { class: 'player-title', text: cur.title || '' }),
-      el('div', { class: 'player-sub', text: cur._srProgramTitle || cur.subtitle || (live ? 'Direkt' : '') }));
+      el('div', { class: 'player-sub', text: cur._srProgramTitle || cur.subtitle || (live ? 'Direkt' : '') }),
+      expandBtn,
+      closeBtn);
 
     // Song line: BELOW the player content, ABOVE the seek row. aria-live and
     // the :empty / .has-song CSS behaviour are preserved, so a talk channel
