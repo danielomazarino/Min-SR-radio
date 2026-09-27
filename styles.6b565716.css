@@ -873,6 +873,48 @@ body.player-gesture-lock {
   max-width: 100%;
 }
 
+/* ---- WS16: the two-row structure, identical for radio and podcasts ----
+   .player-meta is a block container with two children, and they stack as rows:
+     row 1   .player-meta-row  -- identity name + time state at the far right
+     row 2   .player-quality   -- the codec pill
+
+   `.player-meta-row` is an explicit flex row rather than two siblings in a
+   block context, because the time state must reach the RIGHT EDGE and
+   `margin-left: auto` only has anything to consume inside a flex line. As
+   siblings in a block formatting context the auto margin is absorbed by the
+   inline space and the pill sits immediately after the name.
+
+   A podcast has no time state, so its row 1 has a single child and lays out
+   exactly as before. The pill is then the only visual difference between the
+   two kinds, and that is real information, not a layout accident.
+
+   `.player-quality` becomes `display: block` + `width: max-content` so it
+   occupies row 2 by itself and keeps its pill shape. Source order alone would
+   also put it there, but relying on that is the kind of coincidence that
+   breaks silently the moment a fourth child appears.
+
+   `min-width: 0` on the name stops the time state from being squeezed instead
+   of the name -- the name is the one that carries the identity. */
+.player-meta-row {
+  display: flex;
+  align-items: center;
+  gap: var(--player-gap);
+  min-width: 0;
+}
+.player-meta-row > .player-podcast-name { min-width: 0; }
+/* Compound selector on purpose. A bare base-selector block placed earlier in
+   the file becomes the FIRST occurrence of that selector string, and both
+   region() (which searches forward) and any reader scanning for the real rule
+   would find this three-property fragment instead of the styling further
+   down. Same trap bit the quality pill -- see the note on that rule.
+
+   The time state is pulled to the right edge of row 1 with `margin-left:
+   auto`, which only consumes space inside a flex line. */
+.player-meta-row > .player-mode {
+  margin-left: auto;
+  flex: none;
+}
+
 .player-title {
   font-size: 14px;
   font-weight: 600;
@@ -890,7 +932,14 @@ body.player-gesture-lock {
 }
 
 .player-quality {
-  display: inline-block;
+  /* WS16: the pill now occupies ROW 2 of .player-meta on its own, in the same
+     place the podcast's MP3 pill already had. `block` + `max-content` states
+     that explicitly rather than relying on source order. The base rule below is
+     the one place this styling lives: a second `.player-quality {` block would
+     split the rule for any test or reader scanning from the first occurrence. */
+  display: block;
+  width: max-content;
+  max-width: 100%;
   margin-top: 3px;
   margin-right: 5px;
   padding: 1px 7px;
