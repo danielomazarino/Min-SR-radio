@@ -1427,11 +1427,46 @@ test('WS5 Item 1: channel and programme moved above the player, names intact', (
     'the time row must replace the song line position, not be appended twice (WS18)');
   // ... but must still exist, with their ORIGINAL class names, in a header
   // line appended to $player.
+  //
+  // ---- WS19 SUPERSEDES the `.player-title` half of this requirement ----
+  // The owner (screenshot): "remove the Bold duplicate information top left ...
+  // it must be the same exactly as we have mapped to just above the pill
+  // mp3 96". The channel name was printed twice -- bold in the header, then
+  // again in the meta row above the quality pill.
+  //
+  // `.player-sub` is LOAD-BEARING (paintProgramTitle writes into it via
+  // $player.querySelector, and the WS0 snapshot reads it) so it stays.
+  // `.player-title` is removed from the HEADER ONLY -- the mini-bar keeps its
+  // own, because the minimised bar has no meta row and would otherwise have no
+  // identity at all. The header is asserted to have exactly ONE .player-sub
+  // now, which is the assertion that would catch a re-introduction.
   const header = stripComments(region('const headerLine = el(', 'const songLine', APP_JS));
-  assert.ok(header.includes("class: 'player-title'"),
-    '.player-title must keep its original class name');
+  assert.ok(!header.includes("class: 'player-title'"),
+    'the bold .player-title must NOT be in the header any more (WS19: it duplicated the meta row)');
   assert.ok(header.includes("class: 'player-sub'"),
     '.player-sub must keep its original class name');
+  // ---- WS19: the count is now 2 LITERALS but still 1 ELEMENT ----
+  // The header is a single ternary, so exactly one arm renders and there is
+  // still exactly one `.player-sub` in the DOM. A literal count cannot express
+  // that once there are two arms, so the STRUCTURE is asserted instead: the
+  // two occurrences must be the two arms of ONE `live ? ... : ...`, which is
+  // what makes the runtime count 1. Asserting `count === 1` here would be a
+  // proxy that fails on a correct implementation, and asserting `count === 2`
+  // alone would still pass if a THIRD unconditional copy were added beside the
+  // ternary -- the exact duplication this guards.
+  assert.strictEqual((header.match(/class: 'player-sub'/g) || []).length, 2,
+    'the header must have exactly two .player-sub literals: the two arms of one ternary (WS19)');
+  assert.ok(/live\s*\n?\s*\? el\('div', \{ class: 'player-sub'/.test(header)
+    && /:\s*el\('div', \{ class: 'player-sub'/.test(header),
+    'both .player-sub literals must be the arms of ONE live ternary, so only one renders (WS19)');
+  assert.ok(!/,\s*el\('div', \{ class: 'player-sub'/.test(header),
+    'no unconditional third .player-sub may sit beside the ternary (WS19)');
+  // The programme must still reach the car/lock screen from the header line's
+  // own expression, whichever branch supplies it.
+  assert.ok(/_srProgramTitle/.test(header),
+    'the live branch must still show the resolved programme in the header');
+  assert.ok(/programName/.test(header),
+    'the non-live branch must show the podcast name in the header (WS19)');
   assert.ok(/class: 'player-header'/.test(header),
     'the header line needs its own container class');
   // Appended to $player so paintProgramTitle() ($player.querySelector('.player-sub'))
@@ -1733,18 +1768,36 @@ test('WS5b Item 2: channel and programme share one line with no width cap', () =
   // via $player.querySelector. If the two texts were merged into one node, or
   // either were dropped, that function would keep returning without throwing
   // and programme titles would stop updating with every test still green.
+  // ---- WS19: the channel title left the header; the SPLIT requirement stands ----
+  // The owner's "remove the Bold duplicate information top left" collapses the
+  // header from two text cells to one. What this test actually protects is that
+  // `.player-sub` is its OWN element reachable BY NAME -- that is the
+  // silent-failure guard, and it is unchanged. What changed is only that the
+  // channel name is no longer a second header cell: it moved to the meta row
+  // above the quality pill, which is where the owner asked for it.
   const header = stripComments(region(
     "const headerLine = el('div', { class: 'player-header' }",
     '$player.appendChild(headerLine);', APP_JS));
-  assert.ok(/class: 'player-title'/.test(header), 'the channel title must survive');
-  assert.ok(/class: 'player-sub'/.test(header), 'the programme subtitle must survive');
-  assert.ok(header.indexOf('player-title') < header.indexOf('player-sub'),
-    'the channel must come before the programme on the shared line');
+  assert.ok(/class: 'player-sub'/.test(header),
+    'the programme subtitle must survive as its own node (paintProgramTitle targets it by name)');
+  assert.ok(!/class: 'player-title'/.test(header),
+    'the bold channel title must NOT be in the header (WS19: it moved to the meta row)');
+  // The channel name must still be rendered SOMEWHERE, or the player has lost
+  // its identity. The meta row is now that home -- asserted, not assumed.
+  assert.ok(/identityName/.test(
+    stripComments(region('const identityName = isLive', 'const metaRowTop', APP_JS))),
+    'the channel name must still be rendered, in the meta row (WS19)');
   // Both still reachable by the paint functions and the WS0 snapshot.
   assert.ok(/metaDiagText\(\$player, '\.player-title'\)/.test(APP_CODE),
     'the WS0 snapshot must still be able to read the channel title');
-  assert.ok((APP_CODE.match(/class: 'player-title'/g) || []).length === 2,
-    'the title must exist in exactly two places: the mini-bar and the header');
+  // The mini-bar KEEPS its title, so the count drops from two to one -- the
+  // header's is gone. Guarded by an exact count so a third appearance, or a
+  // silent re-introduction in the header, both fail.
+  assert.ok((APP_CODE.match(/class: 'player-title'/g) || []).length === 1,
+    'the title must now exist in exactly ONE place: the mini-bar (WS19 removed the header copy)');
+  assert.ok(/class: 'player-title'/.test(
+    stripComments(region("const mini = el('div', { class: 'player-mini' }", 'miniPlay', APP_JS))),
+    'the mini-bar must keep its own title, or the minimised bar has no identity (WS19)');
   assert.ok(/querySelector\('\.player-sub'\)/.test(APP_CODE),
     'paintProgramTitle must still be able to query .player-sub');
   assert.ok(/\$player\.appendChild\(headerLine\);/.test(RENDER_WS5),
@@ -1754,10 +1807,19 @@ test('WS5b Item 2: channel and programme share one line with no width cap', () =
   const row = stripComments(region('.player-header {', '.player-row {', STYLES_WS5));
   assert.ok(!/max-width: \d+%/.test(row),
     'the percentage width cap must be gone');
-  assert.ok(/\.player-header \.player-title \{ flex: 0 1 auto; min-width: 0; \}/.test(row),
-    'the title must shrink only when the programme needs room');
   assert.ok(/\.player-header \.player-sub \{ flex: 1 1 auto; min-width: 0; \}/.test(row),
     'the programme must take the remaining width and ellipsize');
+  // ---- WS19: the bold title left the header, so its flex rule must go too ----
+  // `.player-header .player-title` is now DEAD CSS -- the element is no longer
+  // built in the header (only in the mini-bar, which this scoped selector does
+  // not match). It is deleted rather than left behind, so a future reader does
+  // not assume the header still has two text cells and size the row for them.
+  assert.ok(!/\.player-header \.player-title \{/.test(row),
+    'the dead .player-header .player-title rule must be removed (WS19)');
+  // The channel name still has to reach the player, so the requirement moves
+  // rather than disappears: it now lives in the META row.
+  assert.ok(/identityName/.test(APP_JS),
+    'the channel name must still be rendered (WS19: in the meta row, not the header)');
 });
 
 test('WS5b Item 3: the buttons are corners of the header row, not a floating row',
@@ -2563,18 +2625,33 @@ test('WS11 Part C: MediaSession carries the position-aware programme and song', 
   // genuinely wanted. So the sub line is dropped for episodes only. Asserted
   // as a live-conditional rather than "absent", because radio must keep it.
   const headerBuild = stripComments(region('const headerLine = el(', '$player.appendChild(headerLine);', APP_JS));
-  assert.ok(/live\s*\n?\s*\? el\('div', \{ class: 'player-sub'/.test(headerBuild),
-    'the header sub line must be live-conditional (WS15b)');
+  // ---- WS19: the header now has a live branch AND a podcast branch ----
+  // The owner removed the bold duplicate, so the header is a single text cell.
+  // A podcast still needs that cell filled (it carried no `.player-sub`
+  // before, because the mini-bar style used `.player-podcast-name` instead) --
+  // WS19 gives the podcast the same element so the two kinds match. The
+  // COUNT guard is the one that matters and it is unchanged: exactly one
+  // `.player-sub` in the header, so a second unconditional copy cannot be
+  // added alongside the branches, which is precisely how the duplication was
+  // reintroduced in the first place.
   assert.ok(/cur\._srProgramTitle \|\| cur\.subtitle \|\| 'Direkt'/.test(headerBuild),
-    "radio must keep channel + programme in the header sub line");
-  // The sub line must exist ONLY inside the live branch. Counting occurrences
-  // is the honest assertion: the conditional itself is asserted above, so this
-  // catches a second unconditional `class: 'player-sub'` being added alongside
-  // it -- which is precisely how the duplication was reintroduced. A regex
-  // that tried to "remove" the live branch and check the remainder was tried
-  // first and was unreadable; count instead.
-  assert.strictEqual((headerBuild.match(/class: 'player-sub'/g) || []).length, 1,
-    "the header must render .player-sub exactly once, inside the live branch");
+    "radio must keep the resolved programme in the header sub line");
+  assert.ok(/cur\.programName \|\| cur\.subtitle/.test(headerBuild),
+    'a podcast must fill the same header cell with its podcast name (WS19)');
+  // ---- WS19: two literals, one rendered element ----
+  // The header is a single `live ? ... : ...` ternary, so the podcast arm fills
+  // the same cell the radio arm uses and the DOM still holds ONE `.player-sub`.
+  // A literal count of 1 was correct when there was one arm and is wrong now,
+  // so the structure is asserted instead: both occurrences must be the two arms
+  // of that one ternary, and a third unconditional copy beside it -- which is
+  // precisely how the duplication was originally reintroduced -- must not
+  // exist. See the WS5 Item 1 test for the same argument in full.
+  assert.strictEqual((headerBuild.match(/class: 'player-sub'/g) || []).length, 2,
+    'the header must have exactly two .player-sub literals: the two arms of one ternary (WS19)');
+  assert.ok(/live\s*\n?\s*\? el\('div', \{ class: 'player-sub'/.test(headerBuild),
+    'the radio arm of the header ternary must be a .player-sub (WS19)');
+  assert.ok(/:\s*el\('div', \{ class: 'player-sub'/.test(headerBuild),
+    'the podcast arm must fill the same .player-sub cell (WS19)');
   // The minimised bar had the same duplication and needs the same treatment,
   // with the podcast name taking the sub line's place so no gap is left.
   const miniBuild = stripComments(region('const mini = el(', '$player.appendChild(mini);', APP_JS));
@@ -2740,8 +2817,16 @@ test('WS14 Part B: the header spacer IS the artwork column, and it is width-only
   assert.ok(!/player-btn-close[\s\S]*?width: var\(--player-art\)/.test(
     stripComments(region('.player-header {', '.player-row {', STYLES_WS5))),
   'no header button may be --player-art wide, or the text is pushed off the pills\' edge');
-  assert.ok(HEADER_ROW_WS12.indexOf('headerSpacer') < HEADER_ROW_WS12.indexOf('player-title'),
-    'the spacer must be the FIRST cell, so the text starts on the artwork edge');
+  // ---- WS19: the anchor is now `.player-sub`, not `.player-title` ----
+  // The bold channel title left the header, so it can no longer be the probe
+  // for "the text starts on the artwork edge". The requirement is unchanged and
+  // the header's only text cell is now `.player-sub`, so that is the anchor.
+  // The spacer must still come FIRST, or the text starts at x=0 instead of at
+  // the artwork's right edge -- the alignment WS5b exists to hold.
+  assert.ok(HEADER_ROW_WS12.indexOf('headerSpacer') < HEADER_ROW_WS12.indexOf('player-sub'),
+    'the spacer must be the FIRST cell, so the text starts on the artwork edge (WS19: anchored on .player-sub)');
+  assert.ok(!/player-title/.test(HEADER_ROW_WS12),
+    'the bold title must NOT be back in the header (WS19)');
   assert.ok(HEADER_ROW_WS12.indexOf('player-sub') < HEADER_ROW_WS12.indexOf('expandBtn'),
     'the button pair must come AFTER the texts, to look like the minimised bar');
   assert.ok(HEADER_ROW_WS12.indexOf('expandBtn') < HEADER_ROW_WS12.indexOf('closeBtn'),
@@ -3150,4 +3235,110 @@ test('WS18: the song-row CSS must make the song truncate and the pill stick righ
     'the pill must be pushed to the right-hand end of the song row');
   assert.ok(/flex:\s*none/.test(pill),
     'the pill must never be squeezed or wrapped by a long song');
+});
+
+// ===================================================================
+// WS19: pill hidden by a long song, the missing .player-time-song rule,
+// the bold header duplicate, and the lock-screen artist.
+// ===================================================================
+
+test('WS19: .player-time-song MUST have a CSS rule with min-width:0', () => {
+  // THE BUG, measured not inferred: `app.js` builds
+  //   .player-time-row > .player-time-song > .now-playing-line
+  // but only a COMMENT ever described `.player-time-song`. With no rule it was
+  // a plain block flex item, so `min-width` resolved to `auto` and it refused
+  // to shrink below its text. A 455px song then pushed the pill to
+  // right=577px on a 390px viewport -- 187px off-screen, i.e. invisible.
+  //
+  // The WS18 test suite passed the whole time, because every assertion looked at
+  // `.player-time-row .now-playing-line` and never at the WRAPPER. The wrapper
+  // is the flex item; the line is a block inside it. Giving the line
+  // `min-width: 0` cannot help, so this asserts the wrapper directly.
+  const wrap = region('.player-time-song {', '.player-time-row .now-playing-line {', STYLES_WS5);
+  assert.ok(wrap.includes('min-width: 0'),
+    '.player-time-song needs min-width: 0 or it refuses to shrink and pushes the pill off-screen (WS19)');
+  assert.ok(/flex:\s*1 1 auto/.test(wrap),
+    '.player-time-song must be the growing flex child');
+  assert.ok(/overflow:\s*hidden/.test(wrap),
+    '.player-time-song must clip, or the rolling text paints over the pill (WS19)');
+  // A rule that exists but is empty would satisfy an `includes` check above,
+  // so the property must be inside the braces.
+  const body = wrap.slice(wrap.indexOf('{') + 1, wrap.indexOf('}'));
+  assert.ok(/min-width:\s*0/.test(body), 'min-width: 0 must be INSIDE the rule body (WS19)');
+});
+
+test('WS19: the roll must be on an inner track, never on the overflow window', () => {
+  // Translating `.now-playing-line` itself would move the WINDOW and expose the
+  // gap behind it. The window stays put; an inner `.roll-track` slides under it.
+  const css = STYLES_WS5;
+  assert.ok(/\.player-time-song \.now-playing-line > \.roll-track/.test(css),
+    'the animated element must be an inner .roll-track, not the overflow window (WS19)');
+  assert.ok(!/^\.now-playing-line\.rolling|^\.player-time-row \.now-playing-line \{[^}]*animation/m.test(css),
+    'the animation must never be attached to the overflow window itself (WS19)');
+  // The class is set by JS only when the text overflows, so a short song cannot
+  // drift. Reduced motion must disable it outright.
+  assert.ok(/\.rolling > \.roll-track/.test(css), 'the roll must be gated on the .rolling class (WS19)');
+  assert.ok(/@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.rolling > \.roll-track[\s\S]*?animation:\s*none/.test(css),
+    'prefers-reduced-motion must switch the roll off (WS19: continuous motion is an accessibility problem)');
+  // Alternate + ease-in-out gives the pause-at-each-end lock-screen feel.
+  assert.ok(/animation:\s*sr-song-roll[^;]*infinite alternate/.test(css),
+    'the roll must alternate, so it pauses at each end rather than snapping back (WS19)');
+});
+
+test('WS19: the roll must be decided from a MEASUREMENT, after layout', () => {
+  const paint = stripComments(region('function paintNowPlaying()', 'function paintProgramTitle('));
+  // Reading scrollWidth synchronously would measure the OLD text, because the
+  // line was just emptied and refilled. The rAF is the earliest correct point.
+  assert.ok(/requestAnimationFrame/.test(paint),
+    'the overflow measurement must be deferred to a rAF (WS19: sync reads measure the old text)');
+  assert.ok(/scrollWidth\s*-\s*line\.clientWidth/.test(paint),
+    'the decision must compare the text width against the box (WS19)');
+  // Both directions must be handled: a long song rolls, and a short one after a
+  // long one must STOP rolling. One-way handling is a visible regression.
+  assert.ok(/classList\.add\('rolling'\)/.test(paint) && /classList\.remove\('rolling'\)/.test(paint),
+    'both the rolling and the non-rolling branch must exist (WS19)');
+  assert.ok(/isConnected/.test(paint),
+    'the rAF callback must bail if the player was re-rendered away (WS19)');
+  // The text must go in the track, with the note OUTSIDE it.
+  assert.ok(/class: 'roll-track'/.test(paint) && /class: 'roll-prefix'/.test(paint),
+    'the song text goes in .roll-track and the note stays outside it (WS19)');
+});
+
+test('WS19: the MediaSession artist must CONTAIN the song artist', () => {
+  // Measured live on P3: title AND artist both read "P3 Din Gata: Musik", so
+  // the lock screen and the car head unit showed one string twice and the
+  // performer never appeared. The cause was not fallback ordering --
+  // `songArtist` was computed and then used ONLY as a boolean:
+  //     metaArtist = songArtist ? [programme, channel].join(' · ') : ...
+  // so the artist field never received a character of the actual performer.
+  const fn = stripComments(region('function updateMediaSession()', '// ---- buffering indicator'));
+  assert.ok(/\[songArtist, programme, channel\]\.filter\(Boolean\)\.join\(' · '\)/.test(fn),
+    'the artist field must include songArtist, not merely branch on it (WS19)');
+  // The boolean-only form is the exact bug, so assert it is gone.
+  assert.ok(!/songArtist\s*\?\s*\[programme, channel\]/.test(fn),
+    "the boolean-only form is the WS19 bug and must not come back");
+  // The no-song fallback must still identify a talk channel.
+  assert.ok(/:\s*\(programme \|\| channel\)/.test(fn),
+    'with no song the artist must still fall back to programme, then channel (WS19)');
+  // And the title must prefer the song, or the pair is reversed.
+  assert.ok(/songTitle \|\| programme/.test(fn), 'the title must prefer the song (WS19)');
+});
+
+test('WS19: the header must not carry the bold duplicate channel name', () => {
+  const header = stripComments(region('const headerLine = el(', '$player.appendChild(headerLine);', APP_JS));
+  assert.ok(!/class: 'player-title'/.test(header),
+    'the bold channel title must not be in the header: it duplicated the meta row (WS19)');
+  // The channel name must still reach the player -- in the meta row, which is
+  // where the owner asked for it ("the same exactly as ... just above the pill").
+  const meta = stripComments(region('const identityName = isLive', 'const metaRowTop', APP_JS));
+  assert.ok(/cur\.title/.test(meta),
+    'the channel name must be the meta row\'s identity child (WS19)');
+  // .player-sub is load-bearing: paintProgramTitle targets it by name.
+  assert.ok(/class: 'player-sub'/.test(header),
+    '.player-sub must survive in the header, or programme painting dies silently (WS19)');
+  assert.ok(APP_JS.includes("querySelector('.player-sub')"),
+    'paintProgramTitle must still reach .player-sub (WS19)');
+  // The dead scoped rule must be gone, or a reader assumes two text cells.
+  assert.ok(!/\.player-header \.player-title \{/.test(STYLES_WS5),
+    'the dead .player-header .player-title rule must be deleted (WS19)');
 });
