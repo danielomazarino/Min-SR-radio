@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '732260a';
+  const APP_BUILD = 'aa5a8ac';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -1149,17 +1149,28 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     const panel = $player.querySelector('.player-expand');
     if (panel && typeof panel._srRepaint === 'function') {
       panel._srRepaint();
-      // The episode painter deliberately has no compact song line; this
-      // paint call exists to refresh the expanded episode view only.
-      if (isEpisode) return;
+      // WS15: this early return was the second half of the podcast bug. Even
+      // with the kind === 'live' gate below removed, an episode would still
+      // RETURN here before reaching the MediaSession refresh -- and an episode
+      // is exactly the case that needs it. Removed deliberately; the comment
+      // about "the episode painter deliberately has no compact song line"
+      // describes why the compact line is skipped, not why the car should
+      // stop hearing about the song.
     }
-    // ---- WS11 Part C: keep the car / lock screen in step with the song ----
-    // The seven updateMediaSession() call sites all fire on track load, stop
-    // and playstate. NONE fires when the song changes, so fixing the fields
-    // alone would leave the car screen showing the previous song forever.
+    // ---- WS11 Part C / WS15: keep the car / lock screen in step with the song ----
+    // The updateMediaSession() call sites all fire on track load, stop and
+    // playstate. NONE fire when the song changes, so fixing the fields alone
+    // would leave the car screen showing the previous song forever.
     // paintNowPlaying is called only when the song actually CHANGES, so
     // refreshing here is already change-gated and cannot loop on timeupdate.
-    if (cur && cur.kind === 'live') updateMediaSession();
+    //
+    // WS15: this was `kind === 'live'`, which meant a PODCAST NEVER REACHED IT.
+    // Measured live on P3 Soul (pod 2680), the app showing "♪ Kehlani – Folded"
+    // while the car and lock screen both read "Kehlani och Kärleken till Frida"
+    // in the title AND the artist field -- the episode name twice, which is
+    // what the owner reported from the Volvo. Removing the episode early
+    // return above AND this gate is the whole fix.
+    if (cur) updateMediaSession();
   }
 
   // ---- Pågår nu-programmet som undertitel (användarönskemål 2026-09-23) ----
@@ -1674,17 +1685,43 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       //   album  = the channel
       // With no song (talk radio) the title falls back to the programme, so a
       // talk channel is still identifiable.
+      //
+      // ---- WS15: podcasts get the RADIO treatment, not a special case ----
+      // The owner: replicate the radio channel's order for podcasts. On radio
+      // the pair reads "<song> / <programme> · <channel>"; for a podcast the
+      // same shape is "<song> / <podcast name>", and album carries the episode
+      // name. Specifically:
+      //   - artist falls back to the PODCAST NAME, not the literal "Min Radio"
+      //   - the EPISODE NAME takes the place of the programme title
+      //
+      // Before this, an episode produced metaTitle = episode name and
+      // metaArtist = episode name, because `programme` is only ever set for a
+      // live channel and `channel` (cur.title) IS the episode name on an
+      // episode object. Both fields therefore held the same string and the car
+      // displayed the episode title twice. Measured live on P3 Soul.
       const curSong = cur.kind === 'episode'
         ? episodeCurrentTrack
         : pickByPosition(nowPlaying.timeline, playheadWallMs());
-      const programme = (cur.kind === 'live' && cur._srProgramTitle) ? cur._srProgramTitle : null;
-      const songTitle = curSong && curSong.title ? curSong.title : null;
+      // For an episode, cur.title is the EPISODE name and cur.programName is
+      // the PODCAST name -- they are swapped relative to a live channel, where
+      // cur.title is the channel and _srProgramTitle is the programme.
+      const programme = (cur.kind === 'live' && cur._srProgramTitle)
+        ? cur._srProgramTitle
+        : null;
+      // "Second line" = what plays the song. Radio: programme, then channel.
+      // Podcast: the podcast name. Never the episode name -- that is the
+      // album, and repeating it is the bug this replaces.
       const songArtist = curSong && curSong.artist ? curSong.artist : null;
-      const channel = cur.title || 'Min Radio';
-      const metaTitle = songTitle || programme || channel;
+      const songTitle = curSong && curSong.title ? curSong.title : null;
+      const channel = cur.kind === 'episode'
+        ? (cur.programName || cur.subtitle || 'Min Radio')
+        : (cur.title || 'Min Radio');
+      const metaTitle = songTitle || programme || (cur.kind === 'episode' ? cur.title : channel) || channel;
       const metaArtist = songArtist
         ? [programme, channel].filter(Boolean).join(' · ')
         : (programme || channel);
+      // Album: the channel on radio, the EPISODE name on a podcast.
+      const album = cur.kind === 'live' ? channel : (cur.title || 'Min Radio');
       // Artwork: real now-playing artwork when it exists, then the track's own
       // image, then the PWA icon.
       //
@@ -1699,10 +1736,14 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       const artworkSrc = (cur.kind === 'live' ? nowPlaying.artwork : null)
         || cur.artwork
         || 'icons/icon-512.png';
+      // Album: the channel on radio, the EPISODE name on a podcast. Wired up
+      // here because the owner asked for the episode name to take the
+      // programme's place; leaving the inline literal would silently discard
+      // `album` and reintroduce the episode name into the title field.
       mediaSession.metadata = new MediaMetadata({
         title: metaTitle,
         artist: metaArtist,
-        album: cur.kind === 'live' ? channel : 'Min Radio',
+        album,
         artwork: [{
           src: artworkSrc,
           sizes: '512x512',
@@ -2256,7 +2297,31 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // the WS0 diagnostics snapshot the same. Renaming or moving either out of
     // $player's subtree silently breaks programme titles, now-playing text and
     // the snapshot.
-    const meta = el('div', { class: 'player-meta' }, quality, mode);
+    //
+    // ---- WS15: the PODCAST NAME, above the pill, for episodes only ----
+    // Owner (2026-09-27): "the podcast name in the player should move to the
+    // space between 'Kehlani...' and pill MP3". On a live channel the header
+    // already carries channel + programme, so meta needs nothing extra. On a
+    // PODCAST the header carries the EPISODE name, and the podcast name was
+    // only ever visible as the small grey subtitle inside the expanded panel
+    // ("SPELAS JUST NU" block) -- never in the compact player. So the podcast
+    // name goes here as the FIRST child of meta, above the quality pill.
+    //
+    // Wrapped in its own .player-podcast-name rather than reusing .player-sub:
+    // .player-sub is LOAD-BEARING (paintProgramTitle writes into it, and the
+    // WS0 snapshot reads it). Writing the podcast name there would fight the
+    // programme-title painter. This element is static per render -- it never
+    // changes while the episode plays, so it needs no repaint plumbing.
+    //
+    // Radio must be untouched: the pill row is unchanged, and this element is
+    // simply absent, so `.player-meta` keeps exactly two children there.
+    const podcastName = !live && (cur.programName || cur.subtitle)
+      ? el('div', {
+          class: 'player-podcast-name',
+          text: cur.programName || cur.subtitle,
+        })
+      : null;
+    const meta = el('div', { class: 'player-meta' }, podcastName, quality, mode);
 
     // Fas 4 (redesign 2026-09-23): NO one-click expansion — accidental taps
     // opened it. Instead: a dedicated chevron handle in the player header
