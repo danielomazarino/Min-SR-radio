@@ -1573,8 +1573,22 @@ test('WS5 Item 4: the layout CSS exists and narrow viewports are handled', () =>
   assert.ok(/\.player\s*\{[^}]*--player-gap/.test(narrow),
     'the header column must still be handled at 340px so it cannot cramp');
   // Legibility must not be bought back with font sizes.
-  assert.ok(!/\.player-header[^{]*\{[^}]*font-size:\s*1[01](\.\d)?px/.test(STYLES_WS5),
+  // WS15: the pattern is anchored to `\{` so it can only match a real RULE,
+  // not prose. It previously used `[^{]*\{`, which matched ACROSS comment text,
+  // so a CSS comment mentioning `.player-header` and a font size was enough to
+  // fail the guard. That is the comment-pattern trap in the direction where a
+  // comment causes a FALSE FAILURE. The requirement is unchanged: no header
+  // rule may shrink its own font size.
+  assert.ok(!/\.player-header[^{}]*\{[^}]*font-size:\s*1[01](\.\d)?px/.test(stripComments(STYLES_WS5)),
     'the header must not shrink the base font sizes to claw back space');
+  // WS15: the podcast name must CLIP, never wrap. `.player-meta` is
+  // `flex: 1 1 0%` with `min-width: 0`, so a wrap would raise the row height
+  // and move the quality pill below it -- the WS9/WS11/WS12 regression class.
+  const podName = stripComments(region('.player-podcast-name {', '.player-quality {', STYLES_WS5));
+  assert.ok(/white-space: nowrap/.test(podName),
+    'the podcast name must not wrap, it must clip');
+  assert.ok(/text-overflow: ellipsis/.test(podName),
+    'the podcast name must ellipsize rather than wrap');
   // The song line must still be its own row below the player.
   assert.ok(STYLES_WS5.includes('.now-playing-line {'),
     'the song line must still be styled');
@@ -2485,10 +2499,44 @@ test('WS11 Part C: MediaSession carries the position-aware programme and song', 
   assert.ok(/_srProgramTitle/.test(MEDIA_SESSION),
     'the programme at the playhead must be used');
   // Two lines on a car head unit: title = song, artist = programme + channel.
-  assert.ok(/const metaTitle = songTitle \|\| programme \|\| channel;/.test(MEDIA_SESSION),
-    'the title must prefer the song, then the programme, then the channel');
+  //
+  // WS15: the FALLBACK CHAIN differs by kind, because on an episode `cur.title`
+  // is the EPISODE name while on a live channel it is the channel -- the two
+  // fields are swapped. Asserted explicitly rather than as one literal string,
+  // because a single regex over a combined expression cannot tell a podcast's
+  // fallback from a radio channel's.
+  assert.ok(/const metaTitle = songTitle \|\| programme \|\|/.test(MEDIA_SESSION)
+    && /cur\.kind === 'episode' \? cur\.title : channel/.test(MEDIA_SESSION),
+  'the title must prefer the song, then the programme, then (episode name on a podcast / channel on radio)');
   assert.ok(/songArtist/.test(MEDIA_SESSION) && /programme, channel/.test(MEDIA_SESSION),
     'the artist line must carry the song artist plus programme and channel');
+  // ---- WS15: the podcast may never repeat the episode name ----
+  // Measured live on P3 Soul (pod 2680): with the old mapping an episode put
+  // `cur.title` (the episode name) in BOTH title and artist, because
+  // `programme` is only ever set for a live channel. The Volvo rendered the
+  // same string on both lines, which the owner reported as the episode title
+  // appearing twice.
+  assert.ok(/cur\.kind === 'episode'/.test(MEDIA_SESSION)
+    && /cur\.programName \|\| cur\.subtitle \|\| 'Min Radio'/.test(MEDIA_SESSION),
+  "for a podcast the artist/channel line must be the PODCAST name, not the episode name");
+  assert.ok(/const album = cur\.kind === 'live' \? channel : \(cur\.title \|\| 'Min Radio'\)/.test(MEDIA_SESSION),
+    'the album must carry the EPISODE name on a podcast, the channel on radio');
+  assert.ok(/^\s*album,$/m.test(MEDIA_SESSION),
+    'the computed album must actually be passed to MediaMetadata, not left as a dead const');
+  // The podcast name must also appear in the compact player, and only for an
+  // episode -- a live channel already shows channel + programme in the header.
+  const podNameEl = stripComments(region('const podcastName =', 'const meta = el(', APP_JS));
+  assert.ok(/!live && \(cur\.programName \|\| cur\.subtitle\)/.test(podNameEl),
+    'the podcast name element must exist for episodes only');
+  assert.ok(/el\('div', \{ class: 'player-meta' \}, podcastName, quality, mode\)/.test(
+    stripComments(region('const podcastName =', '$player.appendChild', APP_JS))),
+  'the podcast name must be the FIRST child of .player-meta, above the quality pill');
+  // It must NOT reuse .player-sub: that is load-bearing (paintProgramTitle
+  // writes into it, the WS0 snapshot reads it). Writing there would fight the
+  // programme painter and re-truncate the name to "P3 ..." -- the symptom the
+  // owner screenshotted.
+  assert.ok(!/class: 'player-sub'/.test(podNameEl),
+    'the podcast name must not reuse .player-sub');
   // Artwork: real artwork when it exists, then the track image, then the icon.
   // Episodes deliberately set artwork: null, so nothing is invented.
   assert.ok(/nowPlaying\.artwork/.test(MEDIA_SESSION) && /cur\.artwork/.test(MEDIA_SESSION)
@@ -2509,6 +2557,25 @@ test('WS11 Part C: the session is REFRESHED when the metadata changes', () => {
     'a song change must refresh the MediaSession');
   assert.ok(/updateMediaSession\(\);/.test(PT),
     'a programme change must refresh the MediaSession');
+  // ---- WS15: the call must be UNGATED, and there must be no early return ----
+  // This is the assertion whose absence let the podcast bug survive two
+  // workstreams. The two assertions above only prove the call EXISTS, so they
+  // pass just as happily behind `if (cur.kind === 'live')` -- which is exactly
+  // what it was. A test that cannot tell a gated call from an ungated one is
+  // not a test of the behaviour.
+  //
+  // The bug had TWO independent causes, and fixing either alone leaves the
+  // other: (1) the `kind === 'live'` gate below, and (2) an `if (isEpisode)
+  // return;` earlier in the same function, which returned BEFORE the call.
+  // Both are asserted, because both were present.
+  assert.ok(/if \(cur\) updateMediaSession\(\);/.test(PN),
+    'the song-change refresh must be UNGATED -- a live-only gate silently '
+    + 'stops every podcast from reaching the car (WS15)');
+  assert.ok(!/if \(cur && cur\.kind === 'live'\) updateMediaSession\(\)/.test(PN),
+    'the live-only gate must not come back (WS15)');
+  assert.ok(!/return;/.test(PN.slice(PN.indexOf('panel._srRepaint'))),
+    'nothing may return from paintNowPlaying before the MediaSession refresh; '
+    + 'an `if (isEpisode) return;` after the panel repaint is what blocked podcasts (WS15)');
   // Loop safety: both painters run on timeupdate (~4/s). They must only be
   // called on a CHANGE -- that is the caller's existing change-detection, so
   // the hook must not add an unconditional path.

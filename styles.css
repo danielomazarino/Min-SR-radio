@@ -832,6 +832,35 @@ body.player-gesture-lock {
 
 .player-meta { min-width: 0; flex: 1; }
 
+/* ---- WS15: the podcast name, above the quality pill ----
+   Owner (2026-09-27): "the podcast name in the player should move to the
+   space between 'Kehlani...' and pill MP3". The header carries the EPISODE
+   name on a podcast, and the podcast name was previously only visible as the
+   small grey subtitle in the expanded panel. This puts it in the compact
+   player, directly above the pill.
+
+   Width-only discipline, same as .player-header-spacer: `.player-meta` is
+   `flex: 1 1 0%` with `min-width: 0`, so it absorbs a width deficit all the
+   way to ZERO and never pushes back. A long podcast name here must therefore
+   CLIP, never wrap — a wrap would raise the row height and the pill below it
+   would move, which is the WS9/WS11/WS12 class of regression. `nowrap` plus
+   `text-overflow: ellipsis` degrades it the way the pills do.
+
+   Deliberately NOT reusing .player-sub: that element is load-bearing
+   (paintProgramTitle writes into it and the WS0 snapshot reads it).
+
+   Sits at 11px in the secondary colour, between the 14px header title and the
+   10px pill — it is context, not the primary label. */
+.player-podcast-name {
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
 .player-title {
   font-size: 14px;
   font-weight: 600;
