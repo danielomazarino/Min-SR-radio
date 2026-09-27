@@ -39,7 +39,18 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // build computes that hash AFTER writing dist/app.js, so injecting it would
   // change the content, which would change the hash, which would change the id
   // -- an infinite loop. The git SHA is external to the bundle's bytes.
-  const APP_VERSION = '1.5.0';
+  // ---- WS11 Part B: the build identity, and no frozen version ----
+  // `APP_VERSION` used to be the literal '1.5.0', unchanged since long before
+  // WS6. A version string that never moves but is displayed as a version is a
+  // lie: the owner read "Version 1.5.0" on every build and could not tell which
+  // code a device was running -- the ambiguity that caused the WS6-WS9 loop.
+  //
+  // It is REMOVED rather than bumped. A hand-bumped number would repeat the
+  // problem one release later, and it is not evidence of anything. The build id
+  // (the short SOURCE commit, injected by scripts/build-pages.mjs) is the
+  // honest identity: it names the exact code, and `git log <id>` resolves it.
+  // package.json's version is the single remaining version source; this app
+  // deliberately does not display it, because it is not per-build.
   const APP_BUILD = '745493c';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
@@ -1108,6 +1119,13 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       // paint call exists to refresh the expanded episode view only.
       if (isEpisode) return;
     }
+    // ---- WS11 Part C: keep the car / lock screen in step with the song ----
+    // The seven updateMediaSession() call sites all fire on track load, stop
+    // and playstate. NONE fires when the song changes, so fixing the fields
+    // alone would leave the car screen showing the previous song forever.
+    // paintNowPlaying is called only when the song actually CHANGES, so
+    // refreshing here is already change-gated and cannot loop on timeupdate.
+    if (cur && cur.kind === 'live') updateMediaSession();
   }
 
   // ---- Pågår nu-programmet som undertitel (användarönskemål 2026-09-23) ----
@@ -1124,6 +1142,12 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // program title may have resolved AFTER the panel was opened.
     const panel = $player.querySelector('.player-expand');
     if (panel && typeof panel._srRepaint === 'function') panel._srRepaint();
+    // ---- WS11 Part C: a programme change must reach the car / lock screen ----
+    // Same reasoning as paintNowPlaying: the programme title is the fallback
+    // title on a talk channel, and the artist line on a music one, so a
+    // change here changes what the car shows. Called on change, not on
+    // timeupdate, so there is no loop.
+    if (state.current && state.current.kind === 'live') updateMediaSession();
   }
 
   // ---- WS9: the playhead's WALL-CLOCK position, shared by every consumer ----
@@ -1601,16 +1625,58 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       return;
     }
     try {
+      // ---- WS11 Part C: feed the car and lock screen what the app shows ----
+      // This used to be `cur.title` / `cur.subtitle` -- the channel name and a
+      // static string. Everything WS9 built (the position-aware programme and
+      // song) was invisible here, which is exactly the reported symptom: the
+      // car showed the channel but never the song or artist.
+      //
+      // The values are the SAME ones the in-app display uses, selected the same
+      // way, so the car screen cannot disagree with the phone.
+      //
+      // Layout: a car head unit and the lock screen show two lines, so
+      //   title  = the song (the most specific thing playing)
+      //   artist = programme, then channel
+      //   album  = the channel
+      // With no song (talk radio) the title falls back to the programme, so a
+      // talk channel is still identifiable.
+      const curSong = cur.kind === 'episode'
+        ? episodeCurrentTrack
+        : pickByPosition(nowPlaying.timeline, playheadWallMs());
+      const programme = (cur.kind === 'live' && cur._srProgramTitle) ? cur._srProgramTitle : null;
+      const songTitle = curSong && curSong.title ? curSong.title : null;
+      const songArtist = curSong && curSong.artist ? curSong.artist : null;
+      const channel = cur.title || 'Min Radio';
+      const metaTitle = songTitle || programme || channel;
+      const metaArtist = songArtist
+        ? [programme, channel].filter(Boolean).join(' · ')
+        : (programme || channel);
+      // Artwork: real now-playing artwork when it exists, then the track's own
+      // image, then the PWA icon. Episodes deliberately set artwork: null
+      // (ENHANCEMENTS.md), so the programme/icon fallback is what a podcast
+      // shows -- no artwork is invented.
+      const artworkSrc = (cur.kind === 'live' ? nowPlaying.artwork : null)
+        || cur.artwork
+        || 'icons/icon-512.png';
       mediaSession.metadata = new MediaMetadata({
-        title: cur.title || 'Min Radio',
-        artist: cur.subtitle || (cur.kind === 'live' ? 'Sveriges Radio – direkt' : 'Sveriges Radio'),
-        album: 'Min Radio',
+        title: metaTitle,
+        artist: metaArtist,
+        album: cur.kind === 'live' ? channel : 'Min Radio',
         artwork: [{
-          src: cur.artwork || 'icons/icon-512.png',
+          src: artworkSrc,
           sizes: '512x512',
           type: 'image/png',
         }],
       });
+      // Change-detection: these functions run on timeupdate (~4/s), so the
+      // session is only rebuilt when the metadata actually differs. Without
+      // this the car screen would keep stale text forever, because no other
+      // call site fires on a song or programme change.
+      const signature = `${metaTitle}\\u0000${metaArtist}\\u0000${artworkSrc}`;
+      if (signature !== META_DIAG.lastMediaSignature) {
+        META_DIAG.lastMediaSignature = signature;
+        diagLog('mediasession-metadata-changed');
+      }
       mediaSession.playbackState = audioEl.paused ? 'paused' : 'playing';
     } catch { /* never let metadata break playback */ }
     // Push the position immediately, then keep it roughly fresh.
@@ -2367,44 +2433,21 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       // Program-skip buttons live in the MAIN controls row now (created
       // below); the schedule wiring happens after they exist.
 
-      // ---- WS9 Part C: the DVR window, in ONE screenshot ----
-      // The skip button failed five times because every offline model had to
-      // ASSUME the window length: the toast hardcoded "3 timmar", so the real
-      // value was never recorded anywhere. This readout derives it from
-      // cur.seekableStart / cur.seekableEnd and shows nothing when they are
-      // unknown -- never a guess, never a literal.
-      // It sits in the seek row (below the WS5b header), so the header's
-      // alignment is untouched.
-      const windowReadout = el('div', { class: 'dvr-window-readout' });
-      const paintWindowReadout = () => {
-        const s = cur.seekableStart;
-        const e = cur.seekableEnd;
-        if (!Number.isFinite(s) || !Number.isFinite(e) || e <= s) {
-          // Unknown window: say nothing rather than assert a number.
-          windowReadout.textContent = '';
-          windowReadout.removeAttribute('title');
-          return;
-        }
-        const clock = (ms) => new Date(ms * 1000).toLocaleTimeString('sv-SE', {
-          hour: '2-digit', minute: '2-digit',
-        });
-        const secs = Math.round(e - s);
-        // Round sensibly: minutes below an hour, hours+minutes above.
-        let len;
-        if (secs < 3600) {
-          len = `${Math.round(secs / 60) / 1} min`;
-        } else {
-          const h = Math.floor(secs / 3600);
-          const m = Math.round((secs - h * 3600) / 60);
-          len = m ? `${h} h ${m} min` : `${h} h`;
-        }
-        windowReadout.textContent = `${clock(s)} – ${clock(e)} · ${len} spolbart`;
-        windowReadout.title = `DVR-fönstret: ${clock(s)} till ${clock(e)} (${len})`;
-      };
-      paintWindowReadout();
-
+      // ---- WS11 Part A: the DVR window readout is REMOVED from the seek row ----
+      // The readout (WS9 Part C) was a third flex child of .seek-row, and a flex
+      // container shares width among its children -- so it took width AWAY from
+      // the seek bar. The owner saw a shorter slider and bottom-right chrome
+      // they never asked for. The value was never the problem; putting it HERE
+      // was.
+      //
+      // The value is NOT lost: it still lives in the gated diagnostics snapshot
+      // as dom.nextProgram.press.windowSeconds (and on the one-line report as
+      // `dvrWindow`), both derived from cur.seekableStart / cur.seekableEnd.
+      // That is where it belonged all along -- a diagnostic that renders nothing
+      // on screen. It is what proved the window is 3 h 1 min and retired a
+      // multi-day enquiry, and it can still be read without touching the player.
       seekRow = el('div', { class: 'seek-row dvr-row' },
-        timeLeft, bar, windowReadout);
+        timeLeft, bar);
       const fill = bar.querySelector('.seek-fill');
       const thumb = bar.querySelector('.seek-thumb');
 
@@ -3407,19 +3450,23 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // already carries the same attribution plus the independent-app
     // disclaimer, so nothing is lost. Intentionally NOT re-added here.
 
-    // ---- WS10: the build identity, in the slot the footer used to occupy ----
-    // This is NOT the old attribution footer. No attribution, no link and no
-    // disclaimer are restored here -- those live in the About overlay, and
-    // WS5 removed them from this screen deliberately. Only the build id.
+    // ---- WS11 Part B: the build line has MOVED out of the content flow ----
+    // WS10 put it at the very bottom of the home screen, where it was only
+    // visible when the player happened to be closed and it scrolled away. It
+    // now lives in the top bar, beside the settings affordance, where it
+    // cannot be occluded or scrolled out of sight.
     //
-    // The owner asked for it on the main screen because `APP_VERSION` has read
-    // "1.5.0" on every build since before WS6, so neither of us could tell
-    // which code a device was running. `APP_BUILD` is the short git SHA the
-    // bundle was built from, injected by scripts/build-pages.mjs.
-    $main.appendChild(el('p', {
+    // This is still NOT the WS5 attribution footer: no attribution, no link, no
+    // disclaimer -- those remain in the About overlay only.
+    const buildLine = el('p', {
       class: 'build-line',
-      text: `Version ${APP_VERSION} · bygg ${APP_BUILD}`,
-    }));
+      text: `bygg ${APP_BUILD}`,
+    });
+    // `.topbar` is the header row in index.html (brand + settings button).
+    // Appended rather than inserted so it lands after the button, at the far
+    // right -- the one place on the home screen that is always on screen.
+    const bar = document.querySelector('.topbar');
+    if (bar) bar.appendChild(buildLine);
 
     updatePlayingMarks();
   }
@@ -3441,7 +3488,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     const body = el('div', { class: 'reader-body about-body' });
 
     body.appendChild(el('h2', { class: 'about-title', text: 'Om Min Radio' }));
-    body.appendChild(el('p', { class: 'about-version', text: `Version ${APP_VERSION} · bygg ${APP_BUILD} · Utvecklad av ${APP_DEVELOPER}` }));
+    body.appendChild(el('p', { class: 'about-version', text: `bygg ${APP_BUILD} · Utvecklad av ${APP_DEVELOPER}` }));
 
     body.appendChild(el('h3', { class: 'about-heading', text: 'Så fungerar appen' }));
     const items = [

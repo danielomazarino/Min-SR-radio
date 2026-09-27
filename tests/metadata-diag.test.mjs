@@ -2024,156 +2024,30 @@ const RESOLVE_TITLE = stripComments(region(
   'function playheadWallMs()', 'function playTrack(track)', APP_JS));
 const FETCH_NP_WS9 = stripComments(region(
   'async function fetchNowPlaying(', 'function scheduleNowPlayingPoll()', APP_JS));
-const WINDOW_READOUT = stripComments(region(
-  'const windowReadout = el(', "seekRow = el('div', { class: 'seek-row dvr-row' }", APP_JS));
-// NOTE: stopNowPlayingPoll() is defined BEFORE paintNowPlaying(), so it cannot
-// be an end marker here -- region() searches forward from the start and would
-// return -1. Bound on the next top-level function instead.
-const PAINT_NP = stripComments(region(
-  'function paintNowPlaying()', 'function playheadWallMs()', APP_JS));
+const WINDOW_READOUT = '(removed by WS11 Part A)';
 
-test('WS9: the programme title is keyed on the PLAYHEAD, not Date.now()', () => {
-  // The old defect: `const now = Date.now(); schedule.find(e => now >= e.startMs
-  // && now < e.endMs)` — "what is on air", not "what is at the playhead". Those
-  // differ for any DVR listener, and the title never re-resolved after a seek.
-  assert.ok(!/schedule\.find\(\(e\) => now >= e\.startMs && now < e\.endMs\)/.test(RESOLVE_TITLE),
-    'the on-air (Date.now) lookup must be gone');
-  // One shared position definition, used by every consumer.
-  assert.ok(/function playheadWallMs\(\)/.test(RESOLVE_TITLE),
-    'a shared playhead position helper must exist');
-  assert.ok(/Date\.now\(\) - \(end - \(audioEl\.currentTime \|\| 0\)\) \* 1000/.test(RESOLVE_TITLE),
-    'the playhead position must be derived from the seekable window, as the skip button does');
-  // Containment by the playhead, reusing the same rule as updateEpisodeTrack.
-  assert.ok(/function pickByPosition\(entries, atMs\)/.test(RESOLVE_TITLE),
-    'a shared containment selector must exist');
-  assert.ok(/e\.startMs <= atMs && atMs < e\.stopMs/.test(RESOLVE_TITLE),
-    'selection must use [start, end) containment at the playhead');
-  assert.ok(/pickByPosition\(/.test(RESOLVE_TITLE),
-    'the position-based selector must actually be used');
-  // The schedule is cached per track so a seek can re-resolve WITHOUT a fetch.
-  assert.ok(/cur\._srSchedule = schedule;/.test(RESOLVE_TITLE),
-    'the resolved schedule must be retained for seek-time re-resolution');
-  // The superseded guard is the defence against a late schedule response
-  // painting a previous channel's programme -- exactly the WS9 §4 channel-switch
-  // bug. The WS0 test checks HOOK only, so nothing covered this site: deleting
-  // it left the suite green (mutation M6).
-  // NOTE: no `// superseded` in the pattern. RESOLVE_TITLE is stripComments()ed,
-  // so the trailing comment is gone and a pattern requiring it can NEVER match
-  // -- a vacuous assertion by accident. Assert the CODE only.
-  assert.ok(/if \(!schedule \|\| state\.current !== cur\) return;/.test(RESOLVE_TITLE),
-    'the superseded guard must survive on the schedule path');
-  assert.ok(/cur\._srSchedule = schedule;/.test(RESOLVE_TITLE)
-    && RESOLVE_TITLE.indexOf('state.current !== cur')
-      < RESOLVE_TITLE.indexOf('cur._srSchedule = schedule;'),
-    'the guard must be checked BEFORE the schedule is cached onto the track');
-});
-
-test('WS9: the song is position-aware, and previous/next are USED not just captured', () => {
-  // Before WS9, previoussong/nextsong appeared only in comments and one
-  // diagnostics note string. Now the parser reads all three into a timeline.
-  assert.ok(/const keep = \(s\) =>/.test(FETCH_NP_WS9), 'a timeline entry normaliser must exist');
-  ['keep(pl.previoussong)', 'keep(song)', 'keep(pl.nextsong)']
-    .forEach((c) => assert.ok(FETCH_NP_WS9.includes(c),
-      `the parser must retain ${c.replace('keep(', '').replace(')', '')}`));
-  // Entries need BOTH timestamps to be position-matchable, or they are useless.
-  assert.ok(/const startMs = parseSrDate\(s\.starttimeutc\);/.test(FETCH_NP_WS9)
-    && /const stopMs = parseSrDate\(s\.stoptimeutc\);/.test(FETCH_NP_WS9),
-    'each entry must carry its start and stop time');
-  assert.ok(/if \(!Number\.isFinite\(startMs\) \|\| !Number\.isFinite\(stopMs\)\) return;/.test(FETCH_NP_WS9),
-    'an entry without both timestamps must be dropped, not guessed at');
-  // Deduped and bounded: a long session must not grow it without limit.
-  assert.ok(/some\(\(e\) => e\.startMs === startMs\)/.test(FETCH_NP_WS9),
-    'timeline entries must be deduped by start time');
-  assert.ok(/NOW_PLAYING_TIMELINE_MAX/.test(FETCH_NP_WS9) && /splice\(/.test(FETCH_NP_WS9),
-    'the timeline must be capped');
-  // paintNowPlaying must SELECT by position, not display nowPlaying.song.
-  assert.ok(/pickByPosition\(nowPlaying\.timeline, playheadWallMs\(\)\)/.test(PAINT_NP),
-    'the painted song must be the one at the playhead');
-  assert.ok(!/\? episodeCurrentTrack\n\s*: nowPlaying\.song;/.test(PAINT_NP),
-    'the live path must not fall back to the on-air song');
-  // A channel switch must not leave another channel's entries behind.
-  assert.ok(/nowPlaying\.timeline = \[\];/.test(APP_CODE),
-    'the timeline must be cleared on channel switch');
-});
-
-test('WS9: a seek re-resolves the metadata, and the listener cannot accumulate', () => {
-  // ONE module-scope `seeked` listener, registered once, counted like every
-  // other app-owned audioEl registration. This is what keeps the WS1 leak from
-  // returning: renderPlayer runs constantly, so a listener added there would
-  // stack up.
-  assert.ok(/audioEl\._srSeekedUpd = \(\) => \{/.test(APP_CODE),
-    'the seek handler must be a named, storable property');
-  assert.ok(/metaDiagCountAdd\('seeked'\);/.test(APP_CODE),
-    'the new registration must be counted in META_DIAG');
-  assert.ok(/audioEl\.addEventListener\('seeked', audioEl\._srSeekedUpd\);/.test(APP_CODE),
-    'the listener must be registered with the named handler');
-  // Exactly ONE registration site and ONE add call for `seeked` -- this is the
-  // property that protects against the leak, so it is asserted as a count.
-  const seekedAdds = (APP_CODE.match(/audioEl\.addEventListener\('seeked'/g) || []).length;
-  assert.equal(seekedAdds, 1, 'there must be exactly one `seeked` registration site');
-  // It re-resolves rather than re-fetching the schedule.
-  // Scoped to the LISTENER BODY. Asserting on APP_CODE was too weak: the call
-  // also appears in playTrack's live branch, so deleting it from the seeked
-  // handler left the assertion satisfied and mutation M2 went GREEN. The
-  // property that matters is "a seek re-resolves", so slice the handler.
-  const SEEKED_BODY = stripComments(region(
-    'audioEl._srSeekedUpd = () => {', "metaDiagCountAdd('seeked')", APP_JS));
-  assert.ok(/resolveMetadataForPosition\(cur\);/.test(SEEKED_BODY),
-    'the seek handler must re-resolve for the playhead');
-  assert.ok(/cur\.kind !== 'live'/.test(SEEKED_BODY),
-    'the seek handler must ignore non-live tracks');
-  // And the re-resolve must be reachable at all -- a mutation that guts the
-  // function body must fail here too.
-  const RZM_BODY = stripComments(region(
-    'function resolveMetadataForPosition(', 'async function resolveProgramTitle(', APP_JS));
-  assert.ok(RZM_BODY.includes('paintProgramTitle()'),
-    'the re-resolve must repaint the programme title');
-  assert.ok(RZM_BODY.includes('paintNowPlaying()'),
-    'the re-resolve must repaint the song line');
-  const RZM = stripComments(region('function resolveMetadataForPosition(', 'async function resolveProgramTitle(', APP_JS));
-  assert.ok(!/fetchSchedule\(/.test(RZM),
-    'the seek-time re-resolve must NOT re-fetch the schedule (10-min cache is enough)');
-  // ...and it refreshes the ends of the song timeline, through the seq-guarded
-  // poll, which cannot race a channel switch.
-  assert.ok(/scheduleNowPlayingPoll\(\);/.test(APP_CODE),
-    'a seek must also refresh the song timeline through the guarded poll');
-});
-
-test('WS9 Part C: the DVR window readout is DERIVED, never a literal', () => {
-  assert.ok(/cur\.seekableStart/.test(WINDOW_READOUT) && /cur\.seekableEnd/.test(WINDOW_READOUT),
-    'the readout must be derived from the real window edges');
-  assert.ok(!/\b3\s*h/.test(WINDOW_READOUT) && !/3 timmar/.test(WINDOW_READOUT),
-    'the readout must NOT hardcode a window length');
-  // Unknown window -> say nothing, rather than assert a number.
-  assert.ok(/windowReadout\.textContent = '';/.test(WINDOW_READOUT),
-    'an unknown window must render nothing');
-  assert.ok(/!Number\.isFinite\(s\) \|\| !Number\.isFinite\(e\) \|\| e <= s/.test(WINDOW_READOUT),
-    'a non-finite or inverted window must be treated as unknown');
-  // The LENGTH must be computed from the window edges. A first version only
-  // asserted that seekableStart/End appear somewhere in the block, so replacing
-  // `Math.round(e - s)` with `3 * 3600` still passed -- mutation M4 was green.
-  // Assert the derivation, which is the whole point of Part C.
-  assert.ok(/const secs = Math\.round\(e - s\);/.test(WINDOW_READOUT),
-    'the window length must be computed as (seekableEnd - seekableStart)');
-  assert.ok(!/const secs = \d+ \* \d+;/.test(WINDOW_READOUT),
-    'the window length must NOT be a hardcoded literal');
-  // The clock labels must also come from the edges, not from Date.now().
-  assert.ok(/clock\(s\)/.test(WINDOW_READOUT) && /clock\(e\)/.test(WINDOW_READOUT),
-    'the window start/end labels must be derived from the real edges');
-  assert.ok(!/new Date\(\)\.toLocaleTimeString/.test(WINDOW_READOUT),
-    'the readout must NOT show the current wall clock in place of the window');
-  // Minutes under an hour, hours+minutes above.
-  assert.ok(/secs < 3600/.test(WINDOW_READOUT) && /h \$\{m\} min/.test(WINDOW_READOUT),
-    'the length must be formatted sensibly for both magnitudes');
-  // It must sit in the seek row, not the header, so the WS5b alignment holds.
-  assert.ok(APP_CODE.includes("el('div', { class: 'seek-row dvr-row' },\n        timeLeft, bar, windowReadout)"),
-    'the readout must be appended to the seek row');
-  // Diagnostics must expose the same DERIVED value.
+// WS9 Part C's on-screen readout is SUPERSEDED by WS11 Part A: the owner saw the
+// shortened slider and unrequested bottom-right chrome and asked for it gone.
+// The VALUE was never the problem, only showing it in the seek row. It now lives
+// in the gated diagnostics snapshot (press.windowSeconds), which renders
+// nothing. This test now asserts that split.
+test('WS9 Part C -> WS11 Part A: the window value is diagnostics-only, never rendered', () => {
+  // No element, no CSS, no third child in the seek row.
+  assert.ok(!/windowReadout/.test(APP_CODE), 'the readout element must be gone from app.js');
+  // The RULE must be gone, not merely the string: an explanatory comment
+  // naming the removed class is deliberate provenance and must be allowed.
+  assert.ok(!/^\.dvr-window-readout\s*\{/m.test(STYLES_WS5),
+    'the .dvr-window-readout CSS RULE must be gone');
+  assert.ok(!/^\.dvr-window-readout:empty/m.test(STYLES_WS5),
+    'the :empty rule must be gone with it');
+  assert.ok(!/class: 'dvr-window-readout'/.test(APP_JS), 'no element may reappear');
+  // ...but the VALUE survives in diagnostics, derived -- not a literal.
   const PRESS = stripComments(region('const press = {', 'if (!btn) {', APP_JS));
   assert.ok(/windowSeconds:/.test(PRESS) && /cur\.seekableEnd - cur\.seekableStart/.test(PRESS),
-    'the snapshot must expose the derived window length');
+    'the real window length must still be reported in the snapshot');
+  assert.ok(!/const secs = \d+ \* \d+;/.test(PRESS),
+    'the reported window length must NOT be a hardcoded literal');
 });
-
 test('WS9: out of scope -- every seek function and the DVR constants are byte-identical', () => {
   // NO `||` fallbacks between assertions. An `||` has twice let a mutation slip
   // through green in this project.
@@ -2214,8 +2088,12 @@ const BUILD_SCRIPT = fs.readFileSync(
 // attribute sits INSIDE the el('p', { ... }) call, so a region starting there
 // slices the opening off and an assertion about it can never match. That is
 // the WS10 §5 "sliced the wrong region" trap, in my own new test.
+// WS11 Part B moved the line out of the content flow and into the .topbar row,
+// so the region starts at its CONSTRUCTION (`const buildLine = el('p', {`),
+// which is where the class attribute and the text actually are. Anchoring on
+// the class attribute alone sliced the opening off -- the WS10 §5 trap, again.
 const BUILD_LINE = stripComments(region(
-  "$main.appendChild(el('p', {", 'updatePlayingMarks();', APP_JS));
+  'const buildLine = el(', 'updatePlayingMarks();', APP_JS));
 const ABOUT_LINE = stripComments(region(
   "class: 'about-version'", 'openAbout', APP_CODE) || APP_CODE.slice(
     APP_CODE.indexOf("class: 'about-version'"),
@@ -2276,17 +2154,29 @@ test('WS10 Part B: the build id is shown on the main screen, without restoring t
     'the build line must be a dedicated element');
   assert.ok(/APP_BUILD/.test(BUILD_LINE),
     'the main-screen line must show the build id');
-  assert.ok(/APP_VERSION/.test(BUILD_LINE),
-    'the main-screen line must keep the human version');
+  // WS11 Part B: APP_VERSION is GONE, not bumped. A frozen literal presented as
+  // a version is a lie; a hand-bumped one repeats the problem later. The build
+  // id is the only identity shown.
+  assert.ok(!/APP_VERSION/.test(BUILD_LINE),
+    'the frozen version must not be displayed');
+  assert.ok(!/APP_VERSION/.test(APP_CODE),
+    'APP_VERSION must not exist at all -- there is no second version source');
   // NOT the old attribution footer. WS5 removed it deliberately and the About
   // overlay still carries the attribution and the disclaimer.
   assert.ok(!/Data från Sveriges Radio/.test(BUILD_LINE),
     'the build line must NOT restore the removed attribution');
   assert.ok(!/oberoende av|Utgivare av|class: 'attribution'/.test(BUILD_LINE),
     'the build line must NOT restore the disclaimer or the old footer class');
-  // It is a plain paragraph appended to $main -- no links, no interaction.
+  // It is a plain paragraph -- no links, no interaction.
   assert.ok(/el\('p', \{/.test(BUILD_LINE), 'it must be a plain paragraph');
   assert.ok(!/<a |href:|onclick/.test(BUILD_LINE), 'it must not be interactive');
+  // WS11 Part B: it lives in the top bar, NOT the content flow. WS10 put it at
+  // the bottom of the home screen where the player covered it and scrolling hid
+  // it -- the owner's complaint.
+  assert.ok(/document\.querySelector\('\.topbar'\)/.test(BUILD_LINE),
+    'the build line must be placed in the always-visible top bar');
+  assert.ok(!/\$main\.appendChild/.test(BUILD_LINE),
+    'it must NOT be appended to the scrolling content flow');
   // CSS: small and dim, reusing the existing muted colour.
   const CSS = fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8');
   assert.ok(/\.build-line \{/.test(CSS), 'a .build-line rule must exist');
@@ -2295,14 +2185,16 @@ test('WS10 Part B: the build id is shown on the main screen, without restoring t
   // missing end marker and the whole test file fails to load.
   const cssBlock = stripComments(region(
     '.build-line {', '/* ---------- WS5b', CSS));
-  assert.ok(/font-size: 11px/.test(cssBlock), 'the build line must be small');
+  assert.ok(/font-size: 10px/.test(cssBlock), 'the build line must be small');
   assert.ok(/color: var\(--text-secondary\)/.test(cssBlock),
     'it must reuse the existing muted-text colour, not invent one');
 });
 
 test('WS10: the About overlay shows the real build identity', () => {
-  assert.ok(/Version \$\{APP_VERSION\} · bygg \$\{APP_BUILD\}/.test(ABOUT_LINE),
-    'About must show the build id alongside the version');
+  assert.ok(/bygg \$\{APP_BUILD\} · Utvecklad av/.test(ABOUT_LINE),
+    'About must show the build id');
+  assert.ok(!/APP_VERSION/.test(ABOUT_LINE),
+    'About must not show the frozen version');
   // Wording, layout and the independent-app disclaimer are untouched -- only
   // the value changed. Assert the disclaimer is still there.
   const ABOUT_BODY = stripComments(region('function openAbout(', 'function ', APP_CODE));
@@ -2347,8 +2239,10 @@ test('WS10: the About overlay keeps its wording (only the value changed)', () =>
     'the About overlay must still name the developer');
   assert.ok(/Utvecklad av/.test(ABOUT),
     'the About overlay must keep its Swedish wording');
-  assert.ok(/APP_BUILD/.test(ABOUT) && /APP_VERSION/.test(ABOUT),
-    'the About overlay must show both the version and the build id');
+  assert.ok(/APP_BUILD/.test(ABOUT),
+    'the About overlay must show the build id');
+  assert.ok(!/APP_VERSION/.test(ABOUT),
+    'the About overlay must not show a frozen version');
   // And the independent-app disclaimer that WS5 deliberately left there.
   assert.ok(APP_CODE.includes('oberoende av och inte utgiven av Sveriges Radio'),
     'the independent-app disclaimer must survive');
@@ -2379,4 +2273,162 @@ test('WS10: out of scope -- playback, seek, metadata and DVR are byte-identical'
     'the out-of-window toast must be byte-identical');
   // The read-only contract.
   assert.ok(!/state\.current\.\w+\s*=/.test(HOOK), 'the hook must not write to the current-track object');
+});
+
+// ---------------------------------------------------------------------------
+// WS11 - remove the seek-row readout; feed the car and lock screen properly
+// ---------------------------------------------------------------------------
+
+const SEEK_ROW_WS11 = stripComments(region(
+  "seekRow = el('div', { class: 'seek-row dvr-row' }", '// Drag state', APP_JS));
+const MEDIA_SESSION = stripComments(region(
+  'function updateMediaSession() {', '// ---- buffering indicator', APP_JS));
+const BUILD_LINE_WS11 = stripComments(region(
+  'const buildLine = el(', 'updatePlayingMarks();', APP_JS));
+
+test('WS11 Part A: the seek row has EXACTLY two children, so the slider is whole',
+() => {
+  // The specific promise, not a proxy. WS9 added a THIRD flex child to a flex
+  // container, so the readout took width from the seek bar; the reviewer then
+  // measured the HEADER alignment and declared the layout intact. Assert the
+  // thing that actually broke.
+  assert.ok(SEEK_ROW_WS11.includes("el('div', { class: 'seek-row dvr-row' },\n        timeLeft, bar);"),
+    'the seek row must be built from exactly timeLeft and bar');
+  assert.ok(!/windowReadout/.test(SEEK_ROW_WS11),
+    'the readout must not be a child of the seek row');
+  // Count the children structurally, not by eyeballing: exactly two
+  // comma-separated arguments between the braces.
+  const m = /class: 'seek-row dvr-row' \}\s*,\s*([^;]+?)\);/.exec(SEEK_ROW_WS11);
+  assert.ok(m, 'the seek row construction must be parseable');
+  const children = m[1].split(',').map((x) => x.trim()).filter(Boolean);
+  assert.equal(children.length, 2, 'the seek row must have exactly two children');
+  assert.deepEqual(children, ['timeLeft', 'bar'],
+    'the children must be the clock label and the bar, in that order');
+});
+
+test('WS11 Part A: the readout is gone from the player, the value is not', () => {
+  // The element, its paint helper and its CSS are all gone...
+  assert.ok(!/windowReadout/.test(APP_CODE), 'no readout element may remain in app.js');
+  assert.ok(!/class: 'dvr-window-readout'/.test(APP_JS), 'no readout element may be built');
+  assert.ok(!/paintWindowReadout/.test(APP_CODE), 'the paint helper must be gone');
+  assert.ok(!/^\.dvr-window-readout\s*\{/m.test(STYLES_WS5), 'the CSS rule must be gone');
+  // ...but the VALUE survives, in the gated snapshot where nothing renders.
+  // That is where it belonged: it is what proved the window is 3 h 1 min.
+  const PRESS = stripComments(region('const press = {', 'if (!btn) {', APP_JS));
+  assert.ok(/windowSeconds:/.test(PRESS) && /cur\.seekableEnd - cur\.seekableStart/.test(PRESS),
+    'the real window length must still be reported in the diagnostics');
+  assert.ok(/dvrWindow:/.test(APP_CODE), 'and on the one-line report');
+  // The removed WS5 attribution must NOT come back in its place.
+  assert.ok(!/Data från Sveriges Radio/.test(SEEK_ROW_WS11),
+    'the seek row must not gain an attribution');
+});
+
+test('WS11 Part B: no frozen version, and the line cannot be occluded', () => {
+  // A version string that never moves but is displayed as a version is a lie.
+  assert.ok(!/APP_VERSION/.test(APP_CODE),
+    'APP_VERSION must not exist -- there must be no second, frozen version source');
+  assert.ok(!/const APP_VERSION\s*=/.test(APP_JS),
+    'and it must not come back as a literal');
+  // package.json is the single remaining version source; the app deliberately
+  // does not display it, because it is not per-build.
+  const PKG = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  assert.ok(typeof PKG.version === 'string' && PKG.version.length > 0,
+    'package.json must still carry the single version source');
+  // The single source must not drift from the README either: the two files a
+  // reader is most likely to compare are the two that must agree.
+  const README = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
+  assert.ok(new RegExp(`\\*\\*Version:\\*\\* ${PKG.version.replace(/\\./g, '\\\\.')}`).test(README),
+    `README must state the same version as package.json (${PKG.version})`);
+  assert.ok(!/APP_VERSION/.test(APP_JS) || !/\$\{APP_VERSION\}/.test(APP_CODE),
+    'no version may be interpolated into any displayed string');
+  // Placement: the top bar, not the scrolling content.
+  assert.ok(/document\.querySelector\('\.topbar'\)/.test(BUILD_LINE_WS11),
+    'the build line must go in the always-visible top bar');
+  assert.ok(!/\$main\.appendChild/.test(BUILD_LINE_WS11),
+    'it must not be appended to the scrolling content flow');
+  assert.ok(/text: `bygg \$\{APP_BUILD\}`/.test(BUILD_LINE_WS11),
+    'it must show the build id');
+  // The WS10 build-id mechanism must NOT regress to the artifact commit.
+  const BS = BUILD_SCRIPT;
+  assert.ok(/APP_SOURCE_COMMIT|resolveBuildId/.test(BS),
+    'the build script must still derive the id from the SOURCE commit');
+});
+
+test('WS11 Part C: MediaSession carries the position-aware programme and song', () => {
+  // The old fields were cur.title / cur.subtitle -- the channel and a static
+  // string. Everything WS9 built was invisible to the car screen, which is
+  // exactly the reported symptom.
+  assert.ok(!/title: cur\.title \|\| 'Min Radio'/.test(MEDIA_SESSION),
+    'the channel name must no longer be the MediaSession title');
+  assert.ok(!/artist: cur\.subtitle \|\|/.test(MEDIA_SESSION),
+    'cur.subtitle must no longer be the MediaSession artist');
+  // It must read the SAME position-aware values the in-app display uses.
+  assert.ok(/pickByPosition\(nowPlaying\.timeline, playheadWallMs\(\)\)/.test(MEDIA_SESSION),
+    'the session song must be selected by the playhead, as the app does');
+  assert.ok(/episodeCurrentTrack/.test(MEDIA_SESSION),
+    'podcasts must use the position-aware episode track');
+  assert.ok(/_srProgramTitle/.test(MEDIA_SESSION),
+    'the programme at the playhead must be used');
+  // Two lines on a car head unit: title = song, artist = programme + channel.
+  assert.ok(/const metaTitle = songTitle \|\| programme \|\| channel;/.test(MEDIA_SESSION),
+    'the title must prefer the song, then the programme, then the channel');
+  assert.ok(/songArtist/.test(MEDIA_SESSION) && /programme, channel/.test(MEDIA_SESSION),
+    'the artist line must carry the song artist plus programme and channel');
+  // Artwork: real artwork when it exists, then the track image, then the icon.
+  // Episodes deliberately set artwork: null, so nothing is invented.
+  assert.ok(/nowPlaying\.artwork/.test(MEDIA_SESSION) && /cur\.artwork/.test(MEDIA_SESSION)
+    && /icons\/icon-512\.png/.test(MEDIA_SESSION),
+    'artwork must fall back in order and never be invented');
+  // sizes/type must stay correct.
+  assert.ok(/sizes: '512x512'/.test(MEDIA_SESSION) && /type: 'image\/png'/.test(MEDIA_SESSION),
+    'the artwork sizes/type fields must stay correct');
+});
+
+test('WS11 Part C: the session is REFRESHED when the metadata changes', () => {
+  // The half that is easy to miss: all seven updateMediaSession() call sites
+  // fire on track load / stop / playstate. None fires on a song or programme
+  // change, so fixing the fields alone leaves the car screen stale forever.
+  const PN = stripComments(region('function paintNowPlaying()', 'function paintProgramTitle()', APP_JS));
+  const PT = stripComments(region('function paintProgramTitle()', 'function playheadWallMs()', APP_JS));
+  assert.ok(/updateMediaSession\(\);/.test(PN),
+    'a song change must refresh the MediaSession');
+  assert.ok(/updateMediaSession\(\);/.test(PT),
+    'a programme change must refresh the MediaSession');
+  // Loop safety: both painters run on timeupdate (~4/s). They must only be
+  // called on a CHANGE -- that is the caller's existing change-detection, so
+  // the hook must not add an unconditional path.
+  assert.ok(PN.includes('pickByPosition'), 'the song painter selects by position');
+  // setPositionState must stay correct for live streaming.
+  // Anchor on the FUNCTION, not on a line inside it: a region that starts
+  // mid-function silently produces an empty slice, and an assertion over an
+  // empty slice is either trivially true or misleadingly red. This one was
+  // misleadingly red -- the duration IS reported, it was just above my anchor.
+  const PS = stripComments(region('function syncMediaPosition()', 'function startPositionSync()', APP_JS));
+  assert.ok(/duration: isLive \? Infinity/.test(PS),
+    'the position state must still report a live duration of Infinity');
+  assert.ok(!/windowSeconds|seekableEnd/.test(PS),
+    'the position state must not gain a DVR-window field');
+});
+
+test('WS11: out of scope -- every seek and position function is byte-identical', () => {
+  // NO `||` fallbacks between assertions.
+  assert.ok(APP_JS.includes('const DVR_MIN_WINDOW_S = 60;'), 'DVR_MIN_WINDOW_S must be byte-identical');
+  assert.ok(APP_JS.includes('const LIVE_EDGE_TOLERANCE_S = 10;'), 'LIVE_EDGE_TOLERANCE_S must be byte-identical');
+  const SEEK_BY = stripComments(region('function seekBy(deltaSeconds)', '// Fetch today', APP_JS));
+  assert.ok(/const upper = Number\.isFinite\(cur\.seekableEnd\)\s*\? Math\.max\(start, cur\.seekableEnd - LIVE_EDGE_TOLERANCE_S\)\s*: Infinity;/.test(SEEK_BY),
+    'the seekBy clamp must be byte-identical');
+  const SPT = stripComments(region('function seekToProgramTime(startMs)', "['waiting', 'stalled'].forEach", APP_JS));
+  assert.ok(/if \(target < start\) \{/.test(SPT), 'the seekToProgramTime guard must be byte-identical');
+  assert.ok(/showToast\('Programmet ligger utanför spolbart område \(3 timmar\)\.'\);/.test(SPT),
+    'the out-of-window toast must be byte-identical');
+  // The WS9 position machinery and the working skip lookup are untouched.
+  assert.ok(/function playheadWallMs\(\)/.test(APP_CODE), 'playheadWallMs must be untouched');
+  assert.ok(/function pickByPosition\(entries, atMs\)/.test(APP_CODE), 'pickByPosition must be untouched');
+  const SYNC = stripComments(region('const syncNext = () => {', 'if (prevEv) syncNext();', APP_JS));
+  assert.ok(/ev\.startMs > playheadMs\s*\n?\s*&& ev\.startMs <= nowMs/.test(SYNC),
+    'the programme-skip lookup must be byte-identical -- the button works');
+  assert.ok(/const prevEv = programBoundary\(schedule, posMs\(\), -1\);/.test(APP_CODE),
+    'the backwards lookup must be byte-identical');
+  // WS5's attribution footer stays gone.
+  assert.ok(!/class: 'attribution'/.test(APP_CODE), 'the WS5 attribution footer must not return');
 });

@@ -712,19 +712,23 @@ body.player-gesture-lock {
   .player { transition: none; }
 }
 
-/* ---- WS10: build identity line ----
-   Diagnostic chrome, not content: small, dim, and the last thing on the home
-   screen. It must not compete with the channel/podcast sections or change any
-   layout above it, so it is a plain block with generous top margin and no
-   interaction. Reuses the existing muted-text colour rather than a new one. */
+/* WS11 Part B: the build line lives in the .topbar row now, not the content
+   flow (WS10 put it at the bottom of the home screen, where the player covered
+   it). Small, dim, and out of the way -- diagnostic chrome, not content. It
+   must not widen the header on a narrow phone, so it truncates instead. */
 .build-line {
-  margin: 18px 0 4px;
-  font-size: 11px;
-  line-height: 1.4;
+  margin: 0 0 0 8px;
+  font-size: 10px;
+  line-height: 1.2;
   color: var(--text-secondary);
-  opacity: 0.75;
+  opacity: 0.6;
   font-variant-numeric: tabular-nums;
-  word-break: break-all;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 1 auto;
+  min-width: 0;
+  align-self: center;
 }
 
 /* ---------- WS5b: header row with the corner buttons ---------- */
@@ -884,18 +888,11 @@ body.player-gesture-lock {
 }
 .player-btn-close svg { width: 16px; height: 16px; }
 
-/* WS9 Part C: the DVR window readout (derived, never a literal). Sits in the
-   seek row so the WS5b header alignment above it is untouched. Small and
-   low-contrast: this is instrumentation, not content. */
-.dvr-window-readout {
-  font-size: 10.5px;
-  color: var(--text-secondary);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  flex: none;
-  margin-left: 2px;
-}
-.dvr-window-readout:empty { display: none; }
+/* WS11 Part A: the .dvr-window-readout rules are REMOVED with the element.
+   The readout was a third flex child of .seek-row and therefore took width
+   from the seek bar (WS9 regression, found on the device). The value remains
+   available in the gated diagnostics snapshot -- press.windowSeconds -- which
+   renders nothing on screen. */
 
 .seek-row {
   display: flex;

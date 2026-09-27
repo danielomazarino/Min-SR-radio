@@ -2,7 +2,13 @@
 
 En liten, personlig radiostartskärm byggd på Sveriges Radios öppna data. Installerbar som app på iPhone och Android. **Helt statisk** — ingen server behövs, distribueras på GitHub Pages eller vilken statisk värd som helst.
 
-- **Version:** 1.3.0
+- **Version:** 1.5.0
+
+  `package.json` is the **single** version source (WS11). The app no longer
+  carries its own `APP_VERSION` literal: a version that is frozen in source and
+  shown in the UI is a lie. The About overlay and the build line show the
+  **build id** instead, which moves with the code, per build.
+
 - **Utvecklare:** Daniel Omazarino
 - **Status:** Personlig app, ej affilierad med Sveriges Radio
 
