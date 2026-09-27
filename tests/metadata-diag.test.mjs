@@ -1465,8 +1465,24 @@ test('WS5 Item 1: channel and programme moved above the player, names intact', (
   // own expression, whichever branch supplies it.
   assert.ok(/_srProgramTitle/.test(header),
     'the live branch must still show the resolved programme in the header');
-  assert.ok(/programName/.test(header),
-    'the non-live branch must show the podcast name in the header (WS19)');
+  // ---- WS20: the non-live branch is the EPISODE NAME, not the podcast name ----
+  // The owner (attachment 2): "i wanted the episode name to stay there where it
+  // was ... never said you should take it away and instead implement a double
+  // dip the info we already have above the mp3 pill."
+  //
+  // WS19 put `cur.programName` here, which is the PODCAST name, so the header
+  // read "P3 Soul" while the meta row below ALSO read "P3 Soul" -- the exact
+  // double dip the owner is describing, and my own regression. Before WS19 the
+  // header had no podcast branch at all, because the episode name lived in the
+  // bold `.player-title` that WS19 removed; deleting that cell deleted the only
+  // place the episode name was shown.
+  //
+  // `cur.title` is the episode name on an episode and the channel name on a
+  // live track, so it is the SAME single expression WS15b used.
+  assert.ok(/cur\.title/.test(header),
+    'a podcast header cell must show the EPISODE name, i.e. cur.title (WS20)');
+  assert.ok(!/cur\.programName/.test(header),
+    'the podcast NAME belongs in the meta row only; in the header it is a double dip (WS20)');
   assert.ok(/class: 'player-header'/.test(header),
     'the header line needs its own container class');
   // Appended to $player so paintProgramTitle() ($player.querySelector('.player-sub'))
@@ -2636,8 +2652,10 @@ test('WS11 Part C: MediaSession carries the position-aware programme and song', 
   // reintroduced in the first place.
   assert.ok(/cur\._srProgramTitle \|\| cur\.subtitle \|\| 'Direkt'/.test(headerBuild),
     "radio must keep the resolved programme in the header sub line");
-  assert.ok(/cur\.programName \|\| cur\.subtitle/.test(headerBuild),
-    'a podcast must fill the same header cell with its podcast name (WS19)');
+  assert.ok(/cur\.title/.test(headerBuild),
+    'the podcast arm of the header ternary must be the EPISODE name, cur.title (WS20)');
+  assert.ok(!/cur\.programName/.test(headerBuild),
+    'the podcast name must NOT be in the header: it duplicates the meta row (WS20)');
   // ---- WS19: two literals, one rendered element ----
   // The header is a single `live ? ... : ...` ternary, so the podcast arm fills
   // the same cell the radio arm uses and the DOM still holds ONE `.player-sub`.
@@ -3285,23 +3303,85 @@ test('WS19: the roll must be on an inner track, never on the overflow window', (
     'the roll must alternate, so it pauses at each end rather than snapping back (WS19)');
 });
 
-test('WS19: the roll must be decided from a MEASUREMENT, after layout', () => {
+test('WS19/WS20: the roll must be decided from a MEASUREMENT, after layout', () => {
   const paint = stripComments(region('function paintNowPlaying()', 'function paintProgramTitle('));
   // Reading scrollWidth synchronously would measure the OLD text, because the
   // line was just emptied and refilled. The rAF is the earliest correct point.
   assert.ok(/requestAnimationFrame/.test(paint),
     'the overflow measurement must be deferred to a rAF (WS19: sync reads measure the old text)');
-  assert.ok(/scrollWidth\s*-\s*line\.clientWidth/.test(paint),
-    'the decision must compare the text width against the box (WS19)');
-  // Both directions must be handled: a long song rolls, and a short one after a
-  // long one must STOP rolling. One-way handling is a visible regression.
-  assert.ok(/classList\.add\('rolling'\)/.test(paint) && /classList\.remove\('rolling'\)/.test(paint),
-    'both the rolling and the non-rolling branch must exist (WS19)');
   assert.ok(/isConnected/.test(paint),
     'the rAF callback must bail if the player was re-rendered away (WS19)');
   // The text must go in the track, with the note OUTSIDE it.
   assert.ok(/class: 'roll-track'/.test(paint) && /class: 'roll-prefix'/.test(paint),
     'the song text goes in .roll-track and the note stays outside it (WS19)');
+  // Both directions must be handled: a long song rolls, and a short one after a
+  // long one must STOP rolling. One-way handling is a visible regression.
+  assert.ok(/classList\.add\('rolling'\)/.test(paint) && /classList\.remove\('rolling'\)/.test(paint),
+    'both the rolling and the non-rolling branch must exist (WS19)');
+  // ---- WS20: the measurement must be against the TRACK, net of the note ----
+  // The old code compared the whole window against itself, which cannot detect
+  // overflow at all: `line.scrollWidth` is clamped to `clientWidth` because the
+  // line has `overflow: hidden`. Measured on a 56-char title the real overflow
+  // was 183px while `line.scrollWidth - line.clientWidth` reported the same
+  // number only by accident of the track's own width -- and for a short title
+  // it reported 0 while the true figure was -30.
+  assert.ok(/track\.scrollWidth/.test(paint),
+    'the overflow must be measured on the TRACK, not on the clipped window (WS20)');
+  assert.ok(/line\.clientWidth\s*-\s*prefixW/.test(paint),
+    'the width available to the text must exclude the note, which shares the window (WS20)');
+});
+
+test('WS20: the roll distance must be PIXELS, never a percentage', () => {
+  // THE BUG, reproduced: the keyframe was
+  //   to { transform: translateX(calc(-100% + var(--roll-box))); }
+  // Inside translateX a percentage resolves against the ELEMENT's own border
+  // box, so -100% is the TRACK's width -- but `--roll-box` was stored as
+  // `line.clientWidth / track.scrollWidth * 100`, a ratio of the WINDOW to the
+  // track. Mismatched bases. Sampled on a short title ("A") the computed
+  // transform was matrix(1,0,0,1,122,0) and then +244px: a POSITIVE shift that
+  // slides the text right, out of the clipped window, leaving only the note --
+  // exactly the `♪ ...` the owner photographed on P2 Nottturno.
+  //
+  // The fix stores a plain pixel distance, so there is one unit on one basis.
+  assert.ok(/--roll-shift/.test(APP_JS),
+    'the roll distance must be stored as a pixel length (WS20)');
+  assert.ok(/setProperty\('--roll-shift',\s*`\$\{Math\.round\(overflow\)\}px`\)/.test(APP_JS),
+    'the shift must be written in px from the measured overflow (WS20)');
+  assert.ok(!/--roll-box/.test(APP_JS),
+    'the percentage-based --roll-box is the WS20 bug and must not come back');
+  assert.ok(!/--roll-box/.test(stripComments(STYLES_WS5)),
+    'and no CSS may reference it either (WS20)');
+  // The keyframe must be a SINGLE unambiguous term, not a difference of two
+  // quantities with different bases.
+  const kf = region('@keyframes sr-song-roll {', '@media (prefers-reduced-motion', STYLES_WS5);
+  assert.ok(/translateX\(calc\(-1 \* var\(--roll-shift, 0px\)\)\)/.test(kf),
+    'the keyframe must translate by the pixel shift directly (WS20)');
+  assert.ok(!/calc\(-100%/.test(kf),
+    'a -100% term mixes bases with a pixel variable and is the original defect (WS20)');
+  // The default must be 0px, not 100%: a missing variable must not launch the
+  // text out of view.
+  assert.ok(/var\(--roll-shift,\s*0px\)/.test(kf),
+    'the fallback must be 0px, so a missing variable cannot shift the text (WS20)');
+});
+
+test('WS20: a title that FITS must never be able to slide', () => {
+  // The trigger for the owner's screenshot did not even need a real overflow:
+  // `.rolling` is set by a rAF and cleared by the next paint, so a resize, a
+  // song change or a re-render can leave the class on a title that no longer
+  // overflows. With a stale huge value the old keyframe threw the text out of
+  // the window. The guard is the `> 1` gate combined with a non-negative
+  // distance, so the class is only ever set for a genuine overflow.
+  const paint = stripComments(region('function paintNowPlaying()', 'function paintProgramTitle('));
+  const measured = region('const prefixW = prefix', 'if (overflow > 1)', APP_JS);
+  assert.ok(/const overflow = trackW - availW/.test(measured),
+    'the overflow must be the track width minus the width available to it (WS20)');
+  assert.ok(/overflow > 1/.test(paint),
+    'a sub-pixel overflow must not trigger a roll (WS20)');
+  // The no-song branch must clear the shift too, or the next song can inherit
+  // the previous one's distance for a frame.
+  const empty = stripComments(region('if (!song || !song.title) {', '} else {'));
+  assert.ok(/removeProperty\('--roll-shift'\)/.test(empty),
+    'the no-song branch must clear --roll-shift, or the next song inherits it (WS20)');
 });
 
 test('WS19: the MediaSession artist must CONTAIN the song artist', () => {
@@ -3343,32 +3423,33 @@ test('WS19: the header must not carry the bold duplicate channel name', () => {
     'the dead .player-header .player-title rule must be deleted (WS19)');
 });
 
-test('WS19: a podcast icon must advertise that older episodes exist', () => {
-  // The owner could not reach yesterday's episode. Nothing was missing: the
-  // list exists, newest-first, behind a 500ms long-press with NO visible hint.
-  // So the affordance is asserted, not the feature -- and it is asserted
-  // podcast-only, because a channel icon has no episode list to advertise.
+test('WS20: the podcast icon must be UNCHANGED, and tap still plays the latest', () => {
+  // The owner (2026-09-28): "i never ever complained about the pod icon to
+  // start the latest podcast. that is by design and was decided in the start of
+  // the project."
+  //
+  // WS19 added an "Avsnitt" caption to podcast icons to advertise the
+  // long-press episode list. That was never requested and is now reverted in
+  // full. This test is INVERTED rather than deleted: the caption is an addition
+  // to a settled design, so the only durable guard is that it stays gone AND
+  // that the original behaviour is untouched.
   const build = stripComments(region('function buildIconSection(', '$main.appendChild(buildIconSection'));
-  assert.ok(/if \(isPod\)[\s\S]*?class: 'icon-hint'/.test(build),
-    'the caption must be appended only for a podcast (WS19)');
-  assert.ok(/'aria-hidden': 'true'/.test(build),
-    'the caption must be aria-hidden, so it is not read twice (WS19)');
-  // The hint must also reach a screen reader, or the gesture stays undiscoverable.
-  assert.ok(/Håll klick för att se alla avsnitt/.test(build),
-    'the accessible name must name the gesture, not just show it (WS19)');
-  // Tap behaviour must be UNCHANGED: a tap still plays the newest episode.
+  assert.ok(!/icon-hint/.test(build),
+    'the WS19 "Avsnitt" caption must NOT come back: it was never requested (WS20)');
+  assert.ok(!/Håll klick för att se alla avsnitt/.test(build),
+    'the WS19 aria override must not come back either (WS20)');
+  // Stripped on purpose: a COMMENT explaining the removal still names
+  // `.icon-hint`, and a raw-source check would match it. The rule itself is
+  // what must be gone.
+  assert.ok(!/icon-hint/.test(stripComments(STYLES_WS5)),
+    'the dead .icon-hint CSS must stay deleted, or it misleads a reader (WS20)');
+  // The behaviour that IS by design, asserted so a future pass cannot change it
+  // by accident: a tap plays the newest episode, and the long-press episode
+  // list is untouched.
   assert.ok(/onclick: \(\) => \(isPod \? playPodcast\(item\.id\)/.test(build),
-    'a tap must still play the newest episode (WS19: the affordance is additive)');
+    'a tap must play the latest episode: that is the original design (WS20)');
   assert.ok(/addLongPress\(btn, \(\) => \(isPod \? openPodcastCard/.test(build),
-    'the long-press route to the episode list must survive (WS19)');
-  // The caption must be styled, and must be an overlay: .stream-icon is
-  // `overflow: hidden` with the artwork filling it, so an in-flow caption
-  // would be clipped away entirely and the affordance would be invisible.
-  const hint = region('.icon-hint {', '.stream-icon img {', STYLES_WS5);
-  assert.ok(/position:\s*absolute/.test(hint),
-    '.icon-hint must be an overlay, or overflow:hidden clips it away (WS19)');
-  assert.ok(/linear-gradient/.test(hint),
-    '.icon-hint needs a scrim, or white text is unreadable on a light cover (WS19)');
-  assert.ok(/pointer-events:\s*none/.test(hint),
-    '.icon-hint must not intercept the tap (WS19)');
+    'the long-press episode list must survive untouched (WS20)');
+  assert.ok(/Spela senaste avsnittet av/.test(build),
+    "the accessible name must keep saying 'latest episode' (WS20)");
 });

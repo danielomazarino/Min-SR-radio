@@ -250,36 +250,14 @@ a:focus-visible {
 }
 .stream-icon img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
-/* ---- WS19: the "Avsnitt" caption on a podcast icon ----
-   The episode list has always existed behind a long-press; nothing on screen
-   said so. This caption is the affordance, and it is deliberately small and
-   low-contrast: the icon row is a scroller of thumbnails, and a loud caption
-   on every one of them would compete with the artwork.
+/* ---- WS20: the WS19 `.icon-hint` caption is REMOVED ----
+   The owner: "i never ever complained about the pod icon to start the latest
+   podcast. that is by design and was decided in the start of the project."
 
-   It is an overlay, not a flex child, because `.stream-icon` is
-   `overflow: hidden` with the artwork filling it -- an in-flow child would be
-   clipped away entirely. The gradient behind it is what makes white text
-   legible over an arbitrary cover image; without it the caption is unreadable
-   on a light cover.
-
-   Podcast-only by construction: `app.js` appends this span only when
-   `isPod`, so a channel icon can never grow one. */
-.icon-hint {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  padding: 6px 2px 3px;
-  font-size: 9px;
-  line-height: 1.1;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  text-align: center;
-  color: #fff;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.72), rgba(0, 0, 0, 0));
-  pointer-events: none;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
-}
+   The caption was my unrequested decoration, added in an attempt to make the
+   long-press episode list discoverable. The rule is deleted rather than left
+   unused: a dead selector invites a future reader to believe the caption
+   exists. The tap behaviour itself was never modified. */
 
 .stream-icon img {
   width: 100%;
@@ -1385,12 +1363,42 @@ body.player-gesture-lock {
   white-space: nowrap;
   will-change: transform;
 }
+/* ---- WS20: the roll was BROKEN and the owner's screenshot proves it ----
+   The owner on P2 Nottturno saw `♪ ...` -- the note, and nothing else. The
+   cause is a unit error in the keyframe, reproduced exactly:
+
+     to { transform: translateX(calc(-100% + var(--roll-box))); }
+
+   Inside `translateX`, a percentage resolves against the ELEMENT's own border
+   box, so `-100%` is the TRACK's width. But `--roll-box` was stored as
+   `line.clientWidth / track.scrollWidth * 100` -- a ratio of the WINDOW to the
+   track -- so the two terms had different bases. Sampled at 50% and 100% of the
+   animation on a short title ("A"), the computed transform was
+   `matrix(1,0,0,1,122,0)` and then `+244px`: a POSITIVE translation, sliding
+   the text to the RIGHT out of the clipped window and leaving the note alone.
+
+   The roll only triggers on a real overflow, so how did a short title get one?
+   It did not have to: `.rolling` is set by a rAF and cleared by the next paint,
+   and a resize, a song change, or a re-render can all leave the class on a
+   title that no longer overflows. The value was then nonsense in both
+   directions -- negative-but-wrong for a long title (it stopped exactly the
+   note's width short of revealing the tail) and catastrophically positive for a
+   short one.
+
+   The fix removes the unit ambiguity instead of correcting the ratio: JS
+   measures the real pixel distance to travel and stores it as a plain length
+   in `--roll-shift`, and the keyframe is a single unambiguous term. There is no
+   percentage left to resolve against the wrong basis.
+
+   The distance is the track's width minus the width actually available to it
+   (the window minus the note's width), so the tail is revealed exactly, and it
+   is clamped at >= 0px: a title that fits must never slide. */
 .player-time-song .now-playing-line.rolling > .roll-track {
   animation: sr-song-roll var(--roll-dur, 14s) ease-in-out infinite alternate;
 }
 @keyframes sr-song-roll {
   from { transform: translateX(0); }
-  to { transform: translateX(calc(-100% + var(--roll-box, 100%))); }
+  to { transform: translateX(calc(-1 * var(--roll-shift, 0px))); }
 }
 @media (prefers-reduced-motion: reduce) {
   .player-time-song .now-playing-line.rolling > .roll-track {

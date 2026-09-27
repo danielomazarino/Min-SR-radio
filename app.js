@@ -1154,6 +1154,10 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         line.classList.remove('has-song');
         line.classList.remove('rolling');
         line.style.removeProperty('--roll-dur');
+        // WS20: the shift must go too, or a later song that DOES overflow can
+        // briefly inherit the previous title's distance before its own rAF
+        // runs, and slide by the wrong amount for one frame.
+        line.style.removeProperty('--roll-shift');
       } else {
         // ---- WS19: the text goes in an inner track so it can roll ----
         // The line is the overflow WINDOW; the track is what slides. Setting
@@ -1181,7 +1185,25 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         // caught by the same path on the next paint.
         requestAnimationFrame(() => {
           if (!line.isConnected) return;
-          const overflow = line.scrollWidth - line.clientWidth;
+          // ---- WS20: measure the TRACK against the width available to it ----
+          // The old code compared `line.scrollWidth - line.clientWidth`, i.e.
+          // the whole window (note + text) against the whole window. That
+          // ignored the `♪ ` prefix, which is a sibling INSIDE the window and
+          // occupies real space the text cannot use.
+          //
+          // More importantly the keyframe this fed was expressed in
+          // percentages with mismatched bases and slid the text the WRONG WAY
+          // (see the CSS comment); the owner saw `♪ ...` and nothing else. The
+          // shift is now computed here as a plain pixel distance and clamped,
+          // so a title that fits cannot slide at all.
+          const prefix = line.querySelector('.roll-prefix');
+          const prefixW = prefix ? prefix.getBoundingClientRect().width : 0;
+          const availW = line.clientWidth - prefixW;
+          const trackW = track.scrollWidth;
+          // > 1px of tolerance: sub-pixel layout means a title that exactly
+          // fills the window can measure a fraction over and would otherwise
+          // crawl for one pixel.
+          const overflow = trackW - availW;
           if (overflow > 1) {
             line.classList.add('rolling');
             // Scale the duration with the overflow so a title that pokes out by
@@ -1190,15 +1212,12 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
             // it appears frozen, or one so fast it is unreadable.
             const dur = Math.min(28, Math.max(9, 6 + overflow / 14));
             line.style.setProperty('--roll-dur', `${dur.toFixed(1)}s`);
-            // The keyframe translates by -(track width - box width), so the
-            // CSS needs the box width. Expressed as a percentage of the track
-            // so it stays correct across a resize without re-measuring.
-            const pct = (line.clientWidth / track.scrollWidth) * 100;
-            line.style.setProperty('--roll-box', `${pct.toFixed(2)}%`);
+            // Pixels, not a ratio. One unit, one basis, no ambiguity.
+            line.style.setProperty('--roll-shift', `${Math.round(overflow)}px`);
           } else {
             line.classList.remove('rolling');
             line.style.removeProperty('--roll-dur');
-            line.style.removeProperty('--roll-box');
+            line.style.removeProperty('--roll-shift');
           }
         });
       }
@@ -3343,11 +3362,35 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // so the ELEMENT stays and only the bold `.player-title` sibling is
     // removed. Removing the element instead would stop the programme painting
     // with the whole suite still green.
+    // ---- WS20: the podcast's header cell is the EPISODE NAME, restored ----
+    // The owner (attachment 2): "i wanted the episode name to stay there where
+    // it was ... never said you should take it away and instead implement a
+    // double dip the info we already have above the mp3 pill."
+    //
+    // WS19 replaced this cell's content for a podcast with `cur.programName`,
+    // which is the PODCAST name -- so the header read "P3 Soul" while the meta
+    // row directly below it also read "P3 Soul". That is precisely the double
+    // dip the owner is describing, and it was my own regression: the header had
+    // no branch for a podcast before WS19, because `.player-sub` was
+    // live-only and the EPISODE NAME lived in the bold `.player-title` beside
+    // it. Removing the bold cell to kill the bold DUPLICATE therefore removed
+    // the only place the episode name was shown.
+    //
+    // The fix is `cur.title`, which is the episode name on an episode object
+    // and the channel name on a live one -- the same single expression the
+    // bold cell used, so the information is IDENTICAL to what WS15b shipped.
+    //
+    // No duplication results, because the meta row shows a different string:
+    //   header  -> cur.title      = "Kehlani och Kärleken till Frida" (episode)
+    //   meta    -> cur.programName = "P3 Soul"                      (podcast)
+    // Those are the episode and the show, not the same fact twice. The
+    // duplicate the owner DID ask to remove is the bold CHANNEL name on a live
+    // channel, which the live branch below still does not print.
     const headerLine = el('div', { class: 'player-header' },
       headerSpacer,
       live
         ? el('div', { class: 'player-sub', text: cur._srProgramTitle || cur.subtitle || 'Direkt' })
-        : el('div', { class: 'player-sub', text: cur.programName || cur.subtitle || '' }),
+        : el('div', { class: 'player-sub', text: cur.title || '' }),
       expandBtn,
       closeBtn);
 
@@ -3911,27 +3954,20 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         } else {
           btn.appendChild(el('span', { class: 'icon-letter', text: item.name.slice(0, 1) }));
         }
-        // ---- WS19: make the episode list DISCOVERABLE on a podcast icon ----
-        // The owner: "i still can't verify what p3 soul from yesterday looks
-        // like". The cause is not a missing feature -- `openPodcastCard` has
-        // always listed every episode newest-first, yesterday's included. It
-        // is reachable only by a 500 ms LONG-PRESS, with no visible hint
-        // anywhere, so from the outside the icon can do exactly one thing.
+        // ---- WS20: the WS19 "Avsnitt" caption is REMOVED ----
+        // The owner: "i never ever complained about the pod icon to start the
+        // latest podcast. that is by design and was decided in the start of the
+        // project."
         //
-        // A tap still plays the newest episode. Changing that would be a
-        // product decision, and the owner has not made it, so this adds the
-        // smallest possible affordance instead: a caption that names the
-        // gesture, and the same words in the accessible name so the hint is
-        // not purely visual.
+        // The tap-plays-the-latest-episode behaviour is therefore correct and
+        // stays, and the caption I added on top of it is reverted. The original
+        // observation (an older episode is hard to find) was real, but the
+        // remedy was not mine to impose: the long-press episode list is
+        // pre-existing, deliberate, and unchanged. Reverted in full -- the
+        // caption span, the `aria-label` override, and the `.icon-hint` CSS.
         //
-        // `aria-label` is extended rather than replaced: a screen-reader user
-        // otherwise gets the same dead end, and the hint is the only route to
-        // an older episode.
-        if (isPod) {
-          btn.appendChild(el('span', { class: 'icon-hint', 'aria-hidden': 'true', text: 'Avsnitt' }));
-          btn.setAttribute('aria-label',
-            `Spela senaste avsnittet av ${item.name}. Håll klick för att se alla avsnitt.`);
-        }
+        // Nothing about the icon's behaviour changed in WS19 and nothing changes
+        // now; only my unrequested decoration is gone.
         scroller.appendChild(btn);
       }
       sec.appendChild(scroller);
