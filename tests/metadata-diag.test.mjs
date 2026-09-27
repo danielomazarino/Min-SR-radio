@@ -1394,8 +1394,18 @@ test('WS5 Item 1: channel and programme moved above the player, names intact', (
     '.player-title must NOT be inside .player-meta any more');
   assert.ok(!/class: 'player-sub'/.test(metaDecl),
     '.player-sub must NOT be inside .player-meta any more');
-  assert.ok(/quality/.test(metaDecl) && /mode/.test(metaDecl),
-    '.player-meta must still carry the quality and mode pills');
+  // WS16: .player-meta now holds a ROW WRAPPER plus the quality pill, so the
+  // mode pill is no longer a direct child. The requirement survives: the meta
+  // column still carries the quality pill AND the time state, one level down.
+  // The slice is taken from .player-meta-row's own declaration -- anchoring on
+  // the .player-meta line alone would start AFTER the row wrapper (region()
+  // searches forward), which is the exact trap this file documents twice.
+  const rowDecl = stripComments(region("const metaRowTop = el('div'", 'const meta = el(', APP_JS));
+  assert.ok(/isLive \? mode : null/.test(rowDecl),
+    '.player-meta-row must carry the time state, live-only (WS16)');
+  const metaDecl2 = stripComments(region("const meta = el('div', { class: 'player-meta' }", '// Fas 4', APP_JS));
+  assert.ok(/metaRowTop/.test(metaDecl2) && /quality/.test(metaDecl2),
+    '.player-meta must carry the time-state row and the quality pill (WS16)');
   // ... but must still exist, with their ORIGINAL class names, in a header
   // line appended to $player.
   const header = stripComments(region('const headerLine = el(', 'const songLine', APP_JS));
@@ -2565,9 +2575,32 @@ test('WS11 Part C: MediaSession carries the position-aware programme and song', 
   const podNameEl = stripComments(region('const podcastName =', 'const meta = el(', APP_JS));
   assert.ok(/!live && \(cur\.programName \|\| cur\.subtitle\)/.test(podNameEl),
     'the podcast name element must exist for episodes only');
-  assert.ok(/el\('div', \{ class: 'player-meta' \}, podcastName, quality, mode\)/.test(
-    stripComments(region('const podcastName =', '$player.appendChild', APP_JS))),
-  'the podcast name must be the FIRST child of .player-meta, above the quality pill');
+  // WS16: the podcast name is no longer a DIRECT child -- it is the identity
+  // element inside .player-meta-row, and the quality pill is the second row.
+  // The ordering requirement (name above the pill) is unchanged.
+  // Ended on `const expandBtn` -- the next real declaration after the
+  // .player-meta construction.
+  //
+  // THREE end markers were tried and all three were wrong, which is worth
+  // recording because the failure mode is silent rather than red:
+  //   '// Row 2' sits INSIDE the el() call, before `quality);`, so the slice
+  //     stopped short of the text being asserted;
+  //   '// Fas 4' and 'Fas 4 (redesign' are COMMENT text, and this slice is
+  //     stripped of comments, so they are not present in it at all and
+  //     indexOf returned -1 -- region() then ran to the end of the bundle.
+  // A comment is a valid START marker (it is in the raw source) but never a
+  // valid END marker for a region that gets stripComments()ed. Always end on
+  // code.
+  const metaBuild = stripComments(region('const identityName =', "const expandBtn = el('button'", APP_JS));
+  assert.ok(/el\('div', \{ class: 'player-meta' \},\s*metaRowTop,/.test(metaBuild)
+    && /quality\);/.test(metaBuild),
+  'the podcast name must be in row 1 of .player-meta, above the quality pill (WS16)');
+  // `\s*` after the comma, not a literal space: the construction wraps
+  // `metaRowTop` onto the next line, and a space-literal regex silently
+  // matched nothing -- an assertion that can never pass is worse than no
+  // assertion, because it looks like coverage.
+  assert.ok(/const identityName = isLive[\s\S]*?: podcastName;/.test(metaBuild),
+    "a podcast's identity element must be the podcast name element (WS16)");
   // It must NOT reuse .player-sub: that is load-bearing (paintProgramTitle
   // writes into it, the WS0 snapshot reads it). Writing there would fight the
   // programme painter and re-truncate the name to "P3 ..." -- the symptom the
@@ -2775,8 +2808,16 @@ test('WS12 Part B: the pills degrade by clipping, never by wrapping', () => {
   // a two-line pill, which is what the owner photographed. Assert the guard so
   // the same failure cannot come back silently even if a layout change squeezes
   // the column again.
+  //
+  // WS16: the start marker is now '\n' + sel, not sel. WS16 added a COMPOUND
+  // selector (`.player-meta-row > .player-mode`) which CONTAINS the base
+  // selector as a substring, and region() searches forward -- so a bare
+  // '.player-mode {' matched the compound rule's tail and returned three
+  // properties instead of the real styling. Anchoring on the line start is the
+  // fix that does not depend on selector naming: a bare base rule always
+  // begins its own line, and a compound selector never does.
   ['.player-quality {', '.player-mode {'].forEach((sel) => {
-    const rule = stripComments(region(sel, '\n}', STYLES_WS5));
+    const rule = stripComments(region('\n' + sel, '\n}', STYLES_WS5));
     assert.ok(/white-space: nowrap/.test(rule),
       `${sel} must set white-space: nowrap so a narrow column clips rather than wraps`);
     assert.ok(/text-overflow: ellipsis/.test(rule),
@@ -2784,9 +2825,40 @@ test('WS12 Part B: the pills degrade by clipping, never by wrapping', () => {
   });
   // And the cure's precondition: the texts already had it, so this is parity.
   ['.player-title {', '.player-sub {'].forEach((sel) => {
-    const rule = stripComments(region(sel, '\n}', STYLES_WS5));
+    const rule = stripComments(region('\n' + sel, '\n}', STYLES_WS5));
     assert.ok(/white-space: nowrap/.test(rule), `${sel} must keep its nowrap`);
   });
+  // WS16: the base pill rules must remain the ONLY place these are declared.
+  // A second bare block for either selector would shadow the real one for any
+  // forward search, which is how the WS15 quality pill briefly lost its
+  // styling.
+  assert.strictEqual((STYLES_WS5.match(/^\.player-quality \{/gm) || []).length, 1,
+    '.player-quality must be declared exactly once as a bare rule');
+  assert.strictEqual((STYLES_WS5.match(/^\.player-mode \{/gm) || []).length, 1,
+    '.player-mode must be declared exactly once as a bare rule');
+  // ---- WS16: the pill must OCCUPY ROW 2, and that must be asserted ----
+  // Mutation Q3 reverted `.player-quality` to `display: inline-block` and the
+  // whole suite stayed GREEN. Nothing asserted the WS16 row geometry, so the
+  // single change the workstream exists for was unobservable. Source order
+  // would in fact still put the pill on row 2 in the built DOM, which is
+  // exactly why this is a real requirement and not a style preference: the
+  // layout must not depend on an accident of sibling order.
+  const qRule = stripComments(region('\n.player-quality {', '\n}', STYLES_WS5));
+  assert.ok(/display: block/.test(qRule),
+    '.player-quality must be display:block so it occupies row 2 of .player-meta (WS16)');
+  assert.ok(/width: max-content/.test(qRule),
+    '.player-quality must be width:max-content so the pill keeps its shape (WS16)');
+  // Row 1 must be a real flex row: `margin-left: auto` on the time state only
+  // reaches the right edge inside a flex line. Without this the pill sits
+  // immediately after the name -- a regression no text assertion would catch.
+  const rowRule = stripComments(region('\n.player-meta-row {', '\n}', STYLES_WS5));
+  assert.ok(/display: flex/.test(rowRule),
+    '.player-meta-row must be display:flex (WS16)');
+  assert.ok(/min-width: 0/.test(rowRule),
+    '.player-meta-row must keep min-width:0 so the name shrinks, not the pill');
+  const modeRule = stripComments(region('\n.player-meta-row > .player-mode {', '\n}', STYLES_WS5));
+  assert.ok(/margin-left: auto/.test(modeRule),
+    'the time state must be pushed right by margin-left:auto (WS16)');
 });
 
 test('WS11a: the buttons survive the move intact', () => {

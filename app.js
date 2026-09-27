@@ -2333,7 +2333,48 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
           text: cur.programName || cur.subtitle,
         })
       : null;
-    const meta = el('div', { class: 'player-meta' }, podcastName, quality, mode);
+    // ---- WS16: RADIO gets the same shape as a podcast ----
+    // Owner (2026-09-27), comparing the real iPhone screenshots of P3 (live)
+    // and a podcast: the same information sat in different places, so the two
+    // views could not be read side by side. Three moves, all measured to fit
+    // in .player-meta (150.1px available; the pill row needs 93.6px):
+    //
+    //   1. LIVE / "−N min" moves to the FAR RIGHT of the row that carries the
+    //      channel name -- i.e. the same row the podcast's quality pill uses,
+    //      rather than sitting beside the quality pill on the left.
+    //   2. The quality pill (AAC 320 / MP3 / FLAC) moves DOWN to where the
+    //      podcast's MP3 pill already is: the second row of .player-meta.
+    //   3. The channel + programme name moves to where the podcast name
+    //      already is: above that pill.
+    //
+    // So both kinds end up with the SAME two-row structure in .player-meta:
+    //   row 1:  channel-or-podcast name            [state pill on the right]
+    //   row 2:  quality pill
+    // A podcast has no time state, so its row 1 has no pill -- the pill is the
+    // only difference, and that is real information, not a layout accident.
+    //
+    // The header keeps the channel/programme pair for radio. That is the
+    // owner's explicit instruction from WS15b and is unchanged here.
+    const isLive = Boolean(live);
+    // Row 1, left: for a podcast the podcast name; for radio the CHANNEL name.
+    // `cur.title` is the channel on a live track and the episode on an episode,
+    // so the same expression serves both once the podcast branch is taken out.
+    const identityName = isLive
+      ? el('div', { class: 'player-podcast-name', text: cur.title || '' })
+      : podcastName;
+    // Row 1 is an explicit flex ROW, not two siblings in a block container.
+    // The time state has to reach the far right of that row, and
+    // `margin-left: auto` only has anything to consume inside a flex line --
+    // as siblings in a block context the auto margin is eaten by inline space
+    // and the pill would sit right next to the name. A podcast has no time
+    // state, so its row 1 has one child and lays out exactly as before.
+    const metaRowTop = el('div', { class: 'player-meta-row' },
+      identityName,
+      isLive ? mode : null);
+    const meta = el('div', { class: 'player-meta' },
+      metaRowTop,
+      // Row 2: the quality pill, in the podcast's position.
+      quality);
 
     // Fas 4 (redesign 2026-09-23): NO one-click expansion — accidental taps
     // opened it. Instead: a dedicated chevron handle in the player header
