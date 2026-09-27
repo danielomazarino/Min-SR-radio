@@ -752,19 +752,20 @@ body.player-gesture-lock {
   min-width: 0;
   padding: 0 0 4px;
 }
-/* The close button doubles as the artwork-column spacer. 44x44 also makes it
-   the same size as the chevron and the artwork, so the top corners and the
-   artwork below read as one column, and the touch target grows from 32px. */
-.player-header .player-btn-close {
+/* ---- WS11a: the close button moved to the controls row ----
+   The close button USED to sit here and double as the artwork-column spacer.
+   The owner asked for it on the transport row instead, so the header now holds
+   a width-only spacer of exactly the same size.
+   The spacer is load-bearing, not decoration: it is the same --player-art
+   width with the same --player-gap after it, so the title and the programme
+   still land on the artwork's right edge — the column the quality pill and the
+   song line share. Delete it and the WS5b alignment collapses to zero with
+   every test still green.
+   It carries NO height, which is what lets the header row collapse to the text
+   once a row of 44px buttons has been removed from it. */
+.player-header .player-header-spacer {
   width: var(--player-art);
-  height: var(--player-art);
   flex: none;
-}
-/* The chevron keeps the far-right corner. `margin-left: auto` pushes it past
-   the shrinking text rather than relying on a fixed width for the text. */
-.player-header .player-expand-btn {
-  flex: none;
-  margin-left: auto;
 }
 /* Both texts share the line and ellipsize. No max-width percentage: the old
    40% cap truncated the channel name on narrow phones for no reason. The title
