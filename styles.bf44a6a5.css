@@ -700,6 +700,18 @@ body.player-gesture-lock {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* WS15b: in the minimised bar the podcast name takes the sub line's place, so
+   it must match .player-mini .player-sub exactly -- 11.5px, not the full
+   player's 11px -- or the two bars disagree on the same string. Same clip
+   rules: the mini bar's text column is even narrower than the full player's,
+   so ellipsis rather than wrap, or the bar grows a row. */
+.player-mini .player-podcast-name {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .player-mini .player-btn { width: 38px; height: 38px; }
 .player-mini .player-btn-main { width: 40px; height: 40px; }
 .player-mini .player-btn-main svg { width: 20px; height: 20px; }
