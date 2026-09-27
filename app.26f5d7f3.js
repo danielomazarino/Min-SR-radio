@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '960a975';
+  const APP_BUILD = '9ad30c2';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -1152,9 +1152,55 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       if (!song || !song.title) {
         line.textContent = '';
         line.classList.remove('has-song');
+        line.classList.remove('rolling');
+        line.style.removeProperty('--roll-dur');
       } else {
-        line.textContent = `♪ ${song.artist ? song.artist + ' – ' : ''}${song.title}`;
+        // ---- WS19: the text goes in an inner track so it can roll ----
+        // The line is the overflow WINDOW; the track is what slides. Setting
+        // `line.textContent` directly would put the text in the window itself,
+        // and translating the window would move the box and expose the gap
+        // behind it. The ♪ prefix stays OUTSIDE the track so it does not
+        // scroll away on its own while the artist+song slides under it --
+        // it reads as a fixed bullet for the rolling text.
+        const prefix = el('span', { class: 'roll-prefix', 'aria-hidden': 'true', text: '♪ ' });
+        const track = el('span', { class: 'roll-track' });
+        track.textContent = song.artist ? `${song.artist} – ${song.title}` : song.title;
+        line.textContent = '';
+        line.appendChild(prefix);
+        line.appendChild(track);
         line.classList.add('has-song');
+        // ---- Only roll when the text genuinely overflows ----
+        // Decided here rather than in CSS because CSS cannot know the text
+        // length. Measuring needs layout, so it is deferred to the next frame:
+        // at paint time the line was just emptied and refilled, and reading
+        // scrollWidth synchronously would measure the OLD content. One
+        // rAF is the earliest point the new text has been laid out.
+        //
+        // The decision is re-evaluated on every song change, so a short song
+        // after a long one correctly stops rolling, and a window resize is
+        // caught by the same path on the next paint.
+        requestAnimationFrame(() => {
+          if (!line.isConnected) return;
+          const overflow = line.scrollWidth - line.clientWidth;
+          if (overflow > 1) {
+            line.classList.add('rolling');
+            // Scale the duration with the overflow so a title that pokes out by
+            // a few pixels crawls and a very long one still finishes reading.
+            // Clamped so a pathological title cannot produce a crawl so slow
+            // it appears frozen, or one so fast it is unreadable.
+            const dur = Math.min(28, Math.max(9, 6 + overflow / 14));
+            line.style.setProperty('--roll-dur', `${dur.toFixed(1)}s`);
+            // The keyframe translates by -(track width - box width), so the
+            // CSS needs the box width. Expressed as a percentage of the track
+            // so it stays correct across a resize without re-measuring.
+            const pct = (line.clientWidth / track.scrollWidth) * 100;
+            line.style.setProperty('--roll-box', `${pct.toFixed(2)}%`);
+          } else {
+            line.classList.remove('rolling');
+            line.style.removeProperty('--roll-dur');
+            line.style.removeProperty('--roll-box');
+          }
+        });
       }
     }
     // If the expand panel is open, repaint its song view too.
@@ -1736,8 +1782,29 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         ? (cur.programName || cur.subtitle || 'Min Radio')
         : (cur.title || 'Min Radio');
       const metaTitle = songTitle || programme || (cur.kind === 'episode' ? cur.title : channel) || channel;
+      // ---- WS19: the SONG ARTIST must appear in the artist field ----
+      // Measured live (P3, talk/music radio): title AND artist both read
+      // "P3 Din Gata: Musik", so the lock screen and the car head unit showed
+      // the same string twice and the song artist never appeared at all.
+      //
+      // The cause is not a fallback ordering bug, it is that `songArtist` was
+      // computed and then only ever used as a BOOLEAN. It gated the branch but
+      // never contributed a character to the output:
+      //     metaArtist = songArtist ? [programme, channel].join(' · ') : ...
+      // So whenever a song was playing, the artist field was "programme ·
+      // channel" and the actual performer was discarded.
+      //
+      // The fix puts the artist FIRST, because a lock screen's second line is
+      // "who is playing this" -- the performer -- and the programme/channel is
+      // the context after it. That also matches the in-app line, which reads
+      // "artist – title".
+      //
+      // With no song the artist field falls back to programme, then channel,
+      // so a talk channel with no song is still identifiable. The duplicate
+      // `programme · channel` pairing is kept in that fallback because on a
+      // talk channel they are genuinely the two most useful things to say.
       const metaArtist = songArtist
-        ? [programme, channel].filter(Boolean).join(' · ')
+        ? [songArtist, programme, channel].filter(Boolean).join(' · ')
         : (programme || channel);
       // Album: the channel on radio, the EPISODE name on a podcast.
       const album = cur.kind === 'live' ? channel : (cur.title || 'Min Radio');
@@ -3258,12 +3325,29 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // Radio is untouched: `_srProgramTitle || cur.subtitle || 'Direkt'` still
     // applies there, so P1 keeps "P1 / Godmorgon, världen!" and P3 keeps
     // "P3 Din gata / P3 Din Gata: Musik".
+    // ---- WS19: the bold channel/programme pair is GONE from the header ----
+    // The owner (screenshot): "remove the Bold duplicate information top left
+    // ... it must be the same exactly as we have mapped to just above the pill
+    // mp3 96". The channel name was printed TWICE -- once bold in the header,
+    // once in the meta row directly above the quality pill -- and the header
+    // row was mostly empty space besides.
+    //
+    // The header now keeps ONLY the programme line, styled as the quiet
+    // secondary text it always was, positioned in the same column as the meta
+    // row so the two read as one stack. The channel name is not lost: it is
+    // the meta row's first child, one row below, and it is also the player's
+    // own identity used by `.player-podcast-name` on a podcast.
+    //
+    // `.player-sub` is LOAD-BEARING -- `paintProgramTitle()` writes into it via
+    // `$player.querySelector('.player-sub')` and the WS0 diagnostics read it --
+    // so the ELEMENT stays and only the bold `.player-title` sibling is
+    // removed. Removing the element instead would stop the programme painting
+    // with the whole suite still green.
     const headerLine = el('div', { class: 'player-header' },
       headerSpacer,
-      el('div', { class: 'player-title', text: cur.title || '' }),
       live
         ? el('div', { class: 'player-sub', text: cur._srProgramTitle || cur.subtitle || 'Direkt' })
-        : null,
+        : el('div', { class: 'player-sub', text: cur.programName || cur.subtitle || '' }),
       expandBtn,
       closeBtn);
 

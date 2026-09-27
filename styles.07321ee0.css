@@ -812,10 +812,14 @@ body.player-gesture-lock {
    icons at 22px, which fills a 32px circle. */
 .player-header .player-expand-btn svg { width: 18px; height: 18px; }
 .player-header .player-btn-close svg { width: 16px; height: 16px; }
-/* Both texts share the line and ellipsize. No max-width percentage: the old
-   40% cap truncated the channel name on narrow phones for no reason. The title
-   keeps its intrinsic width and only shrinks when the programme needs room. */
-.player-header .player-title { flex: 0 1 auto; min-width: 0; }
+/* The programme line takes the full remaining width and ellipsizes. No
+   max-width percentage: the old 40% cap truncated the channel name on narrow
+   phones for no reason.
+   ---- WS19: `.player-header .player-title` is DEAD and was deleted here.
+   The bold channel title left the header (it duplicated the meta row above
+   the quality pill), and the mini-bar's own title is not matched by this
+   scoped selector, so nothing styles it any more. Left behind, the rule would
+   tell a future reader the header still has two text cells to make room for. */
 .player-header .player-sub { flex: 1 1 auto; min-width: 0; }
 
 .player-row {
@@ -1291,6 +1295,24 @@ body.player-gesture-lock {
   margin-left: var(--player-col);
   min-width: 0;
 }
+/* ---- WS19: THIS RULE WAS MISSING, AND IT IS WHY THE PILL DISAPPEARED ----
+   `app.js` builds `.player-time-row > .player-time-song > .now-playing-line`,
+   but only a COMMENT ever described `.player-time-song`. With no rule, that
+   div was a plain block flex item, so its `min-width` resolved to `auto` and
+   it REFUSED to shrink below its text's intrinsic width. The song therefore
+   kept its full 455px, and `margin-left: auto` on the pill pushed the pill out
+   to right=577px on a 390px viewport -- 187px off-screen. Measured, not
+   inferred.
+
+   `min-width: 0` is the fix, and it must be on the WRAPPER, not on the line:
+   the line is a block inside the wrapper, so the wrapper is what the flex
+   algorithm asks to shrink. Giving the line `min-width: 0` alone changes
+   nothing. */
+.player-time-song {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
 .player-time-row .now-playing-line {
   flex: 1 1 auto;
   min-width: 0;
@@ -1303,6 +1325,46 @@ body.player-gesture-lock {
 .player-time-row > .player-mode {
   margin-left: auto;
   flex: none;
+}
+
+/* ---- WS19: the slow roll, for a song line too long to fit ----
+   The owner asked for the iPhone lock-screen behaviour: a long artist+song
+   rolls slowly instead of being cut off with an ellipsis.
+
+   Two tracks, and which one applies is decided in JS, not by CSS guessing:
+   `paintNowPlaying` compares the text's scrollWidth against the box and only
+   adds `.rolling` when the text genuinely overflows. A short title must NOT
+   drift, so the animation is attached to a class the app only sets when
+   needed -- otherwise every short song would slide for no reason.
+
+   The animation is on the INNER span, not on `.now-playing-line` itself: the
+   line is the overflow box, so translating the box itself would move the box
+   and expose the gap behind it. Translating an inner span slides the TEXT
+   under a stationary window, which is what a lock screen does.
+
+   Duration scales with length via `--roll-dur`, set inline per paint, so a
+   barely-overflowing title crawls and a very long one still finishes. The
+   `8%`-`92%` keyframe range is deliberate: it scrolls far enough to reveal
+   the tail, and the pause at each end gives the eye a moment before it
+   repeats. `prefers-reduced-motion` disables it outright, because continuous
+   motion is a genuine accessibility problem, not just a preference. */
+.player-time-song .now-playing-line { display: block; }
+.player-time-song .now-playing-line > .roll-track {
+  display: inline-block;
+  white-space: nowrap;
+  will-change: transform;
+}
+.player-time-song .now-playing-line.rolling > .roll-track {
+  animation: sr-song-roll var(--roll-dur, 14s) ease-in-out infinite alternate;
+}
+@keyframes sr-song-roll {
+  from { transform: translateX(0); }
+  to { transform: translateX(calc(-100% + var(--roll-box, 100%))); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .player-time-song .now-playing-line.rolling > .roll-track {
+    animation: none;
+  }
 }
 /* The indent above is for the FULL player, where the song line sits on its own
    row under the artwork. The minimised mini-bar builds a compact text stack of
