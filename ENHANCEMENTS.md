@@ -2407,3 +2407,179 @@ asserted against the variable the arithmetic feeds, and M3 re-confirmed red.
   evening, so every "yesterday" entry was timestamped today and the merge
   looked like it worked while testing nothing. Fixed by building timestamps
   with `setDate(getDate() - n)` + `setHours`, which is DST-safe.
+
+---
+
+## 2026-09-28 — WS19: pill pushed off-screen by long songs, slow roll, header dedupe, lock-screen artist, episode discoverability
+
+Commits `9ad30c2` (source+tests) -> `b0a08f9` (artifacts) -> `6bb7563`
+(WS19b source+tests) -> `903d29e` (WS19b artifacts). Live: `app.c8a2911d.js` /
+`styles.6a11b7bf.css` / SW `minradio-466a30ce`. 191 -> **197 tests**. Tip
+verified in a CLEAN WORKTREE before both pushes; Pages took 3 poll attempts
+each time.
+
+### 1. THE LIVE PILL VANISHED WHEN THE ARTIST + SONG WAS LONG
+
+**Owner:** *"for the second screenshot you see that the artist and song
+information is so long that the live pill doesn't show. make sure it does"*
+
+**This is a defect I introduced in WS18, and my own WS18 tests could not see
+it.** `app.js` builds `.player-time-row > .player-time-song >
+.now-playing-line`, but only a COMMENT ever described `.player-time-song`.
+With no CSS rule it was a plain block flex item, so `min-width` resolved to
+`auto` and it refused to shrink below its text's intrinsic width.
+
+Reproduced in Chromium at 390px with the owner's exact string:
+
+```
+song  scrollWidth 455px   clientWidth 455px   <-- did NOT shrink
+pill  x=539  right=577  on a 390px viewport  <-- 187px off-screen
+```
+
+`min-width: 0` must be on the **WRAPPER**: the line is a block inside it, so
+the wrapper is what the flex algorithm asks to shrink. Giving the line
+`min-width: 0` alone changes nothing — which is exactly what WS18 did.
+
+**THE LESSON, and it is the important part of this entry:** a wrapper that
+exists in the DOM but not in the stylesheet is **invisible to source-text
+assertions**. Every WS18 test looked at `.player-time-row
+.now-playing-line` and never at the wrapper, so 191 green tests sat on top of
+a layout that put the pill off-screen. Only a browser measurement caught it.
+**A test that asserts a selector exists is not evidence that the selector is
+styled.**
+
+### 2. THE SONG LINE NOW ROLLS SLOWLY, LIKE AN IPHONE LOCK SCREEN
+
+The text goes in an inner `.roll-track`; the line stays the overflow WINDOW.
+Translating the window itself would move the box and expose the gap behind it,
+so the track slides under a stationary window. The `♪` stays OUTSIDE the track
+as a fixed bullet.
+
+Whether to roll at all is decided in **JS**, because CSS cannot know the text
+length: `paintNowPlaying` compares `scrollWidth - clientWidth` and adds
+`.rolling` only on genuine overflow, so a short song never drifts. The
+measurement is deferred one **rAF** — at paint time the line has just been
+emptied and refilled, so a synchronous read measures the OLD text. A late
+arriving rAF bails on `!line.isConnected`, or a re-render would write into a
+detached node.
+
+Duration scales with the overflow (clamped 9–28s) so a barely-overflowing title
+crawls rather than sprints; `infinite alternate` gives the pause at each end
+that makes it read as a lock screen. `--roll-box` carries the box width as a
+percentage of the track, so the keyframe stays correct across a resize without
+re-measuring. `prefers-reduced-motion: reduce` disables it outright —
+continuous motion is an accessibility problem, not a preference.
+
+**Verified live in the browser:** transform moved
+`matrix(1,0,0,1,-36.13,0)` -> `(-70.84,0)` over 2.5s; a short song measured
+overflow 0, lost `.rolling` and computed to `animationName: none`; the pill
+stayed at 374/390 in both cases.
+
+### 3. THE BOLD DUPLICATE IS GONE FROM THE HEADER
+
+**Owner:** *"remove the Bold duplicate information top left ... it must be the
+same exactly as we have mapped to just above the pill mp3 96"*
+
+The channel name was printed twice — bold in the header, then again in the meta
+row above the quality pill. The header is now a single text cell. The channel
+name is not lost: it is the meta row's first child, one row below, which is
+where the owner asked for it.
+
+`.player-sub` is **load-bearing** (`paintProgramTitle` writes into it by name;
+the WS0 snapshot reads it) so the element stays — removing it would stop
+programme painting with the suite green. A podcast now fills that same cell
+with the podcast name, so both kinds match. The mini-bar **keeps** its own
+title: it has no meta row and would otherwise have no identity at all. The dead
+`.player-header .player-title` rule is deleted rather than left to mislead.
+
+**Four superseded assertions were updated WITH reasons, not deleted** — and one
+of them exposed a bad proxy of my own:
+
+- WS5 Item 1 and WS11 Part C counted `.player-sub` occurrences in the header.
+  With two ternary arms there are **2 literals but still 1 rendered element**,
+  so a literal count is the wrong invariant: `count === 1` fails on a correct
+  implementation, and `count === 2` alone would still permit the exact
+  duplication these tests exist to catch (a third unconditional copy beside
+  the ternary). They now assert the **structure** — both literals are the two
+  arms of one `live ? ... : ...`, and no third copy may sit beside it.
+- WS5b Item 2 asserted the header's title-then-sub order; the anchor is now
+  `.player-sub`, and the title is asserted to be exactly **one** occurrence.
+- WS14 Part B anchored "the spacer must be FIRST" on `player-title`; it is
+  anchored on `player-sub` now, with a negative assertion added.
+
+### 4. THE LOCK-SCREEN ARTIST REALLY HAD REGRESSED — CONFIRMED AND FIXED
+
+**Owner:** *"double check that the artist is shown on the lock screen, it seems
+to have regression off as we agreed to have it there i believe earlier."*
+
+The concern was right, and **it was not podcast-specific** — the still-open
+defect I had flagged as "radio only". Measured live on P3 by wrapping
+`MediaMetadata`: title AND artist both read `P3 Din Gata: Musik`, so the same
+string appeared twice and **the performer never appeared at all**.
+
+The cause was not a fallback-ordering bug. `songArtist` was computed and then
+used **only as a boolean** — it gated the branch but contributed no character:
+
+```js
+metaArtist = songArtist ? [programme, channel].join(' · ') : (programme || channel)
+```
+
+So whenever a song was playing, the artist field was "programme · channel" and
+the actual performer was discarded. The artist is now first, because a lock
+screen's second line answers "who is playing this", and that also matches the
+in-app "artist – title".
+
+**Verified live:** `title: "Folded"`, `artist: "Kehlani · P3 Din Gata: Musik ·
+P3 Din gata"`. A podcast is unchanged and still correct: `artist: "P3 Soul"`.
+
+**Still open, unchanged by owner instruction:** a **talk** channel with no song
+still shows the programme in both fields (`Vaken` / `Vaken`, observed live
+again during this pass). That is the no-song fallback working as designed, not
+this regression.
+
+### 5. YESTERDAY'S PODCAST EPISODE — NOTHING WAS MISSING, IT WAS UNDISCOVERABLE
+
+**Owner:** *"i still can't verify what p3 soul from yesterday looks like ... for
+yesterday there is then no updates or programme information sadly."*
+
+`openPodcastCard` has always listed every episode newest-first, yesterday's
+included, and it is reachable from a podcast icon — but only by a **500 ms
+long-press with no visible hint anywhere**. From the outside the icon can do
+exactly one thing, so the owner's conclusion was correct from where they stood.
+`fetchLatestEpisode` requests `size=1`, so a **tap** can only ever play the
+newest episode.
+
+Changing that is a product decision, and the owner was unavailable, so this is
+deliberately **additive and reversible**: a small `Avsnitt` caption on podcast
+icons only, over a scrim so it stays legible on any cover; the same words in
+the accessible name so the gesture is not visual-only; **tap behaviour
+unchanged**; the long-press route unchanged. The caption is an overlay because
+`.stream-icon` is `overflow: hidden` with the artwork filling it — an in-flow
+child would be clipped away entirely.
+
+**OPEN QUESTION FOR THE OWNER:** should a tap keep playing the newest episode,
+or open the episode list? Either is a one-line change.
+
+### Mutation testing: 7 mutations, all red, 0 no-ops
+
+| # | Mutation | Result |
+|---|---|---|
+| M1 | delete the whole `.player-time-song` rule (**the original bug**) | red |
+| M2 | remove only its `min-width: 0` | red |
+| M3 | artist field drops `songArtist` (the lock-screen bug) | red |
+| M4 | bold title back in the header | red |
+| M5 | drop the `isPod` guard on the caption | red |
+| M6 | caption `position: static` (clipped by `overflow: hidden`) | red |
+| M7 | drop the aria hint | red |
+
+M1 and M2 are the pair that matters: they prove the WS18 blind spot is now
+closed. `app.js` and `styles.css` md5-verified byte-identical after every one.
+
+### Still unverifiable in this environment
+
+- **DNS is blocked** (`ERR_NAME_NOT_RESOLVED` for `api.sverigesradio.se`, both
+  in-page and from Node), so no leg of this work touched the real SR API.
+- **Chromium still cannot DVR** (`dvrAvailable: false`), so the WS18
+  midnight-schedule fix remains proven only against a fixture.
+- The **roll animation and the pill geometry were verified in Chromium**, not on
+  the iPhone. Safari and the lock-screen chrome are untested by me.
