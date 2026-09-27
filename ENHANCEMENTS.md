@@ -4,6 +4,213 @@ Pågående anteckningar för förbättringar att ta itu med senare. Nyast övers
 
 ---
 
+## 2026-09-27 — WS0–WS13: position-aware metadata, bygg-identitet, spelarlayout, MediaSession, poddomslag
+
+**Status: allt nedan är DEPLOYAT och LIVE.** Verifierat mot den riktiga
+originen 2026-09-27: `index.html` → `app.429acb4b.js`, `sw.js` →
+`minradio-5859bf28`, inbäddad build-id `219c38a`. Served bundle är
+byte-identisk med den lokala (`cmp`). Spetsen av `origin/main` är grön
+(184/184) — det kontrolleras före varje push, efter att WS12A lämnade
+`main` i trasigt tillstånd.
+
+**Nytt för nästa session:** läs detta först. Processreglerna nedan är
+viktigare än någon enskild fix — de har kostat tre arbetsströmmar.
+
+---
+
+### A. LÖST OCH DEPLOYAT I DAG (läs detta, ändra inte)
+
+| # | Vad | Workstream | Bevis |
+|---|---|---|---|
+| 1 | **Framåtsknappen fungerar** på ägarens iPhone | WS6→WS9 | Aldrig att återöppna |
+| 2 | **Programtitel + låt följer playhead**, inte "on air" | WS9 | Position-aware via `playheadWallMs()` + `pickByPosition()` |
+| 3 | **DVR-fönstret mätt: 3 h 1 min** | WS10 | Återger hela "kanske kortare"-linjen i utredningen |
+| 4 | **Bygg-id** = käll-kommit, synligt i appen | WS10 | `resolveBuildId()`; cirkulär beroendefixad |
+| 5 | **Sökrutan bort från seek-raden** (slidaren återfick 61 px) | WS11 | Slider 319,90 → 381,29 px vid 480 px bredd |
+| 6 | **Infruten `1.5.0` bort** — bygg-id endast | WS11 | `package.json` är enda versionskällan |
+| 7 | **Build-raden tillbaka under NYHETER**, kugelhjulet höger | WS12 | Owner-krav, ej reviewer-beslut |
+| 8 | **Stäng ✕ och chevron ⌄ på transportraden** | WS13 | Ordning `… transport · chevron · close`, som minibaren |
+| 9 | **Poddomslag i expanderad spelare** | WS12/WS13 | Program-bilden; se varning nedan |
+| 10 | **Låt+rader i mittspelaren även för poddar** | WS12 | Owner bekräftade detta fungerar (WS13 Part C) |
+| 11 | **MediaSession visar låt + artist + artwork** | WS11 | Mätt: `Everything In The Shade` / `Söndagsmagasinet i P3 · P3` |
+
+**Testtäthet:** 184 tester, 184 gröna. 9 mutationer för WS13, 7 för WS12,
+12 för WS11 — alla röda, 0 no-op (md5 jämfört före/efter).
+
+---
+
+### B. ÖPPNA — KRÄVER ÄGAREN ELLER UPPDRAG (prioriterade)
+
+#### B1 — 7-knappars-DVR-läget: textkolumnen går till 0 px  ⚠️ NY, VIKTIGST
+**Mätt i Chromium, 390 px, konstruerat läge.** `closeBtn` på transportraden
+gör `.player-controls` 320 px bred, vilket trycker ihop `.player-meta` till
+**0 px** och raden sväller över (388 > 358). Samma spelare med 5 knappar:
+meta 66,14 px, ingen svällning — **orsaken är knapparnas antal**, isolerat
+genom mätning.
+
+- Pillen radbryts inte längre (nowrap-skydd), och header-kolumnen håller
+  kvar sitt vänsterkant 72 px. Men `.player-meta` är 0 px.
+- Detta är samma squeeze som WS11a orsakade, nu återintroducerat av WS13.
+- **Beslut krävs från ägaren:** antingen (a).accept, (b) krympa
+  transportknapparna i 7-knappars-läget, eller (c) prioritera texten över
+  någon knapp. **Giss inte** — mät på iPhone först.
+- Konstruerat läge: SR:s DVR-ström är CORS-blockerad i Chromium, så
+  programhoppsknapparna renderas aldrig naturligt.
+
+#### B2 — Poddens låt slår aldrig igenom (uppströmsdata)
+SR:s `web-api.sr.se/v1/player/ondemand` returnerar just nu
+`relativeStartTime`/`relativeEndTime` som **null för 18/18 låtar** (pod 78) och
+**0 låtar** för pods 86, 87, 103, 945, 1123, 202. `updateEpisodeTrack` kräver
+båda gränserna, så ingen låt kan matcha. Uppströms, inte vår kod.
+
+**Följd:** låt-raden i mittspelaren och albumomslaget för poddar är
+**overifierade på riktig låt**. Kodvägen är testad och mutationstestad, men
+inte visad med riktig data. **Beskriv inte poddar som fungerande.**
+
+#### B3 — iTunes-träfffrekvens på riktig låtdata (mätt, ej generaliserat)
+51 riktiga låtar från 4 poddar: **73 % träff, och 89 % av träffarna rätt
+artist**. Missarna är namnvariaanter av samma artist ("P!nk"/"Pink",
+"Florence + the Machine"). Detta är *bättre* än WS12 angav — men en
+3-å-femta-observation, inte en garanti. Uppdatera om den försämras.
+
+**WS12 hade fel om detta.** WS12 hävdade att sökningen går på poddnamnet.
+Den går på `artist + title` från låtlistan, alltså en riktig låt. WS12:s
+bevis ("P3 Soul" → PARTYNEXTDOOR) var en poddnamnssökning som kodvägen aldrig
+gör. **Rätt att kontrollera en premiss från ett tidigare brief innan man bygger
+på den.**
+
+#### B4 — Fortsatt öppet sedan tidigare (oförändrat)
+- Låsskärmen öppnar fel PWA (regression, enhetsspecifik).
+- P1→P2-mismatch och P2-metadata/artwork.
+- `scheduleCache` rensas aldrig vid kanalbyte.
+- `armPlaybackWatchdog` saknar exhausted guard.
+- E1 (ljudkvalitet/FLAC-fallback), E2 (Spotify/YouTube-ikoner), E3
+  (play-pill på nyheter), E4 (info-ikon) — oförändrat i "AKTIV ARBETSKÖ".
+
+---
+
+### C. PROCESSREGLER — UTBILDAT I DAG, SKA GÄLLA I NÄSTA CHATT
+
+**1. iPhone först, fråga innan du antar.**
+> "you have to request my support for all ux and ui related questions.
+> iphone comes first"
+
+Desktop-Cr är **inte** iPhonen. WS11a rapporterade "ingen overflow vid 390/340"
+från ett **5-knappars** icke-DVR-läge, medan ägarens skärm var
+**7-knappars**-läget där textkolumnen mäter 0 px. Mät i Chromium är bra — men
+skriv alltid *var*, *vilken bredd*, *vilket spelläge*. Påstå aldrig hur något
+ser ut på telefonen.
+
+**2. Hitta fel genom TEXT, inte radnummer.** Alla filer redigeras medan du
+arbetar. `grep` på innehåll, aldrig på radnummer från ett brief.
+
+**3. Källa och test i EN commit.** WS12A committade testerna medan `app.js`
+låg ocommittad, så `main` FALSKADE (`start marker not found:
+$main.appendChild(el('p', {`). En commit senare pushades det. **Innan push:
+klona `origin/main` och kör sviten på spetsen.** Att den gröna working tree
+är grön säger ingenting om spetsen.
+
+**4. `region()` söker FRAMÅT.** En region som öppnas på fel deklaration börjar
+*efter* elementet den ska testa. Detta har felet test tre gånger. Fäst
+regionen på elementets **egen deklaration**.
+
+**5. Mutationstestning måste jämföra md5 före OCH efter.** En harness som
+bara verifierar ankaret rapporterar no-op-mutationer som gröna — det gav
+fyra falska resultat i WS11. En no-op är *inte* ett missat fall.
+
+**6. Ett mönster med en kommentar kan aldrig matcha en `stripComments()`:ad
+slicing.** Tvärtom också: en råtextsökning kan träffa en kommentar som
+*förklarar* samma sak. WS12 missade detta i båda riktningar.
+
+**7. Ett check som inte kan faila är inte evidens.** T.ex.
+`document.documentElement.scrollWidth` ligger kvar under viewporten även när
+en flexrad sväller internt. Använd `row.scrollWidth > row.clientWidth` och
+`meta.getBoundingClientRect().width`.
+
+**8. En overifierad påstådd blir "observerad" genom att dupliceras.** Skrivet
+en gång är det en gissning; i ett testnamn och ett commit-meddelande är det
+indistinktabelt från något någon såg hända. **WS12A:** rationalet att
+spelaren "täckte" bygg-raden under NYHETER hade **aldrig observerats** — det
+var reviewer-antagandet bakom WS11. Ägaren: *"on iphone i have never seen that
+happen as there is space left"*. Raderat ur ett testnamn och en kommentar.
+Samma kopia finns kvar i `07b41d5`:s meddelande — skrivs inte om, WS12A är
+rättelsens dokument.
+
+**9. En brief som citerar ägaren ordagrant är bättre än en paraphrase.** WS11a
+fick sin beskedtext felaktigt ("on the same row as the transport buttons") och
+det kostade tre workstreams: WS11a gjorde det, WS12 återställde det efter
+"they should be **above**", WS13 gjorde det igen på ägarens *nya* uttryckliga
+begäran. **Två av de tre var mina fel, inte ägarens ändrade sinning.**
+
+**10. Mät premisser från tidigare briefs själv.** WS12 skrev "den här sökningen
+går på poddnamnet". Det gjorde den inte. Kontrollera koden, kör ett prov,
+och rapportera rådata — en anekdot räcker inte.
+
+---
+
+### D. TEKNISK KARTA (för nästa session)
+
+**Nyckelfunktioner i `app.js`:**
+`playheadWallMs` · `pickByPosition` (`[start, end)`) · `resolveMetadataForPosition`
+· `updateMediaSession` (WS11) · `refreshNowPlayingArtwork(song, target)` (WS13,
+två anropsställen, en implementation, ett `artworkCache`, ett `artworkSeq`) ·
+`updateEpisodeTrack` · `renderSongView` (expanderad panel).
+
+**Lastbärande namn — ändra inte utan att förstå varför:**
+- `.player-sub` och `.now-playing-line` slås upp via
+  `$player.querySelector(...)` i `paintProgramTitle` / `paintNowPlaying`.
+  Byt namn eller flytta dem ur `$player` → målningen dör **utan att något test
+  rödfärgas**.
+- `panel._srRepaint` — expanderad panel läser live state, inte closure.
+- `.player-header .player-header-spacer` (WS13): håller textkolumnen. Den
+  `_closeBtn` som satt där tidigare var **spacern**. Radera knappen utan
+  ersättning → kolumnen kollapsar till 0, alla tester gröna.
+- `expandBtn` får `margin-left: auto` **inte** längre i headern (borttaget
+  WS13 som död regel).
+
+**Deploy-ordning (fel = fel bygg-id):**
+1. `npm test` → 2. `git add` källa + test i **samma** commit → 3. `npm run build`
+   → 4. `git add -A` artefakter → 5. `git push origin main` → 6. fyra deploy-checks
+**efter** en vänteloop, plus sviten på spetsen av `origin/main`.
+
+Ingen CI, ingen GitHub Actions. `npm run build` skriver `dist/` **och**
+kopierar `index.html`, `sw.js` och de hashasade bunzlarna tillbaka till
+repro-roten. **En commit utan färsk build deployar ingenting.**
+`index.html` laddar den **hashade** bunlen — `app.js` är bara bygginput.
+
+**Ändra aldrig (byte-identiskt mot `git show 745493c:app.js`):**
+`seekBy` · `seekToLive` · `seekToProgramTime` · `posMs` · `liveEdgeWallMs` ·
+`playheadWallMs` · `pickByPosition` · `resolveMetadataForPosition` ·
+programhopp-lookupen · `DVR_MIN_WINDOW_S` · `LIVE_EDGE_TOLERANCE_S` ·
+`SEEK_STEP_S`. **Framåtsknappen fungerar på ägarens telefon.**
+Återställ inte DVR-fönster-readouten (borttagen WS11) eller WS5-attributionen.
+
+**Testidiom:** tester läser **källtext**, inte runtime. `stripComments()` är
+strängmedveten. `region(start, end, src)` — exakt 3 argument, söker framåt.
+
+**Verktygsfällor (förbrukade idag, upprepa inte):**
+`create_file` finns inte här — använd edit/ heredoc. Mutation-återställning
+med `git checkout --` **förstörde WS5b** en gång; använd `cp` + md5. En
+`multi_replace`-sats misslyckades men rapporterade fel för fel post — verifiera
+med `grep` vad som faktiskt landade innan du redigerar om.
+
+---
+
+### E. VAD INTE ATT GÖRA I NÄSTA CHATT
+
+- Öppna inte framåtsknappen igen. Den fungerar.
+- Flytta inte på bygg-raden, kugelhjulet eller spelarknapparna utan att
+  ägaren säger till.
+- Beskriv inte poddar som fungerande (se B2).
+- Hitta inte på en visuell motivering till en ändring. "Jag antog" är ett
+  ärligt svar.
+- Ändra inte `package.json`-versionen, `sw.js`-caching, manifestet, eller lägg
+  till en versionsinjektion i `build-pages.mjs`. `1.5.0` ska inte tillbaka.
+- Fixa inte sådant du hittar på vägen — **rapportera**. Scope creep gör en
+  granskad ändring till en ogranskad.
+
+---
+
 ## AKTIV ARBETSKÖ (uppdaterad 2026-09-24 — iPhone-fälttest efter deploy)
 
 Historiken nedan bevaras som referens; statusrättelser kan annotera äldre
@@ -173,6 +380,14 @@ startsidan — inte via Inställningar.
   invalidieras vid ALLA playback-övergångar (även episode→episode), stale
   live-artwork requests invalidieras när polling stoppas/uppdateras, och
   expanderad episode artwork lånar inte live-kanalens låtbild.
+  **Uppdatering 2026-09-27 — se WS0–WS13-posten överst.** Mycket av det här
+  är nu löst: låten följer playhead (WS9), låt-raden i mittspelaren finns även
+  för poddar (WS12), och poddens albumomslag är kopplad via samma iTunes-sök
+  (WS13). **Kvarstår som *overifierat*:** SR:s `ondemand` returnerar
+  `relativeStartTime`/`relativeEndTime` som null för 18/18 låtar (pod 78) och
+  0 låtar för sex andra poddar, så `updateEpisodeTrack` kan aldrig matcha en
+  låt just nu. Det är uppströmsdata, inte vår kod — och det gör att hela
+  låt-vägen för poddar är **testad men inte visad med riktig data**. Se B2.
 - **Uppdatering 2026-09-24:** repo/build mismatch är åtgärdad lokalt.
   `public/` och tidigare `build.mjs` var gitignored och gav `npm run build` en
   stale utvecklingskopia; testmappen var också ignored. Nu är package/tests/
