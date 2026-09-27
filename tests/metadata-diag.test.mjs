@@ -259,13 +259,24 @@ test('snapshot: live now-playing section captures raw body + previous/next song'
     'async function fetchNowPlaying(', 'function scheduleNowPlayingPoll()', APP_CODE);
   assert.ok(/const song = pl\.song \|\| null;/.test(fetchCode),
     'the app must still parse playlist.song only');
-  assert.ok(!/\.previoussong/.test(fetchCode) && !/\.nextsong/.test(fetchCode),
-    'WS0 must NOT read previoussong/nextsong at runtime — capture only');
-  assert.ok(!/\.previoussong/.test(HOOK_CODE) && !/\.nextsong/.test(HOOK_CODE),
-    'hook code must not access previoussong/nextsong');
-  // But the raw body really is retained, so a future WS1 CAN read them.
+  // WS9 REVERSES the WS0 decision, deliberately. WS0 captured the raw body
+  // precisely because previoussong/nextsong were "otherwise unobservable", and
+  // forbade the parser reading them. WS9 is the future workstream that test
+  // anticipated: the fields carry starttimeutc/stoptimeutc (verified live
+  // 2026-09-27 on ch163), so a song can be matched to any DVR position, and
+  // the parser now DOES read them into the retained timeline.
+  assert.ok(/keep\(pl\.previoussong\)/.test(fetchCode),
+    'the parser must now READ previoussong into the timeline (WS9)');
+  assert.ok(/keep\(pl\.nextsong\)/.test(fetchCode),
+    'the parser must now READ nextsong into the timeline (WS9)');
+  // The raw capture is STILL required: it is the reference the timeline is
+  // verified against, and it is what a future diagnostic would need.
   assert.ok(fetchCode.includes('META_DIAG.lastRightNowRaw = data;'),
-    'the raw body must be retained in full so prev/next remain observable');
+    'the raw body must be retained in full');
+  // The hook itself still must not touch them -- the snapshot reports the
+  // resolved timeline, not the raw fields.
+  assert.ok(!/\.previoussong/.test(HOOK_CODE) && !/\.nextsong/.test(HOOK_CODE),
+    'hook code must not access previoussong/nextsong directly');
 });
 
 test('snapshot: programme schedule section exposes raw + parsed + receipt time', () => {
@@ -375,7 +386,11 @@ test('snapshot: listener accounting is present, per type, add and remove', () =>
   const addSites = APP_CODE.split('audioEl.addEventListener').length - 1;
   const countCalls = (APP_CODE.match(/metaDiagCountAdd\(/g) || []).length
     - (APP_CODE.match(/function metaDiagCountAdd\(/g) || []).length;
-  assert.equal(addSites, 8, 'expected 8 audioEl.addEventListener source sites');
+  // WS9 added a 9th audioEl site: the `seeked` listener that re-resolves the
+  // programme and song for the playhead after a seek. It is registered ONCE at
+  // module scope, which is why it cannot accumulate the way renderPlayer's
+  // timeupdate listener used to (the WS1 leak).
+  assert.equal(addSites, 9, 'expected 9 audioEl.addEventListener source sites');
   assert.ok(countCalls >= addSites,
     'every audioEl.addEventListener site must have a matching metaDiagCountAdd call');
   // The surplus must be exactly the $player gesture registrations (one call
@@ -1999,4 +2014,192 @@ test('WS7: out of scope -- seekBy, seekToLive, posMs, programBoundary, constants
   // The read-only contract.
   assert.ok(!/state\.current\.\w+\s*=/.test(HOOK),
     'the hook must not write any property of the current-track object');
+});
+
+// ---------------------------------------------------------------------------
+// WS9 - position-aware programme + song, and the DVR window readout
+// ---------------------------------------------------------------------------
+
+const RESOLVE_TITLE = stripComments(region(
+  'function playheadWallMs()', 'function playTrack(track)', APP_JS));
+const FETCH_NP_WS9 = stripComments(region(
+  'async function fetchNowPlaying(', 'function scheduleNowPlayingPoll()', APP_JS));
+const WINDOW_READOUT = stripComments(region(
+  'const windowReadout = el(', "seekRow = el('div', { class: 'seek-row dvr-row' }", APP_JS));
+// NOTE: stopNowPlayingPoll() is defined BEFORE paintNowPlaying(), so it cannot
+// be an end marker here -- region() searches forward from the start and would
+// return -1. Bound on the next top-level function instead.
+const PAINT_NP = stripComments(region(
+  'function paintNowPlaying()', 'function playheadWallMs()', APP_JS));
+
+test('WS9: the programme title is keyed on the PLAYHEAD, not Date.now()', () => {
+  // The old defect: `const now = Date.now(); schedule.find(e => now >= e.startMs
+  // && now < e.endMs)` — "what is on air", not "what is at the playhead". Those
+  // differ for any DVR listener, and the title never re-resolved after a seek.
+  assert.ok(!/schedule\.find\(\(e\) => now >= e\.startMs && now < e\.endMs\)/.test(RESOLVE_TITLE),
+    'the on-air (Date.now) lookup must be gone');
+  // One shared position definition, used by every consumer.
+  assert.ok(/function playheadWallMs\(\)/.test(RESOLVE_TITLE),
+    'a shared playhead position helper must exist');
+  assert.ok(/Date\.now\(\) - \(end - \(audioEl\.currentTime \|\| 0\)\) \* 1000/.test(RESOLVE_TITLE),
+    'the playhead position must be derived from the seekable window, as the skip button does');
+  // Containment by the playhead, reusing the same rule as updateEpisodeTrack.
+  assert.ok(/function pickByPosition\(entries, atMs\)/.test(RESOLVE_TITLE),
+    'a shared containment selector must exist');
+  assert.ok(/e\.startMs <= atMs && atMs < e\.stopMs/.test(RESOLVE_TITLE),
+    'selection must use [start, end) containment at the playhead');
+  assert.ok(/pickByPosition\(/.test(RESOLVE_TITLE),
+    'the position-based selector must actually be used');
+  // The schedule is cached per track so a seek can re-resolve WITHOUT a fetch.
+  assert.ok(/cur\._srSchedule = schedule;/.test(RESOLVE_TITLE),
+    'the resolved schedule must be retained for seek-time re-resolution');
+  // The superseded guard is the defence against a late schedule response
+  // painting a previous channel's programme -- exactly the WS9 §4 channel-switch
+  // bug. The WS0 test checks HOOK only, so nothing covered this site: deleting
+  // it left the suite green (mutation M6).
+  // NOTE: no `// superseded` in the pattern. RESOLVE_TITLE is stripComments()ed,
+  // so the trailing comment is gone and a pattern requiring it can NEVER match
+  // -- a vacuous assertion by accident. Assert the CODE only.
+  assert.ok(/if \(!schedule \|\| state\.current !== cur\) return;/.test(RESOLVE_TITLE),
+    'the superseded guard must survive on the schedule path');
+  assert.ok(/cur\._srSchedule = schedule;/.test(RESOLVE_TITLE)
+    && RESOLVE_TITLE.indexOf('state.current !== cur')
+      < RESOLVE_TITLE.indexOf('cur._srSchedule = schedule;'),
+    'the guard must be checked BEFORE the schedule is cached onto the track');
+});
+
+test('WS9: the song is position-aware, and previous/next are USED not just captured', () => {
+  // Before WS9, previoussong/nextsong appeared only in comments and one
+  // diagnostics note string. Now the parser reads all three into a timeline.
+  assert.ok(/const keep = \(s\) =>/.test(FETCH_NP_WS9), 'a timeline entry normaliser must exist');
+  ['keep(pl.previoussong)', 'keep(song)', 'keep(pl.nextsong)']
+    .forEach((c) => assert.ok(FETCH_NP_WS9.includes(c),
+      `the parser must retain ${c.replace('keep(', '').replace(')', '')}`));
+  // Entries need BOTH timestamps to be position-matchable, or they are useless.
+  assert.ok(/const startMs = parseSrDate\(s\.starttimeutc\);/.test(FETCH_NP_WS9)
+    && /const stopMs = parseSrDate\(s\.stoptimeutc\);/.test(FETCH_NP_WS9),
+    'each entry must carry its start and stop time');
+  assert.ok(/if \(!Number\.isFinite\(startMs\) \|\| !Number\.isFinite\(stopMs\)\) return;/.test(FETCH_NP_WS9),
+    'an entry without both timestamps must be dropped, not guessed at');
+  // Deduped and bounded: a long session must not grow it without limit.
+  assert.ok(/some\(\(e\) => e\.startMs === startMs\)/.test(FETCH_NP_WS9),
+    'timeline entries must be deduped by start time');
+  assert.ok(/NOW_PLAYING_TIMELINE_MAX/.test(FETCH_NP_WS9) && /splice\(/.test(FETCH_NP_WS9),
+    'the timeline must be capped');
+  // paintNowPlaying must SELECT by position, not display nowPlaying.song.
+  assert.ok(/pickByPosition\(nowPlaying\.timeline, playheadWallMs\(\)\)/.test(PAINT_NP),
+    'the painted song must be the one at the playhead');
+  assert.ok(!/\? episodeCurrentTrack\n\s*: nowPlaying\.song;/.test(PAINT_NP),
+    'the live path must not fall back to the on-air song');
+  // A channel switch must not leave another channel's entries behind.
+  assert.ok(/nowPlaying\.timeline = \[\];/.test(APP_CODE),
+    'the timeline must be cleared on channel switch');
+});
+
+test('WS9: a seek re-resolves the metadata, and the listener cannot accumulate', () => {
+  // ONE module-scope `seeked` listener, registered once, counted like every
+  // other app-owned audioEl registration. This is what keeps the WS1 leak from
+  // returning: renderPlayer runs constantly, so a listener added there would
+  // stack up.
+  assert.ok(/audioEl\._srSeekedUpd = \(\) => \{/.test(APP_CODE),
+    'the seek handler must be a named, storable property');
+  assert.ok(/metaDiagCountAdd\('seeked'\);/.test(APP_CODE),
+    'the new registration must be counted in META_DIAG');
+  assert.ok(/audioEl\.addEventListener\('seeked', audioEl\._srSeekedUpd\);/.test(APP_CODE),
+    'the listener must be registered with the named handler');
+  // Exactly ONE registration site and ONE add call for `seeked` -- this is the
+  // property that protects against the leak, so it is asserted as a count.
+  const seekedAdds = (APP_CODE.match(/audioEl\.addEventListener\('seeked'/g) || []).length;
+  assert.equal(seekedAdds, 1, 'there must be exactly one `seeked` registration site');
+  // It re-resolves rather than re-fetching the schedule.
+  // Scoped to the LISTENER BODY. Asserting on APP_CODE was too weak: the call
+  // also appears in playTrack's live branch, so deleting it from the seeked
+  // handler left the assertion satisfied and mutation M2 went GREEN. The
+  // property that matters is "a seek re-resolves", so slice the handler.
+  const SEEKED_BODY = stripComments(region(
+    'audioEl._srSeekedUpd = () => {', "metaDiagCountAdd('seeked')", APP_JS));
+  assert.ok(/resolveMetadataForPosition\(cur\);/.test(SEEKED_BODY),
+    'the seek handler must re-resolve for the playhead');
+  assert.ok(/cur\.kind !== 'live'/.test(SEEKED_BODY),
+    'the seek handler must ignore non-live tracks');
+  // And the re-resolve must be reachable at all -- a mutation that guts the
+  // function body must fail here too.
+  const RZM_BODY = stripComments(region(
+    'function resolveMetadataForPosition(', 'async function resolveProgramTitle(', APP_JS));
+  assert.ok(RZM_BODY.includes('paintProgramTitle()'),
+    'the re-resolve must repaint the programme title');
+  assert.ok(RZM_BODY.includes('paintNowPlaying()'),
+    'the re-resolve must repaint the song line');
+  const RZM = stripComments(region('function resolveMetadataForPosition(', 'async function resolveProgramTitle(', APP_JS));
+  assert.ok(!/fetchSchedule\(/.test(RZM),
+    'the seek-time re-resolve must NOT re-fetch the schedule (10-min cache is enough)');
+  // ...and it refreshes the ends of the song timeline, through the seq-guarded
+  // poll, which cannot race a channel switch.
+  assert.ok(/scheduleNowPlayingPoll\(\);/.test(APP_CODE),
+    'a seek must also refresh the song timeline through the guarded poll');
+});
+
+test('WS9 Part C: the DVR window readout is DERIVED, never a literal', () => {
+  assert.ok(/cur\.seekableStart/.test(WINDOW_READOUT) && /cur\.seekableEnd/.test(WINDOW_READOUT),
+    'the readout must be derived from the real window edges');
+  assert.ok(!/\b3\s*h/.test(WINDOW_READOUT) && !/3 timmar/.test(WINDOW_READOUT),
+    'the readout must NOT hardcode a window length');
+  // Unknown window -> say nothing, rather than assert a number.
+  assert.ok(/windowReadout\.textContent = '';/.test(WINDOW_READOUT),
+    'an unknown window must render nothing');
+  assert.ok(/!Number\.isFinite\(s\) \|\| !Number\.isFinite\(e\) \|\| e <= s/.test(WINDOW_READOUT),
+    'a non-finite or inverted window must be treated as unknown');
+  // The LENGTH must be computed from the window edges. A first version only
+  // asserted that seekableStart/End appear somewhere in the block, so replacing
+  // `Math.round(e - s)` with `3 * 3600` still passed -- mutation M4 was green.
+  // Assert the derivation, which is the whole point of Part C.
+  assert.ok(/const secs = Math\.round\(e - s\);/.test(WINDOW_READOUT),
+    'the window length must be computed as (seekableEnd - seekableStart)');
+  assert.ok(!/const secs = \d+ \* \d+;/.test(WINDOW_READOUT),
+    'the window length must NOT be a hardcoded literal');
+  // The clock labels must also come from the edges, not from Date.now().
+  assert.ok(/clock\(s\)/.test(WINDOW_READOUT) && /clock\(e\)/.test(WINDOW_READOUT),
+    'the window start/end labels must be derived from the real edges');
+  assert.ok(!/new Date\(\)\.toLocaleTimeString/.test(WINDOW_READOUT),
+    'the readout must NOT show the current wall clock in place of the window');
+  // Minutes under an hour, hours+minutes above.
+  assert.ok(/secs < 3600/.test(WINDOW_READOUT) && /h \$\{m\} min/.test(WINDOW_READOUT),
+    'the length must be formatted sensibly for both magnitudes');
+  // It must sit in the seek row, not the header, so the WS5b alignment holds.
+  assert.ok(APP_CODE.includes("el('div', { class: 'seek-row dvr-row' },\n        timeLeft, bar, windowReadout)"),
+    'the readout must be appended to the seek row');
+  // Diagnostics must expose the same DERIVED value.
+  const PRESS = stripComments(region('const press = {', 'if (!btn) {', APP_JS));
+  assert.ok(/windowSeconds:/.test(PRESS) && /cur\.seekableEnd - cur\.seekableStart/.test(PRESS),
+    'the snapshot must expose the derived window length');
+});
+
+test('WS9: out of scope -- every seek function and the DVR constants are byte-identical', () => {
+  // NO `||` fallbacks between assertions. An `||` has twice let a mutation slip
+  // through green in this project.
+  assert.ok(APP_JS.includes('const DVR_MIN_WINDOW_S = 60;'), 'DVR_MIN_WINDOW_S must be byte-identical');
+  assert.ok(APP_JS.includes('const LIVE_EDGE_TOLERANCE_S = 10;'), 'LIVE_EDGE_TOLERANCE_S must be byte-identical');
+  const SEEK_BY = stripComments(region('function seekBy(deltaSeconds)', '// Fetch today', APP_JS));
+  assert.ok(/const upper = Number\.isFinite\(cur\.seekableEnd\)\s*\? Math\.max\(start, cur\.seekableEnd - LIVE_EDGE_TOLERANCE_S\)\s*: Infinity;/.test(SEEK_BY),
+    'the seekBy upper clamp must be byte-identical');
+  const SEEK_LIVE = stripComments(region('function seekToLive()', '// ---- DVR transport', APP_JS));
+  assert.ok(/const target = Math\.max\(start, end - LIVE_EDGE_TOLERANCE_S\);/.test(SEEK_LIVE),
+    'the seekToLive target must be byte-identical');
+  // seekToProgramTime: behaviour AND the out-of-window toast are untouched
+  // (WS8 Part B, not authorised here).
+  const SPT = stripComments(region('function seekToProgramTime(startMs)', "['waiting', 'stalled'].forEach", APP_JS));
+  assert.ok(/showToast\('Programmet ligger utanför spolbart område \(3 timmar\)\.'\);/.test(SPT),
+    'the out-of-window toast must be untouched in WS9');
+  assert.ok(/if \(target < start\) \{/.test(SPT), 'the out-of-window guard must be byte-identical');
+  // The programme-skip lookup and its window-free semantics are unchanged.
+  const SYNC = stripComments(region('const syncNext = () => {', 'if (prevEv) syncNext();', APP_JS));
+  assert.ok(/ev\.startMs > playheadMs\s*\n?\s*&& ev\.startMs <= nowMs/.test(SYNC),
+    'the programme-skip lookup must be byte-identical (not fixed in WS9)');
+  // posMs and liveEdgeWallMs unchanged.
+  assert.ok(/const posMs = \(\) => \{/.test(APP_CODE), 'posMs must still exist');
+  assert.ok(/const liveEdgeWallMs = \(\) => \{/.test(APP_CODE), 'liveEdgeWallMs must still exist');
+  assert.ok(/const prevEv = programBoundary\(schedule, posMs\(\), -1\);/.test(APP_CODE),
+    'the backwards lookup must be byte-identical');
+  // The read-only contract.
+  assert.ok(!/state\.current\.\w+\s*=/.test(HOOK), 'the hook must not write to the current-track object');
 });

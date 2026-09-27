@@ -831,7 +831,27 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // ISOLATION CONTRACT: this loop never touches audioEl, hls, or playback
   // state. Any fetch/network/parse failure just leaves the last known song
   // (or hides the line). One loop total, keyed to the active live channel.
-  const nowPlaying = { song: null, artwork: null, channelId: null };
+  const nowPlaying = { song: null, artwork: null, channelId: null, timeline: [] };
+  // ---- WS9: the song timeline, not just the current song ----
+  // The rightnow payload carries previoussong / nextsong alongside song, each
+  // with starttimeutc / stoptimeutc (verified live 2026-09-27: ch163
+  // previoussong 11:51:30-11:54:19, song 11:54:30-11:58:54). Before WS9 those
+  // were captured into META_DIAG.lastRightNowRaw and otherwise DISCARDED --
+  // every mention of them in this file was inside a comment.
+  //
+  // DESIGN DECISION (WS9 §2). Two options were on the table: hold only
+  // song+previous+next (reaching ~one song either side), or retain a rolling
+  // history. BOTH are done, deliberately:
+  //   * `timeline` retains every entry seen across polls, deduped by start
+  //     time, so skipping back over several songs still resolves.
+  //   * a seek ALSO triggers a re-poll, which refreshes the ends of the range.
+  // The timeline is capped (see NOW_PLAYING_TIMELINE_MAX) so a long listening
+  // session cannot grow it without bound; the oldest entries are dropped first.
+  //
+  // Cost: the re-poll is one extra HTTP request per seek. It is debounced, and
+  // it runs through the SAME seq-guarded path as the periodic poll, so it
+  // cannot race the channel switch or leak a stale response.
+  const NOW_PLAYING_TIMELINE_MAX = 60;
   let nowPlayingTimer = null;
   let nowPlayingSeq = 0; // stale-response guard on channel switches
   let artworkSeq = 0; // invalidates stale artwork lookups on every source change
@@ -908,6 +928,9 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     nowPlaying.song = null;
     nowPlaying.artwork = null;
     nowPlaying.channelId = null;
+    // WS9: the timeline is per-channel, so it must not survive a channel switch
+    // or the entries would be matched against another channel's playhead.
+    nowPlaying.timeline = [];
   }
 
   async function fetchNowPlaying(channelId, seq) {
@@ -928,6 +951,32 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         startMs: parseSrDate(song.starttimeutc),
         stopMs: parseSrDate(song.stoptimeutc),
       } : null;
+      // ---- WS9: retain previous/next into the timeline ----
+      // Each entry is normalised to the same shape as nowPlaying.song so the
+      // selector below does not care where an entry came from. Entries without
+      // BOTH timestamps are useless for position matching and are dropped --
+      // which is why a talk channel (all three null) simply leaves the
+      // timeline empty and the song line hidden, as before.
+      const keep = (s) => {
+        if (!s) return;
+        const startMs = parseSrDate(s.starttimeutc);
+        const stopMs = parseSrDate(s.stoptimeutc);
+        if (!Number.isFinite(startMs) || !Number.isFinite(stopMs)) return;
+        const title = s.title || '';
+        const artist = s.artist || '';
+        if (!title && !artist) return;
+        // Deduped by start time: repeated polls return the same entries.
+        if (nowPlaying.timeline.some((e) => e.startMs === startMs)) return;
+        nowPlaying.timeline.push({ title, artist, startMs, stopMs });
+      };
+      // Oldest first, so indexOf/index math stays simple after the sort.
+      keep(pl.previoussong);
+      keep(song);
+      keep(pl.nextsong);
+      nowPlaying.timeline.sort((a, b) => a.startMs - b.startMs);
+      if (nowPlaying.timeline.length > NOW_PLAYING_TIMELINE_MAX) {
+        nowPlaying.timeline.splice(0, nowPlaying.timeline.length - NOW_PLAYING_TIMELINE_MAX);
+      }
       nowPlaying.channelId = channelId;
       paintNowPlaying();
       // Artwork lookup is fully isolated: failure = no image, nothing else.
@@ -1016,9 +1065,16 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     const line = $player.querySelector('.now-playing-line');
     const cur = state.current;
     const isEpisode = Boolean(cur && cur.kind === 'episode');
+    // WS9: for a LIVE stream the displayed song is the one containing the
+    // PLAYHEAD, not `nowPlaying.song` (which is whatever is on air right now).
+    // After a seek the two differ, and the on-air one is wrong. For episodes
+    // the existing position-aware path (updateEpisodeTrack) already applies.
+    const liveSong = (!isEpisode && cur && cur.kind === 'live')
+      ? pickByPosition(nowPlaying.timeline, playheadWallMs())
+      : null;
     const song = isEpisode
       ? episodeCurrentTrack
-      : nowPlaying.song;
+      : (liveSong || null);
     // Episodes have no compact now-playing line, but their expanded panel
     // still depends on this function. Repaint the panel even when no compact
     // line is present.
@@ -1057,17 +1113,79 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     if (panel && typeof panel._srRepaint === 'function') panel._srRepaint();
   }
 
+  // ---- WS9: the playhead's WALL-CLOCK position, shared by every consumer ----
+  // Before WS9 each consumer derived "now" differently: the programme title
+  // used Date.now() (so it showed whatever is ON AIR), the skip button derived
+  // its own estimate inside renderPlayer(). Both are wrong after a seek, and
+  // they could disagree with each other.
+  //
+  // This is the single definition, and it is deliberately the same arithmetic
+  // the DVR skip button already uses, so the title cannot claim a different
+  // position than the button acted on. It maps media time to wall clock:
+  //     playhead wall clock = now - (live edge - currentTime)
+  // It lives at module scope (not inside renderPlayer) because resolveProgram-
+  // Title and the seek paths need it without a player render.
+  function playheadWallMs() {
+    const end = state.current ? state.current.seekableEnd : null;
+    if (!Number.isFinite(end)) return Date.now();
+    return Date.now() - (end - (audioEl.currentTime || 0)) * 1000;
+  }
+
+  // Select the entry whose [startMs, stopMs) contains the playhead. The same
+  // containment rule the episode-track updater uses, so a DVR listener sees
+  // the same behaviour as an archived-episode listener.
+  function pickByPosition(entries, atMs) {
+    if (!Array.isArray(entries) || !entries.length) return null;
+    return entries.find((e) => e.startMs <= atMs && atMs < e.stopMs) || null;
+  }
+
+  // ---- WS9: re-resolve BOTH the programme title and the song for the
+  // playhead's position, without re-fetching anything. ----
+  // The schedule is already in the 10-minute cache, and the song timeline is
+  // already held, so this is a cheap recompute. It is called after a seek
+  // (and by the seek paths) rather than on every timeupdate, so it cannot
+  // thrash.
+  function resolveMetadataForPosition(cur) {
+    const track = cur || state.current;
+    if (!track || track.kind !== 'live' || !track.id) return;
+    const atMs = playheadWallMs();
+
+    // Programme title: the event CONTAINING the playhead, not the one on air.
+    const schedule = cur._srSchedule;
+    if (Array.isArray(schedule) && schedule.length) {
+      const ev = pickByPosition(schedule.map((e) => ({
+        startMs: e.startMs, stopMs: e.endMs, title: e.title,
+      })), atMs);
+      if (ev?.title && ev.title !== track._srProgramTitle) {
+        track._srProgramTitle = ev.title;
+        paintProgramTitle();
+      } else if (ev?.title) {
+        paintProgramTitle();
+      }
+    }
+
+    // Song: the timeline entry containing the playhead.
+    const hit = pickByPosition(nowPlaying.timeline, atMs);
+    const title = hit ? hit.title : '';
+    const artist = hit ? hit.artist : '';
+    if ((title || null) !== (nowPlaying._srPaintedTitle || null)
+      || (artist || null) !== (nowPlaying._srPaintedArtist || null)) {
+      nowPlaying._srPaintedTitle = title || null;
+      nowPlaying._srPaintedArtist = artist || null;
+      paintNowPlaying();
+    }
+  }
+
   async function resolveProgramTitle(cur) {
     if (!cur || cur.kind !== 'live' || !cur.id) return;
     try {
       const schedule = await fetchSchedule(cur.id);
       if (!schedule || state.current !== cur) return; // superseded
-      const now = Date.now();
-      const ev = schedule.find((e) => now >= e.startMs && now < e.endMs);
-      if (ev?.title) {
-        cur._srProgramTitle = ev.title;
-        paintProgramTitle();
-      }
+      // WS9: keep the schedule so a later SEEK can re-resolve the title from
+      // cache, without another fetch. Per-track, so a channel switch can never
+      // see another channel's schedule.
+      cur._srSchedule = schedule;
+      resolveMetadataForPosition(cur);
     } catch { /* schedule unavailable — 'Direkt' fallback stays */ }
   }
 
@@ -1854,6 +1972,27 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     });
   });
 
+  // ---- WS9: re-resolve the programme and song when the playhead MOVES ----
+  // A `seeked` listener is used rather than edits to seekToProgramTime /
+  // seekBy / seekToLive, because those are explicitly out of scope and must
+  // stay byte-identical. One listener, registered ONCE at module scope, so it
+  // cannot accumulate the way renderPlayer's timeupdate listener used to (the
+  // WS1 leak). It is counted in META_DIAG like the app's other registrations,
+  // so the WS0 snapshot keeps telling the truth.
+  // No channel guard: the listener body checks state.current itself.
+  audioEl._srSeekedUpd = () => {
+    const cur = state.current;
+    if (!cur || cur.kind !== 'live') return;
+    resolveMetadataForPosition(cur);
+    // A seek can jump beyond what the retained timeline covers (or before its
+    // first entry), so refresh the ends of the range. One request, through
+    // the SAME seq-guarded path as the periodic poll -- it cannot race a
+    // channel switch, and it does not re-fetch the schedule.
+    scheduleNowPlayingPoll();
+  };
+  metaDiagCountAdd('seeked');
+  audioEl.addEventListener('seeked', audioEl._srSeekedUpd);
+
   function renderPlayer() {
     const cur = state.current;
     if (!cur) return;
@@ -2215,8 +2354,44 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       // Program-skip buttons live in the MAIN controls row now (created
       // below); the schedule wiring happens after they exist.
 
+      // ---- WS9 Part C: the DVR window, in ONE screenshot ----
+      // The skip button failed five times because every offline model had to
+      // ASSUME the window length: the toast hardcoded "3 timmar", so the real
+      // value was never recorded anywhere. This readout derives it from
+      // cur.seekableStart / cur.seekableEnd and shows nothing when they are
+      // unknown -- never a guess, never a literal.
+      // It sits in the seek row (below the WS5b header), so the header's
+      // alignment is untouched.
+      const windowReadout = el('div', { class: 'dvr-window-readout' });
+      const paintWindowReadout = () => {
+        const s = cur.seekableStart;
+        const e = cur.seekableEnd;
+        if (!Number.isFinite(s) || !Number.isFinite(e) || e <= s) {
+          // Unknown window: say nothing rather than assert a number.
+          windowReadout.textContent = '';
+          windowReadout.removeAttribute('title');
+          return;
+        }
+        const clock = (ms) => new Date(ms * 1000).toLocaleTimeString('sv-SE', {
+          hour: '2-digit', minute: '2-digit',
+        });
+        const secs = Math.round(e - s);
+        // Round sensibly: minutes below an hour, hours+minutes above.
+        let len;
+        if (secs < 3600) {
+          len = `${Math.round(secs / 60) / 1} min`;
+        } else {
+          const h = Math.floor(secs / 3600);
+          const m = Math.round((secs - h * 3600) / 60);
+          len = m ? `${h} h ${m} min` : `${h} h`;
+        }
+        windowReadout.textContent = `${clock(s)} – ${clock(e)} · ${len} spolbart`;
+        windowReadout.title = `DVR-fönstret: ${clock(s)} till ${clock(e)} (${len})`;
+      };
+      paintWindowReadout();
+
       seekRow = el('div', { class: 'seek-row dvr-row' },
-        timeLeft, bar);
+        timeLeft, bar, windowReadout);
       const fill = bar.querySelector('.seek-fill');
       const thumb = bar.querySelector('.seek-thumb');
 
@@ -3995,6 +4170,21 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       seekableEnd: cur ? cur.seekableEnd : null,
       seekableStart: cur ? cur.seekableStart : null,
       seekableDuration: cur ? cur.seekableDuration : null,
+      // WS9 Part C: the window's REAL length, DERIVED from the two values
+      // above. The hardcoded "3 timmar" in the out-of-window toast is why
+      // every offline model of the skip button had to guess; this is measured.
+      windowSeconds: (cur && Number.isFinite(cur.seekableStart)
+        && Number.isFinite(cur.seekableEnd) && cur.seekableEnd > cur.seekableStart)
+        ? cur.seekableEnd - cur.seekableStart : null,
+      // WS9: the playhead's wall-clock position and what it resolves to, so a
+      // screenshot shows the title AND the position that produced it.
+      playheadWallMs: (cur && cur.kind === 'live') ? playheadWallMs() : null,
+      programAtPlayhead: (cur && cur.kind === 'live' && Array.isArray(cur._srSchedule))
+        ? (pickByPosition(cur._srSchedule.map((e) => ({
+          startMs: e.startMs, stopMs: e.endMs, title: e.title,
+        })), playheadWallMs())?.title ?? null)
+        : null,
+      songTimelineLength: nowPlaying.timeline.length,
     };
     if (!btn) {
       // The button only exists when cur.dvrAvailable was true at render time.
@@ -4250,6 +4440,11 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         // reads the failure mode without opening the snapshot.
         skipPress: snap.dom.nextProgram?.press
           ? `${snap.dom.nextProgram.press.calls}/${snap.dom.nextProgram.press.lastBranch ?? 'none'}`
+          : null,
+        // WS9 Part C: the real window length on the one line, so the owner can
+        // read it without expanding the snapshot.
+        dvrWindow: snap.dom.nextProgram?.press?.windowSeconds != null
+          ? `${Math.round(snap.dom.nextProgram.press.windowSeconds / 60)} min`
           : null,
         listeners: snap.listeners.netLive,
       })}`);

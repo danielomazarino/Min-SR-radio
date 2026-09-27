@@ -869,6 +869,19 @@ body.player-gesture-lock {
 }
 .player-btn-close svg { width: 16px; height: 16px; }
 
+/* WS9 Part C: the DVR window readout (derived, never a literal). Sits in the
+   seek row so the WS5b header alignment above it is untouched. Small and
+   low-contrast: this is instrumentation, not content. */
+.dvr-window-readout {
+  font-size: 10.5px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex: none;
+  margin-left: 2px;
+}
+.dvr-window-readout:empty { display: none; }
+
 .seek-row {
   display: flex;
   align-items: center;
