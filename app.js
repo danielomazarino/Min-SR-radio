@@ -1909,14 +1909,18 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         })
       : null;
 
-    const meta = el('div', { class: 'player-meta' },
-      el('div', { class: 'player-title', text: cur.title || '' }),
-      el('div', { class: 'player-sub', text: cur._srProgramTitle || cur.subtitle || (live ? 'Direkt' : '') }),
-      // Now-playing line (live channels): artist – song from playlists/
-      // rightnow. Hidden entirely when song === null (talk content) —
-      // normal state, not an error.
-      live ? el('div', { class: 'now-playing-line', 'aria-live': 'polite' }) : null,
-      quality, mode);
+    // WS5 LAYOUT: the channel/programme identity moved OUT of this text stack
+    // into a quiet header line ABOVE the player (see `headerLine` below), and
+    // the song line moved BELOW the player (see `songLine` below). `meta` now
+    // holds only the quality/mode pills, so the player is much shorter and
+    // neither block is ever covered by the player surface.
+    //
+    // CLASS NAMES MUST NOT CHANGE: paintProgramTitle() and paintNowPlaying()
+    // both do $player.querySelector('.player-sub' / '.now-playing-line'), and
+    // the WS0 diagnostics snapshot the same. Renaming or moving either out of
+    // $player's subtree silently breaks programme titles, now-playing text and
+    // the snapshot.
+    const meta = el('div', { class: 'player-meta' }, quality, mode);
 
     // Fas 4 (redesign 2026-09-23): NO one-click expansion — accidental taps
     // opened it. Instead: a dedicated chevron handle in the player header
@@ -2444,11 +2448,32 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       }).catch(() => { /* schedule unavailable — buttons stay hidden */ });
     }
 
-    $player.appendChild(closeBtn);
+    // ---- WS5 layout pieces ----
+    // Header line: channel + programme, ABOVE the player surface. Keeps the
+    // original class names (paintProgramTitle writes .player-sub into it) and
+    // stays inside $player so both the paint functions and the diagnostics
+    // find it. Hidden entirely in the minimised layout — the mini-bar builds
+    // its own compact title, so this line is not rendered there at all.
+    const headerLine = el('div', { class: 'player-header' },
+      el('div', { class: 'player-title', text: cur.title || '' }),
+      el('div', { class: 'player-sub', text: cur._srProgramTitle || cur.subtitle || (live ? 'Direkt' : '') }));
+
+    // Song line: BELOW the player content, ABOVE the seek row. aria-live and
+    // the :empty / .has-song CSS behaviour are preserved, so a talk channel
+    // with no song collapses the row entirely instead of leaving a gap. Live
+    // channels only, exactly as before.
+    const songLine = live
+      ? el('div', { class: 'now-playing-line', 'aria-live': 'polite' })
+      : null;
+
+    $player.appendChild(headerLine);
+    // Close on the left, expand chevron on the right, on ONE shared flex row
+    // so they are aligned by flexbox rather than by hand-tuned pixel offsets
+    // (which drift as soon as artwork or text metrics change).
+    $player.appendChild(el('div', { class: 'player-header-btns' }, closeBtn, expandBtn));
     $player.appendChild(el('div', { class: 'player-row' }, thumb, meta, controls));
+    if (songLine) $player.appendChild(songLine);
     if (seekRow) $player.appendChild(seekRow);
-    // Expand handle sits in the header row (next to close).
-    $player.insertBefore(expandBtn, closeBtn.nextSibling);
 
     // ---- Self-healing repaint (blink fix 2026-09-23) ----
     // renderPlayer() is re-invoked by playback events ('playing', buffering
@@ -2986,9 +3011,9 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // Apply the current fold state to the freshly rendered section.
     updateNewsFold();
 
-    $main.appendChild(el('p', { class: 'attribution' },
-      'Data från ',
-      el('a', { href: 'https://sverigesradio.se', target: '_blank', rel: 'noopener', text: 'Sveriges Radio' })));
+    // The footer attribution was removed (WS5): the About/Settings overlay
+    // already carries the same attribution plus the independent-app
+    // disclaimer, so nothing is lost. Intentionally NOT re-added here.
 
     updatePlayingMarks();
   }

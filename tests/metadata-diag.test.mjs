@@ -495,9 +495,13 @@ test('hook adds no unconditional side effect at load time', () => {
 
 // The renderPlayer() schedule-wiring block, as CODE (comments stripped, so
 // assertions cannot match this file's own documentation).
+// The end marker is a CODE line that is stable across the WS5 layout change
+// (which replaced the DOM-assembly lines this region used to end on):
+// `}).catch(() => { /* schedule unavailable ... */ });` closes the schedule
+// promise, and the region ends with the block's own closing brace.
 const PROGRAM_SKIP = region(
   '// Wire program-skip buttons once the schedule resolves',
-  '$player.appendChild(closeBtn);', APP_JS
+  '// ---- WS5 layout pieces ----', APP_JS
 );
 const PROGRAM_SKIP_CODE = stripComments(PROGRAM_SKIP);
 
@@ -1299,4 +1303,189 @@ test('WS4: the _srNextUpd leak bookkeeping is intact', () => {
     path.join(__dirname, '..', 'manifest.webmanifest'), 'utf8'));
   assert.equal(MANIFEST_WS4.id, 'https://danielomazarino.github.io/Min-SR-radio/',
     'the WS3 absolute manifest id must be untouched');
+});
+
+// =====================================================================
+// Workstream 5 — player layout. PRESENTATION ONLY.
+//   Item 1: channel + programme moved ABOVE the player (out of .player-meta)
+//   Item 2: song line moved BELOW the player content, ABOVE the seek row
+//   Item 3: expand chevron moved to the right, level with the close button
+//   Item 4: overall player height reduced
+//   Item 5: the "Data från Sveriges Radio" footer removed
+// The five class names below are load-bearing: paintProgramTitle(),
+// paintNowPlaying() and the WS0 snapshot all query them inside $player.
+// =====================================================================
+
+const STYLES_WS5 = fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8');
+const RENDER_WS5 = stripComments(region('function renderPlayer()', '// ---- player gesture engine', APP_JS));
+const META_WS5 = (() => {
+  const live = RENDER_WS5.slice(RENDER_WS5.indexOf("const meta = el('div', { class: 'player-meta' }"));
+  return live.slice(0, live.indexOf(';'));
+})();
+
+test('WS5 Item 1: channel and programme moved above the player, names intact', () => {
+  // Slice the LIVE meta construction. Bounding it on the next comment is not
+  // enough: a mutation that re-adds .player-title/.player-sub can sit before
+  // that marker and escape the slice entirely (which is exactly how mutation
+  // M1 passed when it should not have).
+  const metaLive = RENDER_WS5.slice(
+    RENDER_WS5.indexOf("const meta = el('div', { class: 'player-meta' }"));
+  const metaDecl = metaLive.slice(0, metaLive.indexOf(';'));
+  // They must no longer be inside .player-meta ...
+  // NB: match the class ATTRIBUTE, not a dotted selector. The source reads
+  // `class: 'player-title'`, so a regex requiring a leading dot can never
+  // match and the assertion passes vacuously.
+  assert.ok(!/class: 'player-title'/.test(metaDecl),
+    '.player-title must NOT be inside .player-meta any more');
+  assert.ok(!/class: 'player-sub'/.test(metaDecl),
+    '.player-sub must NOT be inside .player-meta any more');
+  assert.ok(/quality/.test(metaDecl) && /mode/.test(metaDecl),
+    '.player-meta must still carry the quality and mode pills');
+  // ... but must still exist, with their ORIGINAL class names, in a header
+  // line appended to $player.
+  const header = stripComments(region('const headerLine = el(', 'const songLine', APP_JS));
+  assert.ok(header.includes("class: 'player-title'"),
+    '.player-title must keep its original class name');
+  assert.ok(header.includes("class: 'player-sub'"),
+    '.player-sub must keep its original class name');
+  assert.ok(/class: 'player-header'/.test(header),
+    'the header line needs its own container class');
+  // Appended to $player so paintProgramTitle() ($player.querySelector('.player-sub'))
+  // and the WS0 snapshot still find it.
+  assert.ok(/\$player\.appendChild\(headerLine\);/.test(RENDER_WS5),
+    'the header line must be appended to $player');
+  assert.ok(RENDER_WS5.indexOf('$player.appendChild(headerLine)')
+    < RENDER_WS5.indexOf('$player.appendChild(el(\'div\', { class: \'player-row\''),
+  'the header must be appended BEFORE the player row, so it renders above it');
+  // The paint functions must still be able to reach it.
+  assert.ok(APP_CODE.includes("querySelector('.player-sub')"),
+    'paintProgramTitle must still be able to query .player-sub');
+});
+
+test('WS5 Item 2: the song line sits below the player and above the seek row', () => {
+  // Same lesson as Item 1: slice the LIVE statement, not a comment-bounded region.
+  const metaLive2 = RENDER_WS5.slice(
+    RENDER_WS5.indexOf("const meta = el('div', { class: 'player-meta' }"));
+  const metaDecl2 = metaLive2.slice(0, metaLive2.indexOf(';'));
+  assert.ok(!/class: 'now-playing-line'/.test(metaDecl2),
+    '.now-playing-line must NOT be inside .player-meta any more');
+  const song = stripComments(region('const songLine = live', '$player.appendChild(headerLine)', APP_JS));
+  assert.ok(song.includes("class: 'now-playing-line'"),
+    'the song line must keep its original class name');
+  assert.ok(song.includes("'aria-live': 'polite'"),
+    'aria-live="polite" must be preserved');
+  // Live channels only, exactly as before.
+  assert.ok(/const songLine = live\s*\?/.test(song),
+    'the song line must remain live-only');
+  // Order in the assembled player: row -> song -> seekRow.
+  const order = RENDER_WS5.slice(RENDER_WS5.indexOf('$player.appendChild(headerLine)'));
+  const rowAt = order.indexOf("$player.appendChild(el('div', { class: 'player-row'");
+  const songAt = order.indexOf('$player.appendChild(songLine)');
+  const seekAt = order.indexOf('$player.appendChild(seekRow)');
+  assert.ok(rowAt !== -1 && songAt !== -1 && seekAt !== -1,
+    'row, song line and seek row must all be appended');
+  assert.ok(rowAt < songAt && songAt < seekAt,
+    'the song line must be BELOW the player row and ABOVE the seek row');
+  // The :empty / .has-song CSS collapse behaviour must survive.
+  assert.ok(STYLES_WS5.includes('.now-playing-line:empty { display: none; }'),
+    'an empty song line must still collapse the row');
+  assert.ok(STYLES_WS5.includes('.now-playing-line.has-song'),
+    'the has-song state must still be styled');
+});
+
+test('WS5 Item 3: the chevron is on the right, aligned by flexbox with close', () => {
+  // Both buttons share one row, close first, expand second.
+  assert.ok(/\$player\.appendChild\(el\('div', \{ class: 'player-header-btns' \}, closeBtn, expandBtn\)\);/
+    .test(RENDER_WS5),
+  'close and expand must share one flex row, close first');
+  // Alignment must come from flexbox, not from pixel offsets. The CSS lives in
+  // styles.css — slicing it out of app.js finds nothing.
+  const row = stripComments(region(
+    '.player-header-btns {', '.player-row {', STYLES_WS5));
+  assert.ok(/display: flex/.test(row), 'the button row must be a flex container');
+  assert.ok(/align-items: center/.test(row),
+    'align-items must guarantee they share the same vertical row');
+  assert.ok(/justify-content: space-between/.test(row),
+    'justify-content must push the chevron to the right');
+  assert.ok(!/top:|margin-top: \d|translateY\(/.test(row),
+    'vertical alignment must NOT use hard-coded offsets');
+  // The chevron rotation behaviour must survive, for BOTH buttons using the class.
+  assert.ok(STYLES_WS5.includes('.player-expand-btn.open { transform: rotate(180deg); }'),
+    'the open rotation must survive');
+  // setExpandOpen must still find the button inside $player.
+  assert.ok(/function setExpandOpen\(open\) \{[\s\S]*?querySelector\('\.player-expand-btn'\)/.test(APP_CODE),
+    'setExpandOpen must still query .player-expand-btn inside $player');
+  assert.ok(RENDER_WS5.includes('$player.appendChild(songLine)') === false
+    || RENDER_WS5.indexOf('player-header-btns') < RENDER_WS5.indexOf('player-row'),
+  'the button row must be assembled before the player row');
+});
+
+test('WS5 Item 5: the footer attribution is gone, the About overlay keeps it', () => {
+  // The footer must be gone from the CODE (not merely from the DOM).
+  assert.ok(!/class: 'attribution'/.test(APP_CODE),
+    'the .attribution paragraph must be removed from app.js');
+  assert.ok(!/\$\w+\.appendChild\(el\('p', \{ class: 'attribution'/.test(APP_CODE),
+    'no element may still append the attribution footer');
+  // The dead CSS must be gone too.
+  assert.ok(!/\.attribution \{/.test(STYLES_WS5), 'the .attribution rules must be removed');
+  assert.ok(!/\.attribution a \{/.test(STYLES_WS5), 'the .attribution link rule must be removed');
+  // The About overlay must KEEP its own attribution and the disclaimer.
+  const about = stripComments(region("'Datakällor & villkor'", 'about.appendChild(body)', APP_JS));
+  assert.ok(about.includes('Data från '),
+    "the About overlay's attribution must remain");
+  assert.ok(about.includes('sverigesradio.se'),
+    'the About overlay must keep its Sveriges Radio link');
+  assert.ok(about.includes('Appen är oberoende av och inte utgiven av Sveriges Radio.'),
+    'the independent-app disclaimer must remain in the About overlay');
+});
+
+test('WS5 Item 4: the layout CSS exists and narrow viewports are handled', () => {
+  assert.ok(STYLES_WS5.includes('.player-header {'), 'the header line must be styled');
+  assert.ok(STYLES_WS5.includes('.player-header .player-title'),
+    'the header title must be styled without changing the base class');
+  assert.ok(STYLES_WS5.includes('.player-header .player-sub'),
+    'the header programme must be styled without changing the base class');
+  // The narrow-viewport query must still exist and cover the new header.
+  assert.ok(STYLES_WS5.includes('@media (max-width: 340px)'),
+    'the 340px media query must survive');
+  const narrow = STYLES_WS5.slice(STYLES_WS5.indexOf('@media (max-width: 340px)'));
+  assert.ok(narrow.includes('.player-header'),
+    'the new header line must be handled at 340px so it cannot cramp');
+  // Legibility must not be bought back with font sizes.
+  assert.ok(!/\.player-header[^{]*\{[^}]*font-size:\s*1[01](\.\d)?px/.test(STYLES_WS5),
+    'the header must not shrink the base font sizes to claw back space');
+  // The song line must still be its own row below the player.
+  assert.ok(STYLES_WS5.includes('.now-playing-line {'),
+    'the song line must still be styled');
+});
+
+test('WS5: no out-of-scope behaviour function was changed', () => {
+  // WS5 is presentation-only. These must all still exist, untouched.
+  ['function seekBy(', 'function seekToLive(', 'function seekToProgramTime(',
+    'function programBoundary(', 'function updateSeekableState(',
+    'function enablePlayerGestures(', 'function minimizePlayer(', 'function restorePlayer(',
+    'function setExpandOpen(', 'const renderSongView = () => {']
+    .forEach((f) => {
+      assert.ok(APP_CODE.includes(f), `${f} must still exist`);
+    });
+  // WS4 behaviour must be intact.
+  assert.ok(APP_CODE.includes('else if (behindLive)'), 'the WS4 go-to-live branch must survive');
+  assert.ok(APP_CODE.includes("nextProgramBtn.onclick = () => seekToLive()"),
+    'the WS4 go-to-live wiring must survive');
+  assert.ok(APP_CODE.includes('Math.min(upper, Math.max(start,'),
+    'the WS4 ±15s upper clamp must survive');
+  assert.ok(!/0\.88/.test(APP_CODE), 'the removed 12% hit zone must stay removed');
+  assert.ok(APP_CODE.includes('const releaseDragStyles = () => {'),
+    'the WS4 guaranteed transform reset must survive');
+  assert.ok(APP_CODE.includes('const LIVE_EDGE_TOLERANCE_S = 10;'),
+    'LIVE_EDGE_TOLERANCE_S must be unchanged');
+  // The class names other functions depend on must not have been renamed.
+  ['player-title', 'player-sub', 'now-playing-line', 'player-expand-btn', 'player-btn-close']
+    .forEach((c) => {
+      assert.ok(APP_CODE.includes(c), `.${c} must still exist (paint/diagnostics depend on it)`);
+    });
+  // The WS0 gate must be untouched.
+  assert.ok(APP_CODE.includes('function metaDiagGateOpen()'), 'the WS0 gate must survive');
+  assert.ok(APP_CODE.includes("localStorage.getItem(META_DIAG_FLAG)"),
+    'the WS0 gate must still read its flag');
 });

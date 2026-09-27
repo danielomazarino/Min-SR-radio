@@ -697,6 +697,30 @@ body.player-gesture-lock {
   .player { transition: none; }
 }
 
+/* ---------- WS5: quiet header line above the player ---------- */
+/* Channel + programme sit ABOVE the player surface so the player can never
+   cover them. Deliberately smaller and lower-contrast than in-player text so
+   it reads as a header, not as competing with the controls. */
+.player-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 2px 4px;
+}
+.player-header .player-title { flex: none; max-width: 40%; }
+.player-header .player-sub { flex: 1; min-width: 0; }
+
+/* Shared row for the close (left) and expand chevron (right) buttons.
+   Flex alignment, NOT pixel offsets: `align-items` guarantees they share the
+   same vertical pixel row even as text and artwork metrics change, and
+   `justify-content` pushes the chevron to the far right. */
+.player-header-btns {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
 .player-row {
   display: flex;
   align-items: center;
@@ -1389,15 +1413,6 @@ body.player-gesture-lock {
   text-align: center;
 }
 
-/* ---------- attribution (SR terms) ---------- */
-.attribution {
-  font-size: 11.5px;
-  color: var(--text-secondary);
-  text-align: center;
-  padding: 6px 0 4px;
-}
-.attribution a { color: var(--text-secondary); }
-
 /* ---------- narrow viewports (dev panels, small phones) ---------- */
 @media (max-width: 340px) {
   .topbar { padding: 10px 12px 6px; }
@@ -1408,6 +1423,9 @@ body.player-gesture-lock {
   .stream-icon, .icon-empty { border-radius: 14px; }
   .news-thumb { width: 52px; height: 52px; }
   .reader-body { padding: 14px; }
+  /* WS5: keep the new header line readable on the narrowest phones. */
+  .player-header { gap: 6px; }
+  .player-header .player-title { max-width: 46%; }
 }
 
 /* very narrow: icons shrink slightly but stay on one scrollable row */
