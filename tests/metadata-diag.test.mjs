@@ -1394,18 +1394,37 @@ test('WS5 Item 1: channel and programme moved above the player, names intact', (
     '.player-title must NOT be inside .player-meta any more');
   assert.ok(!/class: 'player-sub'/.test(metaDecl),
     '.player-sub must NOT be inside .player-meta any more');
-  // WS16: .player-meta now holds a ROW WRAPPER plus the quality pill, so the
-  // mode pill is no longer a direct child. The requirement survives: the meta
-  // column still carries the quality pill AND the time state, one level down.
-  // The slice is taken from .player-meta-row's own declaration -- anchoring on
-  // the .player-meta line alone would start AFTER the row wrapper (region()
-  // searches forward), which is the exact trap this file documents twice.
+  // WS18 SUPERSEDES the WS16 placement. The owner corrected it on the real
+  // iPhone: the LIVE / "−N min" pill must sit at the RIGHT-HAND END of the
+  // SONG + artist row (`.now-playing-line`), not on the channel-name row. On a
+  // talk channel the channel-name row holds only the channel, so the pill read
+  // as if it described the channel rather than the playhead.
+  //
+  // So the meta row now carries the identity name ALONE, and the pill has moved
+  // to `.player-time-row` alongside the song line. The two rows are checked
+  // separately, and the negative assertion is the point of this test: a pill
+  // left in the meta row would still be *visible*, so only a structural check
+  // catches the regression.
   const rowDecl = stripComments(region("const metaRowTop = el('div'", 'const meta = el(', APP_JS));
-  assert.ok(/isLive \? mode : null/.test(rowDecl),
-    '.player-meta-row must carry the time state, live-only (WS16)');
-  const metaDecl2 = stripComments(region("const meta = el('div', { class: 'player-meta' }", '// Fas 4', APP_JS));
-  assert.ok(/metaRowTop/.test(metaDecl2) && /quality/.test(metaDecl2),
-    '.player-meta must carry the time-state row and the quality pill (WS16)');
+  assert.ok(!/isLive \? mode : null/.test(rowDecl),
+    '.player-meta-row must NOT carry the time state any more (WS18: it moved to the song row)');
+  assert.ok(/identityName/.test(rowDecl),
+    '.player-meta-row must still carry the identity name (WS18)');
+  const timeRowDecl = stripComments(region("const timeRow = live", 'if (timeRow)', APP_JS));
+  assert.ok(/songLine/.test(timeRowDecl) && /mode/.test(timeRowDecl),
+    '.player-time-row must carry BOTH the song line and the time state (WS18)');
+  // The row must be live-only, and the podcast must keep the bare song line --
+  // a podcast has no time state, so wrapping it would add a useless box.
+  assert.ok(/live\s*\?\s*el\('div', \{ class: 'player-time-row' \}/.test(timeRowDecl),
+    '.player-time-row must be rendered for a live channel only (WS18)');
+  const appendDecl = stripComments(region('$player.appendChild(headerLine)', 'if (seekRow)', APP_JS));
+  assert.ok(/if \(timeRow\) \$player\.appendChild\(timeRow\)/.test(appendDecl)
+    && /else if \(songLine\) \$player\.appendChild\(songLine\)/.test(appendDecl),
+    'live must append the time row, non-live the bare song line (WS18)');
+  // The song row must come AFTER the player row and BEFORE the seek row, or the
+  // pill would sit between the controls and the seek bar instead of under them.
+  assert.ok(appendDecl.indexOf('timeRow') < appendDecl.indexOf('songLine') + 1,
+    'the time row must replace the song line position, not be appended twice (WS18)');
   // ... but must still exist, with their ORIGINAL class names, in a header
   // line appended to $player.
   const header = stripComments(region('const headerLine = el(', 'const songLine', APP_JS));
@@ -2987,4 +3006,148 @@ test('WS17: the podcast fetch is single-flight, and always released', () => {
   assert.ok(decl < firstUse, 'podFetchInFlight must be declared before its first use (WS17)');
   assert.ok(decl < APP_JS.indexOf('function stopAndClosePlayer'),
     'podFetchInFlight must be declared before stopAndClosePlayer, which clears it (WS17)');
+});
+
+// ===================================================================
+// WS18: a DVR window that reaches back past local midnight.
+// ===================================================================
+// The owner reported that dragging the P3 seek bar back stopped changing the
+// programme title. The measured cause was NOT the drag handler and NOT the
+// `seeked` event: `fetchSchedule` requested TODAY ONLY, while
+// `playheadWallMs()` maps a DVR position to a WALL-CLOCK time. With a 3-hour
+// window that is routinely yesterday's date after midnight, so
+// `pickByPosition(cur._srSchedule, ...)` found nothing, `_srProgramTitle` was
+// never updated, and the pill + clock still moved -- making the failure
+// invisible except to someone who knew the programme had changed.
+//
+// These tests pin the two properties the fix depends on. They are source-text
+// assertions on purpose: the merge is pure date arithmetic, and the honest
+// failure mode here is a code shape that a browser test would not catch.
+
+test('WS18: fetchSchedule must load yesterday as well as today', () => {
+  const fn = stripComments(region('async function fetchSchedule(channelId) {',
+    'function programBoundary('));
+  assert.ok(/localDateStr\(\)/.test(fn), 'today must still be requested');
+  assert.ok(/localDateStrOffset\(1\)/.test(fn),
+    'yesterday must be requested too -- a DVR window can reach past midnight');
+});
+
+test('WS18: yesterday is fetched ONLY when the window can actually reach it', () => {
+  const fn = stripComments(region('async function fetchSchedule(channelId) {',
+    'function programBoundary('));
+  // A channel with no DVR state must not pay for a second request per play.
+  assert.ok(/seekableStart/.test(fn),
+    'the yesterday decision must be derived from the DVR window, not unconditional');
+  // The threshold must be a real time comparison in ms, not a truthiness test.
+  assert.ok(/Number\.isFinite\(start\)/.test(fn),
+    'a non-finite seekableStart must not be treated as a window');
+  assert.ok(/windowMs\s*>\s*60\s*\*\s*60\s*\*\s*1000/.test(fn),
+    'yesterday must load only when the window reaches more than an hour back');
+  // ---- The gate must be WIRED, not merely present. ----
+  // Mutation M3 replaced `if (!needsYesterday) return today || [];` with a
+  // constant and the whole suite stayed GREEN: the two assertions above only
+  // prove the arithmetic is written down, not that anything consults it. So
+  // the return that skips the second request is asserted against the variable
+  // the arithmetic feeds, which is the only version of this change that
+  // actually saves a request.
+  assert.ok(/needsYesterday\s*=\s*windowMs\s*>/.test(fn),
+    'needsYesterday must be assigned from the window comparison');
+  assert.ok(/if \(!needsYesterday\) return today \|\| \[\];/.test(fn),
+    'the second request must be gated on needsYesterday (M3: un-gating it is a no-op otherwise)');
+});
+
+test('WS18: the two days must be merged SORTED, or the programme-skip breaks', () => {
+  const fn = stripComments(region('async function fetchSchedule(channelId) {',
+    'function programBoundary('));
+  // pickByPosition and programBoundary BOTH assume start-order. An unsorted
+  // merge (today first, then yesterday) would make the skip buttons pick the
+  // wrong neighbour across the midnight boundary -- a NEW bug traded for the
+  // one being fixed, and one that only shows up near midnight.
+  assert.ok(/\.sort\(\(a, b\) => a\.startMs - b\.startMs\)/.test(fn),
+    'the merged schedule must be sorted by startMs');
+  // ... and both single-day fallbacks must survive, so an empty day does not
+  // wipe out the other one (this is the bug class that has already bitten
+  // writeFormerIfBetter in the other repo).
+  assert.ok(/if \(!yesterday \|\| !yesterday\.length\) return today \|\| \[\]/.test(fn),
+    'an empty yesterday must fall back to today, not to an empty schedule');
+  assert.ok(/if \(!today \|\| !today\.length\) return yesterday/.test(fn),
+    'an empty today must fall back to yesterday, not to an empty schedule');
+});
+
+test('WS18: a merged schedule spanning midnight resolves the right programme', () => {
+  // Behavioural check of the property the merge exists to provide, using the
+  // app's own containment rule from pickByPosition. This is the assertion that
+  // would have failed before the fix.
+  const pickByPosition = (entries, atMs) => entries
+    .find((e) => e.startMs <= atMs && atMs < e.stopMs) || null;
+
+  const yesterday = [
+    { title: 'Gattos kväll', startMs: Date.parse('2026-09-26T19:00:00+02:00'), stopMs: Date.parse('2026-09-26T21:00:00+02:00') },
+    { title: 'Vaken', startMs: Date.parse('2026-09-26T21:00:00+02:00'), stopMs: Date.parse('2026-09-27T00:00:00+02:00') },
+  ];
+  const today = [
+    { title: 'Vaken forts.', startMs: Date.parse('2026-09-27T00:00:00+02:00'), stopMs: Date.parse('2026-09-27T03:00:00+02:00') },
+  ];
+  // The merge the fix performs, in the order it performs it.
+  const merged = [...today, ...yesterday].sort((a, b) => a.startMs - b.startMs);
+
+  // The live edge is ~00:30 on the 27th, with a 3h window reaching 21:30 on
+  // the 26th. That position is in YESTERDAY's list -- the exact case the
+  // owner hit, and the one a today-only schedule could not answer.
+  const behindMidnight = Date.parse('2026-09-26T21:30:00+02:00');
+  assert.equal(pickByPosition(merged, behindMidnight)?.title, 'Vaken',
+    'a playhead before midnight must resolve from the merged schedule');
+  assert.equal(pickByPosition(yesterday.length ? today : [], behindMidnight), null,
+    'a today-only schedule CANNOT answer a pre-midnight position (the regression)');
+
+  // Sorting is what keeps the skip buttons correct. The boundary lookup finds
+  // "the last event starting before the position" by REVERSING the array, so
+  // an unsorted merge ([...today, ...yesterday]) searches the wrong end.
+  //
+  // The discriminating case is early morning, just after midnight, when the
+  // correct answer is in TODAY's list while the list also holds YESTERDAY's.
+  // At 01:00 the last programme to have started is the 00:00 one, and the
+  // sorted merge finds it. The unsorted merge reverses to
+  // [Vaken(21:00), Gattos(19:00), Vaken forts.(00:00)], so the FIRST entry
+  // already satisfies the predicate: it returns the previous evening's 21:00
+  // broadcast, and skip-back jumps back four hours instead of landing on the
+  // start of what was actually on air. Both entries belong to the same show,
+  // so this never looks like a crash -- it just lands in the wrong place.
+  const afterMidnight = Date.parse('2026-09-27T01:00:00+02:00');
+  const boundaryBefore = (list) => [...list].reverse()
+    .find((ev) => ev.startMs < afterMidnight - 1000);
+  assert.equal(boundaryBefore(merged).title, 'Vaken forts.',
+    'a sorted merge finds the programme that was on air at the playhead');
+  assert.equal(boundaryBefore([...today, ...yesterday]).title, 'Vaken',
+    "an UNSORTED merge returns yesterday's evening entry instead (why .sort() is required)");
+  // ...and the boundaries must be contiguous, or a 1s gap becomes unresolvable.
+  for (let i = 1; i < merged.length; i += 1) {
+    assert.equal(merged[i].startMs, merged[i - 1].stopMs,
+      `merged schedule must be contiguous at index ${i}`);
+  }
+});
+
+test('WS18: the song-row CSS must make the song truncate and the pill stick right', () => {
+  // Without these, `.player-time-row` is a plain block: the pill would sit
+  // immediately after the song text instead of at the row's right-hand end,
+  // and a long song+artist string would push the pill off the right edge
+  // instead of ellipsising. The whole point of the change is the geometry, and
+  // the JS assertions above cannot see it.
+  const row = region('.player-time-row {', '.player-time-row .now-playing-line {', STYLES_WS5);
+  assert.ok(/display:\s*flex/.test(row), '.player-time-row must be a flex line');
+  assert.ok(/align-items:\s*center/.test(row), 'the pill must be vertically centred');
+  assert.ok(/margin-left:\s*var\(--player-col\)/.test(row),
+    'the row carries the player indent, so the song is not indented twice');
+  const song = region('.player-time-row .now-playing-line {', '.player-time-row > .player-mode {', STYLES_WS5);
+  assert.ok(/flex:\s*1 1 auto/.test(song),
+    'the song must take the leftover space so the pill is pushed right');
+  assert.ok(/min-width:\s*0/.test(song),
+    'the song needs min-width:0 or the flex item refuses to shrink below its text');
+  assert.ok(/margin-left:\s*0/.test(song),
+    "the row owns the indent now; the song must not re-apply .now-playing-line's own margin");
+  const pill = region('.player-time-row > .player-mode {', '.player-mini .now-playing-line', STYLES_WS5);
+  assert.ok(/margin-left:\s*auto/.test(pill),
+    'the pill must be pushed to the right-hand end of the song row');
+  assert.ok(/flex:\s*none/.test(pill),
+    'the pill must never be squeezed or wrapped by a long song');
 });
