@@ -29,20 +29,25 @@ Position-aware programme + song titles (WS9) · DVR window **measured at 3 h 1 m
 (WS10) · build id from the source commit (WS10) · DVR readout removed, slider
 recovered 61 px (WS11) · frozen `1.5.0` deleted (WS11) · MediaSession now feeds
 song/artist/artwork (WS11) · build line back under NYHETER (WS12) · podcast cover
-+ mid-player song line (WS12) · close + chevron on the transport row (WS13) ·
-episode album cover via the shared iTunes lookup (WS13).
++ mid-player song line (WS12) · episode album cover via the shared iTunes lookup
+(WS13) · **chevron + close back on the header, right-grouped (WS14)**.
 
 **The forward-skip button works on the owner's phone. Do not reopen it.**
 
+**WS14 closed the 7-button squeeze.** At 390px `.player-meta` is 70.1px (was 0),
+row overflow 0 (was 14). Not Safari-dependent — reproduced in Chromium.
+
 ## Open, in priority order
-1. **7-button DVR state squeezes `.player-meta` to 0 px** (Chromium, 390 px,
-   *constructed* state). Needs an **owner decision**, not another measurement.
-2. **Podcast songs never resolve** — SR's `ondemand` returns null timings
+1. **320px is not fixed.** `.player-meta` is 4.0px there and the pills paint
+   outside their box again. Same mechanism, deferred, not removed.
+2. **Header buttons are 32px, under the 44px iOS tap-target guidance.** A
+   deliberate trade for title width. Needs a real-device check.
+3. **Podcast songs never resolve** — SR's `ondemand` returns null timings
    (18/18 tracks, pod 78) and zero tracks for six other podcasts. Upstream. The
    whole podcast track path is therefore **tested but not shown with real data**.
-3. **iTunes hit rate on real track data: 73%, 89% of hits correct artist**
-   (51 tracks, 4 podcasts). Better than WS12 claimed, but not a guarantee.
-4. Carried over: lock screen opens the wrong PWA · P1→P2 mismatch · P2
+4. **iTunes hit rate on real track data: 73%, 89% of hits correct artist**
+   (51 tracks, 4 podcasts). A measurement, not a guarantee.
+5. Carried over: lock screen opens the wrong PWA · P1→P2 mismatch · P2
    metadata/artwork · `scheduleCache` never cleared · `armPlaybackWatchdog`
    has no exhausted guard · E1–E4 enhancements.
 
@@ -54,7 +59,11 @@ episode album cover via the shared iTunes lookup (WS13).
 2. **Quote the owner verbatim; never paraphrase a brief.** A mis-transcription
    of their words cost three workstreams today.
 3. **Verify a prior brief's premise yourself before building on it.** WS12's
-   "the lookup searches the podcast name" was simply false.
+   "the lookup searches the podcast name" was simply false. And in WS13 I
+   re-broke a defect WS12 had already measured and fixed, because a later
+   sentence in a brief sounded like a command. **A measurement recorded in
+   the codebase outranks a brief that appears to contradict it**, until
+   someone explains why it stopped being true.
 4. **Commit source and its tests in ONE commit**, then build, then commit
    artifacts. Before pushing, **clone `origin/main` and run the suite at the
    tip** — WS12A left `main` failing for exactly one commit.

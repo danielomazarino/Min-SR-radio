@@ -14,6 +14,74 @@ entry is superseded, add a dated annotation rather than rewriting it.
 
 ---
 
+## 2026-09-27 (later) — WS14: chevron + close back on the header, right-grouped
+
+**DEPLOYED and verified live.** Commits `732260a` (source + tests TOGETHER) ->
+`4d3f3c7` (artifacts). Live: `app.ae722bab.js` / `styles.8019bb91.css` / SW
+`minradio-e220014c` / build id `732260a`. Served bundle byte-identical to local.
+Tip of `origin/main` green in a clean worktree before the push.
+
+**Owner request (verbatim):** "right grouped to visually look as the minimised
+player ... on the same row as the channel and programme title. same for podcasts"
+
+### B1 is CLOSED
+`.player-meta` was **0px** and the row overflowed 14px in the 7-button DVR state.
+Now, at 390px: **meta 70.1px, row overflow 0px, header overflow 0px**, close
+button fully inside the header. The header reads
+`spacer | P1 | programme | chevron | close`.
+
+| Viewport | `.player-meta` | row overflow | clipping |
+|---|---|---|---|
+| 390 (iPhone 13/14) | 70.1px | 0 | 0 |
+| 375 (13 mini / SE) | 55.2px | 0 | 0 |
+| 360 (most Androids) | 40.3px | 0 | 0 |
+| 320 (SE 1st gen) | **4.0px** | 0 | 0 |
+
+### I was wrong about the CAUSE, and it matters
+I first attributed WS13 to a missing comma in the brief's quote of the owner
+("not to," the right...). **That was wrong.** WS12's own code comment already
+held the measurement — "with the DVR state (7 buttons) meta went to 0px, the row
+overflowed 388 > 358". WS13 re-broke a defect I had already found and fixed,
+because a comma-less "to mimic the ui for the minimised player" read as a fresh
+instruction and overrode my own prior finding.
+
+**The lesson is not about commas. It is that a later sentence sounding like a
+command is not a reason to discard a measurement already in the codebase.** This
+is rule 10 in the log below, violated the same day it was written. When a brief
+contradicts a measurement recorded in the code, the measurement wins until
+someone explains why it stopped being true.
+
+**Not Safari-dependent.** Reproduced in Chromium at 390px: `.player-meta` 0px,
+row 372 > 358, identical mechanism. `.player-meta` is `flex: 1 1 0%` with
+`min-width: 0`, so it absorbs the entire deficit to 0 and never pushes back. The
+text was not truncated — it PAINTED outside its box (`overflow: visible`), which
+is why the defect looked milder than it was.
+
+### STILL OPEN — not fixed, do not claim otherwise
+1. **320px is not fixed.** `.player-meta` is 4.0px and the pills paint outside
+   their box again — the same mechanism, *deferred to a narrower screen* rather
+   than removed. The 390px iPhone 13 is fine; a 320px device is not.
+2. **The header buttons are 32px, below the 44px iOS tap-target guidance.** A
+   deliberate trade for programme-title width (222px at 32px vs 202px at 44px).
+   Needs a real-device check before anyone calls this final.
+
+### Testing
+184/184. Five existing tests asserted the WS13 placement and were **rewritten with
+the reason recorded**, not flipped — test 111 keeps the full WS5/11a/12/13/14
+trail including why the WS13 premise was false. Test 142 gained a regression guard
+recording that `document.scrollWidth > window.innerWidth` is FALSE in every
+broken case.
+
+**4 mutations, all red, 0 no-ops, md5 before/after:**
+| Mutation | Caught by |
+|---|---|
+| swap chevron/close order | 111, 141 |
+| buttons back on transport row (the WS13 regression) | 111, 141, 142 |
+| header buttons at `--player-art` | 115, 117, 141 |
+| `margin-left: auto` removed | 115, 117, 141 |
+
+---
+
 ## 2026-09-27 — WS0–WS13: position-aware metadata, build identity, player layout, MediaSession, podcast episodes
 
 **Status: everything below is DEPLOYED and LIVE.** Verified against the real
