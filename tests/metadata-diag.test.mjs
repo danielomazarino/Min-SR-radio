@@ -2523,6 +2523,43 @@ test('WS11 Part C: MediaSession carries the position-aware programme and song', 
     'the album must carry the EPISODE name on a podcast, the channel on radio');
   assert.ok(/^\s*album,$/m.test(MEDIA_SESSION),
     'the computed album must actually be passed to MediaMetadata, not left as a dead const');
+  // ---- WS15b: the podcast name must not ALSO stay in the player header ----
+  // Measured at 390px on P3 Soul before the fix: header title 167.1px CLIPPED,
+  // header sub "P3 Soul" 35.0px CLIPPED, and the new .player-podcast-name
+  // showing "P3 Soul" a second time above the pill. The name appeared twice and
+  // BOTH copies were truncated.
+  //
+  // The cause is structural: for an episode `cur.subtitle` IS the podcast name,
+  // while for a live channel `cur._srProgramTitle` is the PROGRAMME name and is
+  // genuinely wanted. So the sub line is dropped for episodes only. Asserted
+  // as a live-conditional rather than "absent", because radio must keep it.
+  const headerBuild = stripComments(region('const headerLine = el(', '$player.appendChild(headerLine);', APP_JS));
+  assert.ok(/live\s*\n?\s*\? el\('div', \{ class: 'player-sub'/.test(headerBuild),
+    'the header sub line must be live-conditional (WS15b)');
+  assert.ok(/cur\._srProgramTitle \|\| cur\.subtitle \|\| 'Direkt'/.test(headerBuild),
+    "radio must keep channel + programme in the header sub line");
+  // The sub line must exist ONLY inside the live branch. Counting occurrences
+  // is the honest assertion: the conditional itself is asserted above, so this
+  // catches a second unconditional `class: 'player-sub'` being added alongside
+  // it -- which is precisely how the duplication was reintroduced. A regex
+  // that tried to "remove" the live branch and check the remainder was tried
+  // first and was unreadable; count instead.
+  assert.strictEqual((headerBuild.match(/class: 'player-sub'/g) || []).length, 1,
+    "the header must render .player-sub exactly once, inside the live branch");
+  // The minimised bar had the same duplication and needs the same treatment,
+  // with the podcast name taking the sub line's place so no gap is left.
+  const miniBuild = stripComments(region('const mini = el(', '$player.appendChild(mini);', APP_JS));
+  assert.ok(/live\s*\n?\s*\? el\('div', \{ class: 'player-sub'/.test(miniBuild),
+    'the minimised bar sub line must be live-conditional too (WS15b)');
+  assert.ok(/!live\s*\n?\s*\? el\('div', \{ class: 'player-podcast-name'/.test(miniBuild),
+    'the minimised bar must show the podcast name where the sub line was (WS15b)');
+  assert.strictEqual((miniBuild.match(/class: 'player-podcast-name'/g) || []).length, 1,
+    'the minimised bar must render .player-podcast-name exactly once');
+  // paintProgramTitle writes into .player-sub and must stay live-gated, or it
+  // would throw on an episode where the sub line no longer exists.
+  const PPT = stripComments(region('function paintProgramTitle()', 'function playheadWallMs()', APP_JS));
+  assert.ok(/cur\.kind === 'live' && cur\._srProgramTitle/.test(PPT),
+    'paintProgramTitle must stay live-gated: an episode no longer has a sub line');
   // The podcast name must also appear in the compact player, and only for an
   // episode -- a live channel already shows channel + programme in the header.
   const podNameEl = stripComments(region('const podcastName =', 'const meta = el(', APP_JS));

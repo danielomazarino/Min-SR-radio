@@ -2206,7 +2206,19 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         miniThumb,
         el('div', { class: 'player-meta', onclick: restorePlayer },
           el('div', { class: 'player-title', text: cur.title || '' }),
-          el('div', { class: 'player-sub', text: cur._srProgramTitle || cur.subtitle || (live ? 'Direkt' : '') }),
+          // WS15b: the same rule as the full player's header -- a podcast's
+          // identity is ONE line (the episode name) with the podcast name
+          // below it, not the podcast name repeated in a cramped sub line.
+          // Radio keeps the channel + programme pair, which is what the
+          // minimised bar has always shown and what the owner expects.
+          live
+            ? el('div', { class: 'player-sub', text: cur._srProgramTitle || cur.subtitle || 'Direkt' })
+            : null,
+          // The podcast name takes the sub line's place here, so the
+          // minimised bar is not left with a gap where the sub line was.
+          !live
+            ? el('div', { class: 'player-podcast-name', text: cur.programName || cur.subtitle || '' })
+            : null,
           // WS12 Part C: the mini-bar's song line is also no longer live-only,
           // for the same reason as the full player above. The scoped reset
           // `.player-mini .now-playing-line { margin-left: 0; }` is untouched,
@@ -3127,10 +3139,31 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // after the text. The left-close variant was measured as working
     // (meta 66.1px) but groups them at opposite ends of the line, which is
     // not what "visually look as the minimised player" describes.
+    // ---- WS15b: the header carries ONE identity, not two ----
+    // Measured at 390px on P3 Soul (pod 2680) before this change:
+    //   header title  "Kehlani och Kärleken till Frida"  167.1px  CLIPPED
+    //   header sub    "P3 Soul"                           35.0px  CLIPPED
+    //   podcast name  "P3 Soul"                          150.1px  (the new element)
+    // The podcast name appeared TWICE -- once in the header, truncated to
+    // "P3 ...", and again above the quality pill -- and the episode name it
+    // squeezed was itself truncated. Two facts about the data made the
+    // duplication structural rather than accidental:
+    //   - for an EPISODE, `cur.subtitle` IS the podcast name (set from
+    //     `programName` at playTrack time), so the sub line showed it;
+    //   - for a LIVE channel, `cur._srProgramTitle` is the PROGRAMME name,
+    //     which is genuinely wanted, so the sub line must stay for radio.
+    // So the sub line is dropped for episodes ONLY. The header then reads
+    // episode name alone, full width, exactly as the owner asked, and the
+    // podcast name appears once, in full, above the pill.
+    // Radio is untouched: `_srProgramTitle || cur.subtitle || 'Direkt'` still
+    // applies there, so P1 keeps "P1 / Godmorgon, världen!" and P3 keeps
+    // "P3 Din gata / P3 Din Gata: Musik".
     const headerLine = el('div', { class: 'player-header' },
       headerSpacer,
       el('div', { class: 'player-title', text: cur.title || '' }),
-      el('div', { class: 'player-sub', text: cur._srProgramTitle || cur.subtitle || (live ? 'Direkt' : '') }),
+      live
+        ? el('div', { class: 'player-sub', text: cur._srProgramTitle || cur.subtitle || 'Direkt' })
+        : null,
       expandBtn,
       closeBtn);
 
