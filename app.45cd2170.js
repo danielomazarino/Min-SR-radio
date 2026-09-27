@@ -1243,6 +1243,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     state.current = null;
     lastPlayingKey = null;
     playerMinimized = false; // a fresh play must never open as mini-bar
+    stopPositionSync(); // no position refresh may outlive the player
     updateMediaSession(); // clears lock-screen now-playing immediately
     $player.classList.remove('visible');
     $player.classList.remove('minimized');
@@ -1408,11 +1409,62 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     } catch { /* unsupported action — ignore */ }
   }
 
+  // ---- lock-screen position state (WS3) ----
+  // Without this the lock screen shows --:-- instead of real times. Live radio
+  // has no meaningful total duration, so it reports duration: Infinity (which
+  // the spec treats as "unknown/streamed") with a currentTime. On-demand
+  // episodes report their real duration.
+  //
+  // The refresh handle is stored on the audioEl singleton, cleared before
+  // re-creating and cleared on stop — the same pattern the file already uses
+  // for _srUpd / _srDvrUpd / _srGestureHandlers, after two listener-leak
+  // defects of exactly this shape. COSMETIC ONLY: it fixes the --:-- display
+  // and has nothing to do with which app iOS launches.
+  function syncMediaPosition() {
+    if (!mediaSession) return;
+    const cur = state.current;
+    if (!cur) return;
+    const isLive = cur.kind === 'live';
+    const position = {
+      duration: isLive ? Infinity : (Number.isFinite(audioEl.duration) ? audioEl.duration : undefined),
+      playbackRate: audioEl.playbackRate || 1,
+    };
+    if (!isLive) position.currentTime = audioEl.currentTime || 0;
+    else {
+      // For a live stream currentTime is the position inside the DVR window;
+      // reporting it is still better than reporting nothing.
+      position.currentTime = audioEl.currentTime || 0;
+    }
+    try {
+      if (typeof mediaSession.setPositionState === 'function') {
+        mediaSession.setPositionState(position);
+      }
+    } catch { /* throws on some platforms — must never break playback */ }
+  }
+
+  function startPositionSync() {
+    if (!mediaSession || audioEl._srPosTimer) return;
+    audioEl._srPosTimer = setInterval(() => {
+      if (!state.current) return;
+      syncMediaPosition();
+    }, 5000);
+  }
+
+  function stopPositionSync() {
+    if (audioEl._srPosTimer) {
+      clearInterval(audioEl._srPosTimer);
+      audioEl._srPosTimer = null;
+    }
+  }
+
   function updateMediaSession() {
     if (!mediaSession) return;
     const cur = state.current;
     if (!cur) {
       diagLog('mediasession-cleared');
+      // No track: also stop the position refresh, or it keeps ticking
+      // forever against a dead element.
+      stopPositionSync();
       mediaSession.metadata = null;
       try { mediaSession.playbackState = 'none'; } catch { /* ignore */ }
       return;
@@ -1430,6 +1482,10 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       });
       mediaSession.playbackState = audioEl.paused ? 'paused' : 'playing';
     } catch { /* never let metadata break playback */ }
+    // Push the position immediately, then keep it roughly fresh.
+    syncMediaPosition();
+    if (!audioEl.paused) startPositionSync();
+    else stopPositionSync();
   }
 
   // ---- buffering indicator ----
@@ -1524,18 +1580,58 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // non-boundary target.
   //
   // Clamped against seekableStart so it can never fall outside the buffer.
+  // Back-to-live evidence (WS3). seekToLive() has FAILED to fix the owner's
+  // bug twice, so the most valuable single fact is WHICH LINE it exits at. If
+  // it bails at `!cur` or at the non-finite-`end` guard, the button could never
+  // have worked and no adjustment to the target would help. This records the
+  // exit reason and the before/after state of the last invocation; it is
+  // READ-ONLY and the seek logic itself is untouched.
+  const SEEK_LIVE_DIAG = {
+    calls: 0,
+    lastExit: null,        // 'no-track' | 'no-finite-end' | 'no-dvr' | 'non-finite-target' | 'seeked'
+    lastCalledAt: null,
+    lastBefore: null,      // { currentTime, seekableStart, seekableEnd, distanceFromLiveEdge }
+    lastTarget: null,
+    lastAfter: null,       // read back AFTER updateSeekableState()
+  };
+
   function seekToLive() {
     const cur = state.current;
-    if (!cur) return;
+    const d = SEEK_LIVE_DIAG;
+    d.calls += 1;
+    d.lastCalledAt = new Date().toISOString();
+    d.lastBefore = {
+      currentTime: audioEl.currentTime,
+      seekableStart: cur ? cur.seekableStart : null,
+      seekableEnd: cur ? cur.seekableEnd : null,
+      distanceFromLiveEdge: cur ? cur.distanceFromLiveEdge : null,
+      atLiveEdge: cur ? cur.atLiveEdge : null,
+      dvrAvailable: cur ? cur.dvrAvailable : null,
+    };
+    if (!cur) { d.lastExit = 'no-track'; return; }
     const end = cur.dvrAvailable ? cur.seekableEnd : null;
-    if (!Number.isFinite(end)) return;
+    if (!Number.isFinite(end)) {
+      d.lastExit = cur.dvrAvailable ? 'no-finite-end' : 'no-dvr';
+      return;
+    }
     const start = Number.isFinite(cur.seekableStart) ? cur.seekableStart : 0;
-    // Stay behind the boundary, but never behind the start of the window.
     const target = Math.max(start, end - LIVE_EDGE_TOLERANCE_S);
-    if (!Number.isFinite(target)) return;
+    if (!Number.isFinite(target)) { d.lastExit = 'non-finite-target'; return; }
+    d.lastTarget = target;
+    d.lastExit = 'seeked';
     audioEl.currentTime = target;
     updateSeekableState();
     renderPlayer();
+    // Read back what the element ACTUALLY accepted — the seek may be rejected
+    // or clamped by the browser, which is exactly what we need to see.
+    const now = state.current;
+    d.lastAfter = {
+      currentTime: audioEl.currentTime,
+      seekableEnd: now ? now.seekableEnd : null,
+      distanceFromLiveEdge: now ? now.distanceFromLiveEdge : null,
+      atLiveEdge: now ? now.atLiveEdge : null,
+      accepted: Math.abs(audioEl.currentTime - target) < 0.5,
+    };
   }
 
   // ---- DVR transport: ±15 s steps + program skip (2026-09-22 request) ----
@@ -1739,6 +1835,35 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         if (e.target.closest('button')) return;
         restorePlayer();
       };
+      // ---- MINI-BAR GESTURES (WS3 fix) ----
+      // The minimised branch used to `return` here, so enablePlayerGestures()
+      // was never armed for this layout. What still fired were the handlers
+      // left over from the LAST FULL-PLAYER render, bound to the same
+      // singleton $player but acting on a completely different DOM. Two
+      // symptoms followed: the downward drag branch set
+      // `$player.style.transform = translateY(...)`, which in the full layout
+      // reads as a drag but in the mini-bar layout (nothing pinning it) slid
+      // the whole player down the screen and left it there; and swipe-up ran
+      // onExpand() — building an expand panel for a layout being torn down —
+      // instead of restoring, hence "needs two attempts".
+      //
+      // Armed here with meanings appropriate to THIS layout: up = restore.
+      // There is no panel in the mini bar, so onExpand is the wrong callback.
+      // `stickDrag: false` keeps the downward branch from translating the mini
+      // bar at all, so it can never end up displaced.
+      enablePlayerGestures($player, {
+        onExpand: restorePlayer,
+        onMinimize: () => { /* already minimised — nothing to do */ },
+        stickDrag: false,
+        // Defer the restore to the COMMIT, not the drag. During the drag the
+        // generic upward branch builds an "expand panel"; in the mini bar that
+        // means restorePlayer() -> renderPlayer() -> enablePlayerGestures()
+        // RE-ARMS the handlers mid-gesture. The subsequent touchend then lands
+        // on fresh handlers whose axis/startY are reset, so the gesture is
+        // silently discarded and the player never restores. Committing instead
+        // means exactly one re-render, after the gesture has been consumed.
+        expandDuringDrag: false,
+      });
       return;
     }
     $player.onclick = null;
@@ -2336,7 +2461,9 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   //   down → minimizes the player (player slides down, page visible)
   // The gesture NEVER scrolls the background page: the player element has
   // touch-action:none and touchmove is preventDefault-ed while dragging.
-  function enablePlayerGestures(surface, { onExpand, onMinimize }) {
+  function enablePlayerGestures(
+    surface, { onExpand, onMinimize, stickDrag = true, expandDuringDrag = true }
+  ) {
     let startY = 0, startX = 0, dragging = false, axis = null, t0 = 0;
     const THRESHOLD = 0.22; // 22 % of viewport height commits the gesture
     const FLICK_MS = 260;
@@ -2371,7 +2498,11 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       if (dy < 0) {
         // Dragging up: expand panel grows with the finger (0 → max 40 dvh).
         const panel = surface.querySelector('.player-expand');
-        if (!panel) {
+        // `expandDuringDrag: false` is the MINI-BAR case (WS3): there is no
+        // panel to grow, and building one here would re-render (and re-arm
+        // these handlers) in the middle of the gesture, so the release would
+        // be lost. The commit branch performs the action instead.
+        if (!panel && expandDuringDrag) {
           // create the panel on first upward movement
           onExpand();
         }
@@ -2380,8 +2511,11 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
           const h = Math.min(-dy, window.innerHeight * 0.4);
           p.style.height = `${Math.max(0, h)}px`;
         }
-      } else {
+      } else if (stickDrag) {
         // Dragging down: player follows the finger toward minimized state.
+        // `stickDrag: false` is the MINI-BAR case (WS3): the bar must not be
+        // translated at all, because in that layout nothing anchors it and it
+        // ends up stranded below the viewport with no way to pin it.
         surface.style.transform = `translateY(${Math.min(dy, window.innerHeight * 0.5)}px)`;
       }
     };
@@ -2408,6 +2542,12 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
           // player subtree, so the panel the swipe created can already be gone
           // by commit time. Setting aria-expanded with no panel would be a lie.
           setExpandOpen(true);
+        } else {
+          // No panel was ever created (mini bar, or one was wiped mid-drag):
+          // THIS is where the upward action belongs. Doing it here rather than
+          // during the drag keeps the gesture handlers intact until the release
+          // has been consumed, so the action cannot be lost.
+          onExpand();
         }
         return;
       }
@@ -3655,6 +3795,28 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         seekableEnd: cur?.seekableEnd ?? null,
         seekableDuration: cur?.seekableDuration ?? null,
         positionWallClockIso: positionWallClock,
+        // WS3: back-to-live evidence. `lastExit` is the single most useful
+        // fact here — it says which guard the button hit, and therefore
+        // whether the target was ever the problem.
+        backToLive: {
+          calls: SEEK_LIVE_DIAG.calls,
+          lastExit: SEEK_LIVE_DIAG.lastExit,
+          lastCalledAt: SEEK_LIVE_DIAG.lastCalledAt,
+          before: SEEK_LIVE_DIAG.lastBefore,
+          target: SEEK_LIVE_DIAG.lastTarget,
+          after: SEEK_LIVE_DIAG.lastAfter,
+        },
+        // Active transport: which kind of stream the DVR window belongs to.
+        transportKind: (() => {
+          if (!cur) return null;
+          if (cur.transport === 'hls') {
+            return typeof window.Hls === 'function' ? 'hls-hlsjs' : 'hls-native';
+          }
+          return cur.transport === 'direct' ? 'direct' : (cur.transport || null);
+        })(),
+        streamCodec: cur?.codec ?? null,
+        streamBitrate: cur?.bitrate ?? null,
+        streamUrl: cur?.audioUrl ?? null,
       },
 
       dom: {

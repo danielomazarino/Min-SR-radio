@@ -65,7 +65,7 @@ const APP_CODE = stripComments(APP_JS);
 // Isolate a region of the source. Used to prove properties of the hook alone,
 // without matching unrelated code elsewhere in a 3500-line file.
 // `src` defaults to the raw file (region markers live in comments) — pass
-// APP_CODE when the assertions concern code rather than documentation.
+// APP_JS when the assertions concern code rather than documentation.
 function region(startMarker, endMarker, src = APP_JS) {
   const a = src.indexOf(startMarker);
   assert.notEqual(a, -1, `start marker not found: ${startMarker}`);
@@ -686,12 +686,18 @@ test('WS2 Bug 1: seekToLive targets just BEHIND the edge, not onto the boundary'
 });
 
 test('WS2 Bug 1: existing guards survive and paused/playing is untouched', () => {
-  // The !cur and non-finite-end early returns must both remain.
-  assert.ok(/if \(!cur\) return;/.test(SEEK_TO_LIVE), 'the !cur guard must survive');
+  // The !cur and non-finite-end early returns must both remain. WS3 rewrote the
+  // body to record WHICH guard bails (that is the whole diagnostic value), so
+  // the !cur branch now labels its exit rather than being a bare `return`.
+  // What must be preserved is that it still bails and still assigns nothing.
+  assert.ok(/if \(!cur\) \{ d\.lastExit = 'no-track'; return; \}/.test(SEEK_TO_LIVE),
+    'the !cur guard must survive (and label its exit for the WS3 diagnostic)');
+  assert.ok(!/if \(!cur\) \{[^}]*audioEl\.currentTime/.test(SEEK_TO_LIVE),
+    'the !cur guard must still return before touching playback');
   assert.ok(/const end = cur\.dvrAvailable \? cur\.seekableEnd : null;/.test(SEEK_TO_LIVE),
     'the dvrAvailable gate must survive');
-  assert.ok(/if \(!Number\.isFinite\(end\)\) return;/.test(SEEK_TO_LIVE),
-    'the non-finite-end guard must survive');
+  assert.ok(/d\.lastExit = cur\.dvrAvailable \? 'no-finite-end' : 'no-dvr';/.test(SEEK_TO_LIVE),
+    'the non-finite-end guard must survive, and must distinguish no-dvr from no-window');
   // Contract: this is a SEEK ONLY. No reload, no new HLS session, no play().
   ['play(', 'pause(', 'load(', 'hlsAttach(', 'hlsDetach('].forEach((forbidden) => {
     assert.ok(!SEEK_TO_LIVE.includes(forbidden),
@@ -850,4 +856,260 @@ test('WS2: the chevron path still works exactly as before', () => {
   assert.ok(APP_CODE.indexOf('function setExpandOpen(open)')
     < APP_CODE.indexOf("expandBtn.addEventListener('click'"),
   'setExpandOpen must be defined before the chevron handler that calls it');
+});
+
+// =====================================================================
+// Workstream 3 — mini-bar gestures, back-to-live EVIDENCE (no fix), and
+// an absolute manifest id. Prompt 2026-09-27, after the owner's iPhone retest
+// of WS2: back-to-live still broken, gestures flaky (pre-existing), and the
+// lock screen launching a different installed web app.
+// =====================================================================
+
+const RENDER_PLAYER = stripComments(region(
+  'function renderPlayer()', '// ---- player gesture engine', APP_JS));
+// The minimised branch ENDS at ITS OWN trailing `return;`. Bounding it at the
+// first `return;` truncates inside the mini play/pause button, before the
+// gesture arming; bounding it at the later `// ---- minimize:` marker pulls in
+// ~25 kB of the full-player layout. So: from the branch opener to the LAST
+// `return;` before the next top-level function.
+const MINI_BRANCH = (() => {
+  const start = APP_JS.indexOf('if (playerMinimized) {');
+  assert.notEqual(start, -1, 'minimised branch must exist');
+  // The branch is followed by `$player.onclick = null;` — the first full-player
+  // line after it. Everything up to there is the minimised branch.
+  const end = APP_JS.indexOf('$player.onclick = null;', start);
+  assert.notEqual(end, -1, 'full-player branch must follow the minimised branch');
+  const slice = stripComments(APP_JS.slice(start, end));
+  assert.ok(slice.includes('enablePlayerGestures($player'),
+    'the minimised branch slice must reach the gesture arming');
+  return slice;
+})();
+const FULL_GESTURE_CALL = stripComments(region(
+  'enablePlayerGestures($player, {', '// ---- player gesture engine', APP_JS));
+
+test('WS3 Part 1: gestures are armed in BOTH the minimised and full branches', () => {
+  // The defect: the minimised branch returned before enablePlayerGestures(),
+  // so the mini bar ran the FULL-PLAYER handlers left over from the last full
+  // render — a downward drag translated $player with nothing pinning it, and
+  // swipe-up called onExpand() instead of restoring.
+  assert.ok(MINI_BRANCH.includes('enablePlayerGestures($player'),
+    'the minimised branch must arm its own gestures before returning');
+  assert.ok(FULL_GESTURE_CALL.includes('enablePlayerGestures($player'),
+    'the full-player branch must still arm gestures (verified working in WS2)');
+  // Exactly ONE call site in each branch, and the branches are mutually
+  // exclusive (the minimised branch returns), so every render arms once.
+  const callSites = (RENDER_PLAYER.match(/enablePlayerGestures\(\$player/g) || []).length;
+  assert.equal(callSites, 2,
+    'renderPlayer must contain exactly 2 call sites (mini branch + full branch)');
+  // The branches must stay mutually exclusive, so exactly one of the two
+  // gesture call sites can run per render. MINI_BRANCH is bounded just BEFORE
+  // its own trailing `return;`, so that `return;` is checked in the raw slice
+  // (it is a statement, not a comment, so it survives stripping).
+  assert.ok(/return;/.test(MINI_BRANCH),
+    'the minimised branch must still return early, keeping the two paths exclusive');
+  assert.ok(MINI_BRANCH.trimEnd().endsWith('};')
+    || /return;\s*\}\s*$/.test(MINI_BRANCH),
+  'the minimised branch must end by returning, not by falling through');
+});
+
+test('WS3 Part 1: the minimised branch passes RESTORE, not onExpand', () => {
+  const call = MINI_BRANCH.slice(MINI_BRANCH.indexOf('enablePlayerGestures($player'));
+  assert.ok(/onExpand: restorePlayer/.test(call),
+    'swipe up in the mini bar must restore the player, not expand a panel');
+  // The full-player expand callback must not appear in the MINI branch. The
+  // two branches are separate code, so the check is scoped to MINI_BRANCH.
+  assert.ok(!call.includes('expandBtn.click'),
+    'the mini bar must not reuse the full-player expand callback');
+  // The minimised layout has no panel, so it must not build one.
+  assert.ok(!MINI_BRANCH.includes('buildExpandPanel'),
+    'the minimised branch must not create an expand panel');
+  // Tap-to-restore must be preserved (it works and is not part of the bug).
+  assert.ok(MINI_BRANCH.includes('restorePlayer()'),
+    'tap-to-restore on the mini bar must be preserved');
+});
+
+test('WS3 Part 1: the mini bar is never left translated (stickDrag)', () => {
+  // The displacement bug: the downward branch set an inline translateY that
+  // nothing reset, so the player stayed below the screen.
+  assert.ok(MINI_BRANCH.includes('stickDrag: false'),
+    'the minimised branch must opt out of the finger-following drag');
+  const gest = GESTURES;
+  assert.ok(/stickDrag = true/.test(gest),
+    'stickDrag must default to true so the full-player behaviour is unchanged');
+  // The translate must be behind the flag.
+  const flagAt = gest.indexOf('stickDrag');
+  const moveAt = gest.indexOf("surface.style.transform = `translateY");
+  assert.ok(flagAt !== -1 && moveAt !== -1 && flagAt < moveAt,
+    'the stickDrag parameter must be declared before the transform is applied');
+  assert.ok(/else if \(stickDrag\) \{/.test(gest),
+    'the downward branch must be guarded by stickDrag, not unconditional');
+  // The full-player path must still spring back: surface.style.transform = ''
+  // on commit-minimize AND on spring-back must both remain.
+  assert.ok(gest.includes("surface.style.transform = '';"),
+    'the transform must still be cleared on release so it cannot stay displaced');
+  assert.ok((gest.match(/surface\.style\.transform = '';/g) || []).length >= 2,
+    'transform must be cleared on BOTH the minimize commit and the spring-back');
+});
+
+test('WS3 Part 1: the WS2 gesture leak fix survives and arms exactly once', () => {
+  assert.ok(APP_CODE.includes('function enablePlayerGestures('),
+    'enablePlayerGestures must still exist');
+  assert.ok(GESTURES.includes('surface._srGestureHandlers'),
+    'the WS2 handler-storage leak fix must survive');
+  assert.ok(GESTURES.includes('surface.removeEventListener(type, fn, opts)'),
+    'the previous handlers must still be removed by identity');
+  assert.ok(GESTURES.includes('const onTouchStart = (e) =>'),
+    'handlers must still be named bindings');
+  assert.ok(GESTURES.includes('const onTouchMove = (e) =>'),
+    'handlers must still be named bindings');
+  // All four types still registered and removed, counters still paired.
+  ['touchstart', 'touchmove', 'touchend', 'touchcancel'].forEach((t) => {
+    assert.ok(GESTURES.includes(`type: '${t}'`), `${t} must still be registered`);
+  });
+  assert.ok(GESTURES.includes('metaDiagCountRemove(type)'),
+    'the removal must still decrement the diagnostic counter');
+  assert.ok(GESTURES.includes('metaDiagCountAdd(type)'),
+    'the registration must still increment the diagnostic counter');
+  // Removal must happen before the new set is stored (no double-arm window).
+  assert.ok(GESTURES.indexOf('surface._srGestureHandlers) {')
+    < GESTURES.indexOf('surface._srGestureHandlers = registered;'),
+  'the old set must be removed before the new one is stored');
+  // The minimised branch must not set its own stickDrag AND a duplicate call.
+  assert.equal((MINI_BRANCH.match(/enablePlayerGestures\(\$player/g) || []).length, 1,
+    'the minimised branch must arm gestures exactly once');
+});
+
+test('WS3 Part 2: the snapshot exposes back-to-live evidence incl. the exit reason', () => {
+  // The single most valuable fact is WHICH guard the button hit. Without it a
+  // third blind tweak to the target is being flown at the wrong problem.
+  ['backToLive', 'lastExit', 'lastBefore', 'lastTarget', 'lastAfter', 'calls']
+    .forEach((f) => {
+      assert.ok(HOOK.includes(f), `the snapshot must expose backToLive.${f}`);
+    });
+  // The before/after captures must include the DVR window and the position.
+  ['seekableStart', 'seekableEnd', 'distanceFromLiveEdge', 'currentTime']
+    .forEach((f) => {
+      assert.ok(HOOK.includes(f), `the snapshot must expose ${f}`);
+    });
+  // The active transport kind must be reported — an HLS live edge behaves
+  // differently from a progressive one.
+  assert.ok(HOOK.includes('transportKind'), 'the snapshot must report the transport kind');
+  assert.ok(HOOK.includes('hls-native') && HOOK.includes('hls-hlsjs'),
+    'transportKind must distinguish native HLS from hls.js');
+  // The exit reasons must cover every bail path in seekToLive.
+  ['no-track', 'no-dvr', 'no-finite-end', 'non-finite-target', 'seeked']
+    .forEach((r) => {
+      assert.ok(APP_CODE.includes(`'${r}'`),
+        `exit reason '${r}' must be recorded so a bail can be identified`);
+    });
+  // After a seek, the element's ACTUAL position must be read back — the point
+  // is to see whether the browser accepted the target or clamped it.
+  assert.ok(/lastAfter = \{[\s\S]*accepted:/.test(APP_CODE),
+    'the diagnostic must read back whether the browser accepted the seek target');
+  // The seek logic itself must be UNCHANGED — this workstream gathers evidence.
+  assert.ok(/audioEl\.currentTime = target;/.test(SEEK_TO_LIVE),
+    'the seek target assignment must be unchanged');
+  assert.ok(SEEK_TO_LIVE.includes('Math.max(start, end - LIVE_EDGE_TOLERANCE_S)'),
+    'the target arithmetic must be unchanged from WS2 — WS3 attempts no fix');
+  assert.ok(SEEK_TO_LIVE.includes('updateSeekableState();') && SEEK_TO_LIVE.includes('renderPlayer();'),
+    'the update+render sequence must be unchanged');
+});
+
+test('WS3 Part 2: the diagnostic is read-only and gated, never a new system', () => {
+  // The evidence must ride the EXISTING gated snapshot, not a parallel one.
+  assert.ok(HOOK.includes('backToLive'),
+    'the evidence must be a field of the existing snapshot');
+  assert.ok(/function srMetaDiagSnapshot\(\) \{[\s\S]*metaDiagGateOpen\(\)/.test(HOOK_CODE)
+    || HOOK_CODE.includes('if (!metaDiagGateOpen()) return null;'),
+  'the gated entry point must still be the only way to read the snapshot');
+  // The recording itself must be unconditional but harmless: no listeners, no
+  // timers, no fetches, no DOM writes.
+  const d = SEEK_TO_LIVE;
+  ['addEventListener', 'setTimeout', 'setInterval', 'fetch(', 'appendChild', 'innerHTML']
+    .forEach((forbidden) => {
+      assert.ok(!d.includes(forbidden),
+        `seekToLive must not ${forbidden} — it records facts, nothing more`);
+    });
+  // No localStorage write from the seek path.
+  assert.ok(!/localStorage\.setItem/.test(d), 'the seek path must not write storage');
+});
+
+test('WS3 Part 3: manifest id is absolute; start_url and scope stay relative', () => {
+  const MANIFEST = JSON.parse(fs.readFileSync(
+    path.join(__dirname, '..', 'manifest.webmanifest'), 'utf8'));
+  assert.equal(MANIFEST.id, 'https://danielomazarino.github.io/Min-SR-radio/',
+    'the manifest id must be absolute and stable — a relative id is resolved '
+    + 'against the document URL and can collide in a subpath deployment');
+  // Portability must be preserved: the app is built to work under any base path.
+  assert.equal(MANIFEST.start_url, './', 'start_url must stay relative');
+  assert.equal(MANIFEST.scope, './', 'scope must stay relative');
+  // Nothing else may have changed.
+  assert.equal(MANIFEST.name, 'Min Radio');
+  assert.equal(MANIFEST.short_name, 'Min Radio');
+  assert.equal(MANIFEST.display, 'standalone');
+  assert.equal(MANIFEST.orientation, 'portrait');
+  assert.equal(MANIFEST.background_color, '#f7f6f2');
+  assert.equal(MANIFEST.theme_color, '#f7f6f2');
+  assert.equal(MANIFEST.lang, 'sv');
+  assert.equal(MANIFEST.icons.length, 3, 'the icons array must be unchanged');
+  assert.equal(MANIFEST.icons[0].src, 'icons/icon-192.png');
+});
+
+test('WS3 Part 3: setPositionState is used safely, with no new leak', () => {
+  const sync = stripComments(region(
+    'function syncMediaPosition()', 'function updateMediaSession()', APP_JS));
+  assert.ok(sync.includes('mediaSession.setPositionState(position)'),
+    'setPositionState must actually be called');
+  assert.ok(/try \{[\s\S]*setPositionState[\s\S]*\} catch/.test(sync),
+    'setPositionState must be wrapped in try/catch — it throws on some platforms');
+  // Live streams have no meaningful duration; episodes report the real one.
+  assert.ok(/isLive \? Infinity/.test(sync),
+    'live streams must report duration: Infinity');
+  assert.ok(/Number\.isFinite\(audioEl\.duration\) \? audioEl\.duration/.test(sync),
+    'episodes must report their real duration');
+  assert.ok(sync.includes('playbackRate'), 'playbackRate must be reported');
+  assert.ok(/typeof mediaSession\.setPositionState === 'function'/.test(sync),
+    'setPositionState must be feature-detected');
+
+  // The refresh handle must follow the established store-and-clear pattern.
+  assert.ok(sync.includes('audioEl._srPosTimer'),
+    'the refresh handle must be stored on the audioEl singleton');
+  const start = stripComments(region(
+    'function startPositionSync()', 'function stopPositionSync()', APP_JS));
+  assert.ok(/if \(!mediaSession \|\| audioEl\._srPosTimer\) return;/.test(start),
+    'startPositionSync must be idempotent — never create a second timer');
+  assert.ok(start.includes('setInterval'), 'the refresh must use an interval');
+  const stop = stripComments(region(
+    'function stopPositionSync()', 'function updateMediaSession()', APP_JS));
+  assert.ok(stop.includes('clearInterval(audioEl._srPosTimer)'),
+    'the interval must be cleared');
+  assert.ok(stop.includes('audioEl._srPosTimer = null'),
+    'the handle must be nulled so it cannot be cleared twice');
+  // Cleared on stop, explicitly — not only as a side effect.
+  const close = stripComments(region(
+    'function stopAndClosePlayer()', 'audioEl.addEventListener', APP_JS));
+  assert.ok(close.includes('stopPositionSync()'),
+    'stopAndClosePlayer must explicitly stop the position refresh');
+  // And the no-track branch of updateMediaSession must stop it too — otherwise
+  // the interval keeps ticking against a dead element.
+  const ums = stripComments(region(
+    'function updateMediaSession()', '// ---- buffering', APP_JS));
+  assert.ok(/if \(!cur\) \{[\s\S]*stopPositionSync\(\);[\s\S]*mediaSession\.metadata = null;/.test(ums),
+    'the no-track branch must stop the refresh before clearing metadata');
+});
+
+test('WS3 Part 3: the verified-correct MediaSession code is untouched', () => {
+  // The setActionHandler implementations and the withdrawal logic were verified
+  // correct on the owner's device and must not change.
+  const handlers = stripComments(region(
+    "mediaSession.setActionHandler('play'", 'function updateMediaSession()', APP_JS));
+  assert.ok(handlers.includes("setActionHandler('play'"), 'play handler must remain');
+  assert.ok(handlers.includes("setActionHandler('pause'"), 'pause handler must remain');
+  assert.ok(handlers.includes("setActionHandler('stop'"), 'stop handler must remain');
+  assert.ok(handlers.includes("setActionHandler('seekbackward'"), 'seekbackward must remain');
+  assert.ok(handlers.includes("setActionHandler('seekforward'"), 'seekforward must remain');
+  // Withdrawal logic unchanged: metadata nulled and state 'none' when no track.
+  assert.ok(/if \(!cur\) \{[\s\S]*mediaSession\.metadata = null;[\s\S]*playbackState = 'none'/.test(
+    stripComments(region('function updateMediaSession()', '// ---- buffering', APP_JS))),
+  "the withdrawal branch must still null metadata and set 'none'");
 });

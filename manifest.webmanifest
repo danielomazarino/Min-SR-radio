@@ -2,7 +2,7 @@
   "name": "Min Radio",
   "short_name": "Min Radio",
   "description": "Din personliga radiostartskärm från Sveriges Radio",
-  "id": "./",
+  "id": "https://danielomazarino.github.io/Min-SR-radio/",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
