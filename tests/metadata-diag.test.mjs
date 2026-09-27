@@ -597,8 +597,16 @@ test('WS1: no user-visible programme-skip behaviour was dropped', () => {
   // fallback. The lookup is now the next boundary the playhead can actually
   // REACH (one that has already begun). The user-visible feature -- a skip
   // button that moves the playhead -- is preserved; the dead press is not.
-  assert.ok(/const startedNext = schedule\.find\(\(ev\) => ev\.startMs <= nowMs\);/.test(PROGRAM_SKIP_CODE),
-    'the next-programme lookup must select a boundary that has already started');
+// WS7 SUPERSEDES THE WS6 FORM. WS6 used `schedule.find((ev) => ev.startMs <=
+  // nowMs)`, which on an ASCENDING array returns the EARLIEST event of the day
+  // -- "Ekot senaste nytt" @ 00:00, hours before the playhead. Seeking there
+  // fell outside the 3 h DVR window, so the press showed a toast and did
+  // nothing: 132/132 dead on real data, and the owner confirmed the button was
+  // still dead on the phone after WS6 shipped. The lower bound is now the
+  // PLAYHEAD, which makes it the nearest started boundary rather than the
+  // first.
+  assert.ok(/schedule\.find\(\(ev\) => ev\.startMs > playheadMs\s*\n?\s*&& ev\.startMs <= nowMs\)/.test(PROGRAM_SKIP_CODE),
+    'the next-programme lookup must select the NEAREST boundary that has both begun and lies ahead of the playhead');
   assert.ok(/const nextEv = startedNext\s*\?/.test(PROGRAM_SKIP_CODE),
     'the button must still be wired from a next-programme lookup');
   assert.ok(!/programBoundary\(schedule, posMs\(\), \+1\)/.test(PROGRAM_SKIP_CODE),
@@ -618,8 +626,9 @@ test('WS1: no user-visible programme-skip behaviour was dropped', () => {
   assert.ok(/prevProgramBtn\.onclick = goPrev;/.test(PROGRAM_SKIP_CODE)
     && /const goPrev = \(\) => seekToProgramTime\(prevEv\.startMs\);/.test(PROGRAM_SKIP_CODE),
     'the previous-programme button must still seek to prevEv.startMs');
+  // WS7 added press recording to this handler too; the seek target is unchanged.
   assert.ok(/nextProgramBtn\.onclick = goNext;/.test(PROGRAM_SKIP_CODE)
-    && /const goNext = \(\) => seekToProgramTime\(nextEv\.startMs\);/.test(PROGRAM_SKIP_CODE),
+    && /const goNext = \(\) => \{\s*recordSkipPress\(nextEv\.startMs\);\s*seekToProgramTime\(nextEv\.startMs\);\s*\};/.test(PROGRAM_SKIP_CODE),
     'the next-programme button must still seek to nextEv.startMs');
   assert.ok(/if \(prevEv\) syncNext\(\);/.test(PROGRAM_SKIP_CODE),
     'the initial sync call must survive');
@@ -1172,7 +1181,9 @@ test('WS4 Item 1: the skip button becomes "Till Direkt" when behind live with no
   // WS6: the handler is now a named, tagged function so the snapshot can read
   // the real wiring (metaDiagNextProgram derives `mode` from `_srMode`). It
   // must still be a call to seekToLive() with nothing else in between.
-  assert.ok(/const goLive = \(\) => seekToLive\(\);/.test(SYNC_NEXT),
+  // WS7 added press recording, so the handler body is now two statements.
+  // The call it makes is unchanged.
+  assert.ok(/const goLive = \(\) => \{\s*recordSkipPress\(null\);\s*seekToLive\(\);\s*\};/.test(SYNC_NEXT),
     'the fallback must still call seekToLive()');
   assert.ok(/goLive\._srMode = 'direct';/.test(SYNC_NEXT),
     'the fallback handler must be tagged so the snapshot can see it is the live path');
@@ -1518,7 +1529,7 @@ test('WS5: no out-of-scope behaviour function was changed', () => {
   assert.ok(APP_CODE.includes('else if (behindLive)'), 'the WS4 go-to-live branch must survive');
   // WS6 named the handler so the snapshot can read its wiring; the branch and
   // the call it makes are unchanged.
-  assert.ok(APP_CODE.includes('const goLive = () => seekToLive();')
+  assert.ok(/const goLive = \(\) => \{\s*recordSkipPress\(null\);\s*seekToLive\(\);\s*\};/.test(APP_CODE)
     && APP_CODE.includes('nextProgramBtn.onclick = goLive;'),
   'the WS4 go-to-live wiring must survive');
   assert.ok(APP_CODE.includes('Math.min(upper, Math.max(start,'),
@@ -1753,13 +1764,24 @@ test('WS6 Part 2: the dead press is fixed -- only started programmes are offered
   // nothing. Measured over five real channels: 65.8% of behind-live moments.
   assert.ok(!/programBoundary\(schedule, posMs\(\), \+1\)/.test(SCHED_FETCH),
     'the future-programme lookup must be gone');
-  assert.ok(/const startedNext = schedule\.find\(\(ev\) => ev\.startMs <= nowMs\);/.test(SCHED_FETCH),
-    'the button must offer the next boundary that has ALREADY STARTED');
-  // The reachability property that makes the fix correct: a boundary offered
-  // by this lookup satisfies `startMs <= now`, so seekToProgramTime()'s
-  // `behindMs < 0` guard can no longer fire from this button.
-  const startedAt = /schedule\.find\(\(ev\) => ev\.startMs <= nowMs\)/.test(SCHED_FETCH);
-  assert.ok(startedAt, 'the offered boundary must be one that has begun');
+// WS7 SUPERSEDES THE WS6 FORM. WS6 used `schedule.find((ev) => ev.startMs <=
+  // nowMs)`, which on an ASCENDING array returns the EARLIEST event of the day
+  // -- "Ekot senaste nytt" @ 00:00, hours before the playhead. Seeking there
+  // fell outside the 3 h DVR window, so the press showed a toast and did
+  // nothing: 132/132 dead on real data, and the owner confirmed the button was
+  // still dead on the phone after WS6 shipped. The lower bound is now the
+  // PLAYHEAD, which makes it the nearest started boundary rather than the
+  // first.
+  assert.ok(/schedule\.find\(\(ev\) => ev\.startMs > playheadMs\s*\n?\s*&& ev\.startMs <= nowMs\)/.test(SCHED_FETCH),
+    'the button must offer the NEAREST boundary that has ALREADY STARTED and lies ahead of the playhead');
+  // REMOVED (WS7): this used to assert that the offered boundary 'has begun',
+  // by re-testing the lookup's own `startMs <= now` predicate. That predicate
+  // is written by the fix, so the assertion was TRUE BY CONSTRUCTION -- it
+  // could not fail, and its passing meant nothing. It is the exact reasoning
+  // that let WS6 ship 162 green tests over a 100%-dead button. WS7 asserts the
+  // OUTCOME instead: the lower bound must be the playhead, so the offered
+  // target is both forward of the playhead and inside the DVR window. See the
+  // WS7 test and the offline sweep in the WS7 report.
   // The fallback is still reachable: when nothing has started, nextEv is null
   // and the behind-live branch runs.
   assert.ok(/const nextEv = startedNext\s*\?/.test(SCHED_FETCH)
@@ -1835,4 +1857,146 @@ test('WS6: out of scope -- seekBy, seekToLive and programBoundary unchanged', ()
   const DMR = stripComments(APP_JS.slice(
     APP_JS.indexOf('function programBoundary'), APP_JS.indexOf('// Seek to a programme start time')));
   assert.ok(!/DVR_MIN_WINDOW_S\s*=/.test(DMR), 'the DVR window minimum must not be retuned');
+});
+
+// ---------------------------------------------------------------------------
+// WS7 - the forward skip lookup was INVERTED; and record what a press does
+// ---------------------------------------------------------------------------
+
+const SKIP_PRESS = stripComments(region(
+  'function recordSkipPress(programmeStartMs)', 'function seekToProgramTime(startMs)',
+  APP_JS));
+const SYNC_WS7 = stripComments(region(
+  'const syncNext = () => {', 'if (prevEv) syncNext();', APP_JS));
+const POS_MS_WS7 = stripComments(region(
+  'const posMs = () => {', 'const prevEv = programBoundary', APP_JS));
+
+test('WS7: the forward lookup returns the NEAREST started boundary, not the first',
+() => {
+  // The WS6 form, which is what shipped broken. `schedule` is sorted ASCENDING
+  // (fetchScheduleDay), so `find(ev => ev.startMs <= nowMs)` returns the
+  // EARLIEST event of the day -- "Ekot senaste nytt" @ 00:00 -- and seeking to
+  // it lands outside the 3 h window. 132/132 dead presses on real data.
+  assert.ok(!/schedule\.find\(\(ev\) => ev\.startMs <= nowMs\)/.test(SYNC_WS7),
+    'the WS6 earliest-of-the-day lookup must be gone');
+  // The replacement must carry BOTH bounds. Either one alone is wrong:
+  //   > playhead only  -> could offer a programme that has not begun
+  //   <= now only      -> is the WS6 bug
+  const lookup = /schedule\.find\(\(ev\) => ev\.startMs > (\w+)\s*\n?\s*&& ev\.startMs <= nowMs\)/.exec(SYNC_WS7);
+  assert.ok(lookup, 'the lookup must bound startMs on both sides');
+  assert.ok(lookup[1] === 'playheadMs',
+    'the lower bound must be the PLAYHEAD, not the programme start');
+  // The playhead estimate must be a distinct value from posMs().
+  assert.ok(/const playheadMs = liveEdgeWallMs\(\);/.test(SYNC_WS7),
+    'the playhead position must be computed');
+  assert.ok(SYNC_WS7.includes('positionMs') && POS_MS_WS7.includes('ev.startMs'),
+    'posMs() must still exist and return a programme start');
+  // Both states preserved.
+  assert.ok(/const nextEv = startedNext\s*\?/.test(SYNC_WS7)
+    && /else if \(behindLive\)/.test(SYNC_WS7),
+    'the Till Direkt fallback must still be reachable');
+  // The BACKWARD button keeps using programBoundary(-1) -- correct for going
+  // backwards, and explicitly out of scope here. NB: `prevEv` is declared
+  // BEFORE `syncNext`, so it is NOT inside SYNC_WS7 -- assert it in the wider
+  // region. Slicing the wrong span is how an assertion silently stops checking
+  // anything.
+  const SCHED_WS7 = stripComments(region(
+    'fetchSchedule(cur.id).then((schedule) => {', 'if (prevEv) syncNext();', APP_JS));
+  assert.ok(/const prevEv = programBoundary\(schedule, posMs\(\), -1\);/.test(SCHED_WS7),
+    'the previous-programme lookup must be untouched');
+});
+
+test('WS7: the press is recorded, so a dead press is distinguishable from silence',
+() => {
+  // Every branch the brief requires, as discrete strings.
+  ['no-track', 'no-dvr', 'non-finite-target', 'out-of-window', 'rejected-by-browser']
+    .forEach((b) => assert.ok(SKIP_PRESS.includes(`'${b}'`),
+      `recordSkipPress must be able to report ${b}`));
+  // A monotonic counter: "calls = 0" means the handler never fired at all,
+  // which is a different problem from any branch value. The initialiser lives
+  // in the SKIP_PRESS_DIAG declaration, which sits ABOVE the function, so it
+  // is asserted against the declaration -- not against the function body.
+  const SKIP_PRESS_DECL = stripComments(region(
+    'const SKIP_PRESS_DIAG = {', 'function recordSkipPress(programmeStartMs)', APP_JS));
+  assert.ok(/calls: 0,/.test(SKIP_PRESS_DECL) && /d\.calls \+= 1;/.test(SKIP_PRESS),
+    'a monotonic calls counter must exist');
+  // The window at the moment of the press.
+  ['seekableStart', 'seekableEnd', 'seekableDuration'].forEach((f) =>
+    assert.ok(SKIP_PRESS.includes(f), `the press must record ${f}`));
+  // The computed target, and a read-back to detect a silent refusal.
+  assert.ok(/d\.lastTarget = target;/.test(SKIP_PRESS),
+    'the computed target must be recorded');
+  assert.ok(/accepted: Math\.abs\(actual - target\) < 1/.test(SKIP_PRESS),
+    'the read-back must compare the actual position against the target');
+  assert.ok(/d\.lastBranch = 'rejected-by-browser';/.test(SKIP_PRESS),
+    'a target the browser did not honour must be reported as such');
+  // BOTH handlers record -- the programme skip and the "Till Direkt" path.
+  assert.ok(/const goNext = \(\) => \{\s*recordSkipPress\(nextEv\.startMs\);/.test(SYNC_WS7),
+    'the programme-skip handler must record its press');
+  assert.ok(/const goLive = \(\) => \{\s*recordSkipPress\(null\);/.test(SYNC_WS7),
+    'the Till Direkt handler must record its press');
+  // The WS6 wiring contract must still hold (a test above depends on it).
+  assert.ok(/goNext\._srMode = 'programme';/.test(SYNC_WS7)
+    && /goLive\._srMode = 'direct';/.test(SYNC_WS7)
+    && /nextProgramBtn\.onclick = null;/.test(SYNC_WS7),
+    'the WS6 handler tags and the hide-clears-handler rule must survive');
+  // Surfaced under dom.nextProgram and on the one-line report.
+  assert.ok(/skipPress: snap\.dom\.nextProgram/.test(APP_CODE),
+    'the press must be surfaced on the one-line report');
+  // `press` must be built BEFORE the `if (!btn) return` branch, so it is
+  // present in BOTH return paths. A first version put it inside the
+  // present-only branch, which made `nextProgram.press` undefined exactly when
+  // a reader most wants it -- and every test that read it had synthesised a
+  // button, so nothing noticed. Assert the ORDER, not just the presence.
+  const pressIdx = NEXT_DIAG.indexOf('const press = {');
+  const earlyReturnIdx = NEXT_DIAG.indexOf("if (!btn) {");
+  assert.ok(pressIdx !== -1, 'the press block must exist in metaDiagNextProgram()');
+  assert.ok(earlyReturnIdx !== -1, 'the absent-button early return must still exist');
+  assert.ok(pressIdx < earlyReturnIdx,
+    'press must be gathered BEFORE the absent-button return, so both paths report it');
+  assert.ok(/mode: 'absent', press \}/.test(NEXT_DIAG),
+    'the absent-button return must include the press evidence');
+  // Read-only: the recorder must not write to the current-track object.
+  assert.ok(!/cur\.\w+\s*=[^=]/.test(SKIP_PRESS),
+    'recordSkipPress must not write any property of the current-track object');
+});
+
+test('WS7: out of scope -- seekBy, seekToLive, posMs, programBoundary, constants',
+() => {
+  // EXACT text, no `||` fallback anywhere. WS6's M8 slipped through because an
+  // `||` between two assertions made one of them a placeholder.
+  assert.ok(APP_JS.includes('const DVR_MIN_WINDOW_S = 60;'),
+    'DVR_MIN_WINDOW_S must be byte-identical');
+  assert.ok(APP_JS.includes('const LIVE_EDGE_TOLERANCE_S = 10;'),
+    'LIVE_EDGE_TOLERANCE_S must be byte-identical');
+  // seekBy(): the WS4 clamp, exactly.
+  const SEEK_BY = stripComments(region('function seekBy(deltaSeconds)', '// Fetch today', APP_JS));
+  assert.ok(/const upper = Number\.isFinite\(cur\.seekableEnd\)\s*\? Math\.max\(start, cur\.seekableEnd - LIVE_EDGE_TOLERANCE_S\)\s*: Infinity;/.test(SEEK_BY),
+    'the seekBy upper clamp must be byte-identical');
+  assert.ok(/const target = Math\.min\(upper, Math\.max\(start, \(audioEl\.currentTime \|\| 0\) \+ deltaSeconds\)\);/.test(SEEK_BY),
+    'the seekBy target expression must be byte-identical');
+  assert.ok(/if \(!cur \|\| !cur\.dvrAvailable\) return;/.test(SEEK_BY),
+    'the seekBy dvrAvailable guard must be byte-identical');
+  // seekToLive(): the target arithmetic, exactly.
+  const SEEK_LIVE = stripComments(region('function seekToLive()', '// ---- DVR transport', APP_JS));
+  assert.ok(/const target = Math\.max\(start, end - LIVE_EDGE_TOLERANCE_S\);/.test(SEEK_LIVE),
+    'the seekToLive target must be byte-identical');
+  // programBoundary(): its contract, exactly, including the margins.
+  const PB = stripComments(region('function programBoundary(schedule, positionMs, direction)',
+    '// Seek to a programme start time', APP_JS));
+  assert.ok(PB.includes('const next = schedule.find((ev) => ev.startMs > positionMs + 1000);'),
+    'the programBoundary forward margin must be byte-identical');
+  assert.ok(PB.includes('const prev = [...schedule].reverse().find((ev) => ev.startMs < positionMs - 1000);'),
+    'the programBoundary backward margin must be byte-identical');
+  // posMs(): kept, and it still returns a programme start.
+  assert.ok(/return ev \? ev\.startMs : est;/.test(POS_MS_WS7),
+    'posMs() must still return the containing event startMs');
+  assert.ok(/e\.startMs <= est && est < e\.endMs/.test(POS_MS_WS7),
+    'posMs() must still locate the containing event by its range');
+  // The WS3 diagnostic block keeps every field.
+  ['calls', 'lastExit', 'lastCalledAt', 'lastBefore', 'lastTarget', 'lastAfter']
+    .forEach((f) => assert.ok(APP_CODE.includes(f), `SEEK_LIVE_DIAG.${f} must survive`));
+  // The read-only contract.
+  assert.ok(!/state\.current\.\w+\s*=/.test(HOOK),
+    'the hook must not write any property of the current-track object');
 });

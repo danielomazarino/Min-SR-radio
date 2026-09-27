@@ -1765,6 +1765,70 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // was 65.8% of all behind-live moments across five channels (WS6 analysis).
   // The guard is KEPT: it is correct defence for any other caller, and
   // removing it would convert a dead press into a seek to a nonsense target.
+  // ---- WS7: what does a press of the programme-skip button actually DO? ----
+  // WS6 recorded the button's STATE but never what a tap did, so a silent dead
+  // press was indistinguishable from a toast that flashed too fast to notice.
+  // This records the press. `seekableStart/End` are READ, never written.
+  //
+  // The branch is decided by the SAME arithmetic seekToProgramTime() performs,
+  // replicated here WITHOUT performing it. Duplicating the guard logic is
+  // deliberate: recording must not change behaviour, and a real
+  // `rejected-by-browser` (target sane, browser refused it) is only
+  // distinguishable if the target was computed the same way. If the two ever
+  // diverge, `META_DIAG.skipPress.windowSeconds` is a cheap canary.
+  const SKIP_PRESS_DIAG = {
+    calls: 0,
+    lastBranch: null,   // 'seeked' | 'out-of-window' | 'no-track' | 'no-dvr'
+                        // | 'non-finite-target' | 'rejected-by-browser'
+    lastCalledAt: null,
+    lastRequestedStartMs: null, // null = "Till Direkt" (go to live)
+    lastTarget: null,
+    lastBefore: null,   // { currentTime, seekableStart, seekableEnd, seekableDuration }
+    lastAfter: null,    // read back right after the handler returns
+    windowSeconds: 3 * 3600, // canary: must match the real window
+  };
+
+  function recordSkipPress(programmeStartMs) {
+    const cur = state.current;
+    const d = SKIP_PRESS_DIAG;
+    d.calls += 1;
+    d.lastCalledAt = new Date().toISOString();
+    d.lastRequestedStartMs = programmeStartMs;
+    d.lastBefore = {
+      currentTime: audioEl.currentTime,
+      seekableStart: cur ? cur.seekableStart : null,
+      seekableEnd: cur ? cur.seekableEnd : null,
+      seekableDuration: cur ? cur.seekableDuration : null,
+      dvrAvailable: cur ? cur.dvrAvailable : null,
+    };
+    if (programmeStartMs === null) {
+      // "Till Direkt" — seekToLive() owns this path and records itself in
+      // SEEK_LIVE_DIAG. Nothing computed here.
+      d.lastBranch = 'seeked';
+      d.lastTarget = null;
+      d.lastAfter = null;
+      return;
+    }
+    if (!cur) { d.lastBranch = 'no-track'; d.lastTarget = null; d.lastAfter = null; return; }
+    if (!cur.dvrAvailable) { d.lastBranch = 'no-dvr'; d.lastTarget = null; d.lastAfter = null; return; }
+    const end = cur.seekableEnd;
+    if (!Number.isFinite(end)) { d.lastBranch = 'non-finite-target'; d.lastTarget = null; d.lastAfter = null; return; }
+    const behindMs = Date.now() - programmeStartMs;
+    if (behindMs < 0) { d.lastBranch = 'future-programme'; d.lastTarget = null; d.lastAfter = null; return; }
+    const target = end - behindMs / 1000;
+    const start = Number.isFinite(cur.seekableStart) ? cur.seekableStart : 0;
+    if (target < start) { d.lastBranch = 'out-of-window'; d.lastTarget = target; d.lastAfter = null; return; }
+    d.lastBranch = 'seeked';
+    d.lastTarget = target;
+    // Read back on the next microtask: the handler has not assigned
+    // currentTime yet at this point in the call stack.
+    Promise.resolve().then(() => {
+      const actual = audioEl.currentTime;
+      d.lastAfter = { currentTime: actual, target, accepted: Math.abs(actual - target) < 1 };
+      if (!d.lastAfter.accepted && d.lastBranch === 'seeked') d.lastBranch = 'rejected-by-browser';
+    });
+  }
+
   function seekToProgramTime(startMs) {
     const cur = state.current;
     if (!cur || !cur.dvrAvailable) return;
@@ -2476,31 +2540,49 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
           prevProgramBtn.onclick = goPrev;
         }
         const syncNext = () => {
-          // ---- WS6 FIX: pick the next programme that has ALREADY STARTED ----
+          // ---- WS7 FIX: the NEAREST started boundary, not the first one ----
           //
-          // `programBoundary(schedule, pos, +1)` returns the first event with
-          // `startMs > pos + 1000`. `pos` is the start of the CURRENT
-          // programme, so the very next entry is the upcoming one — which has
-          // not started. Pressing the button then called seekToProgramTime()
-          // with a future timestamp, which returned early and did nothing.
+          // WS6 replaced a future-programme lookup with
+          //     schedule.find((ev) => ev.startMs <= nowMs)
+          // and that is ALSO wrong. `fetchScheduleDay` sorts the schedule
+          // ASCENDING, and `Array.prototype.find` returns the FIRST match --
+          // so this returned the earliest event of the whole day
+          // ("Ekot senaste nytt" @ 00:00), typically hours before the
+          // playhead. seekToProgramTime() then asked for a position outside
+          // the 3 h DVR window, hit its `target < start` guard and showed
+          // "Programmet ligger utanför spolbart område", leaving the playhead
+          // untouched. Measured over 132 behind-live moments: 132/132 dead.
           //
-          // The button should offer the next programme boundary the playhead
-          // can actually reach: the first event that has already begun. If the
-          // playhead is inside the current programme, that is the current
-          // programme's own start (skip back to it). If there is no such
-          // event, the playhead is at or past the last one, and "Till Direkt"
-          // is the correct and only useful action.
+          // The correct target for a FORWARD button is the nearest programme
+          // start that lies strictly after the PLAYHEAD and has already
+          // begun. Two properties then hold simultaneously, and BOTH are
+          // required:
+          //   startMs >  playhead  -> the seek moves FORWARD, never backward;
+          //   startMs <= now       -> the seek target is never in the future,
+          //                            so seekToProgramTime()'s `behindMs < 0`
+          //                            guard cannot fire from this button.
           //
-          // NOTE: `programBoundary()` keeps its contract and is unchanged. It
-          // is still the right tool for the PREVIOUS button. The +1000 margin
-          // was NOT widened — tuning a threshold to hide this symptom is what
-          // failed twice already.
+          // Note this is the playhead's own position, NOT posMs()'s value
+          // (which is the containing programme's START). Comparing against
+          // the programme start asks for a boundary after the current
+          // programme began -- i.e. the NEXT programme -- which has not
+          // started yet, so that form finds nothing for the whole duration of
+          // every programme and silently turns the button into "Till Direkt".
+          // Both forms avoid a dead press; only this one keeps offering a real
+          // forward skip. posMs() itself is untouched and still used below for
+          // the backwards button, where it is correct.
+          //
+          // programBoundary() keeps its contract; the +1000 margin is NOT
+          // widened and no threshold is retuned.
           const positionMs = posMs();
           const nowMs = Date.now();
-          // First event that has begun (start <= now). This is the next
-          // boundary reachable by going BACK, which is the only direction
-          // this button moves.
-          const startedNext = schedule.find((ev) => ev.startMs <= nowMs);
+          const playheadMs = liveEdgeWallMs();
+          // NEAREST started boundary after the playhead. `schedule` is sorted
+          // ascending, so `find` here walks forward in time and the first
+          // match is the nearest one -- which is what makes this correct where
+          // WS6's `find` was not.
+          const startedNext = schedule.find((ev) => ev.startMs > playheadMs
+            && ev.startMs <= nowMs);
           const behindLive = cur.atLiveEdge === false
             || (Number.isFinite(cur.seekableEnd) && cur.seekableEnd - (audioEl.currentTime || 0) > 60);
           const nextEv = startedNext
@@ -2512,19 +2594,25 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
             nextProgramBtn.setAttribute('aria-label', 'Till nästa programs start');
             // Named + tagged so the WS6 snapshot can read the REAL wiring
             // instead of trusting a parallel mode variable.
-            const goNext = () => seekToProgramTime(nextEv.startMs);
+            const goNext = () => {
+              recordSkipPress(nextEv.startMs);
+              seekToProgramTime(nextEv.startMs);
+            };
             goNext._srMode = 'programme';
             nextProgramBtn.onclick = goNext;
           } else if (behindLive) {
-            // No started programme to go back to, but behind live: go to live.
-            // Before WS4 this case HID the button entirely, leaving no
+            // No started boundary ahead of the playhead, but behind live: go to
+            // live. Before WS4 this case HID the button entirely, leaving no
             // discoverable way back.
             nextProgramBtn.style.display = '';
             nextProgramBtn.title = 'Till Direkt';
             nextProgramBtn.setAttribute('aria-label', 'Till Direkt');
             // Named and tagged so the WS6 snapshot reads the REAL wiring. The
             // tag is what `mode` is derived from — see metaDiagNextProgram().
-            const goLive = () => seekToLive();
+            const goLive = () => {
+              recordSkipPress(null);
+              seekToLive();
+            };
             goLive._srMode = 'direct';
             nextProgramBtn.onclick = goLive;
           } else {
@@ -3890,9 +3978,29 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // updating the tag, this reports 'unknown' instead of lying.
   function metaDiagNextProgram() {
     const btn = $player.querySelector('.dvr-program-btn');
+    // The press evidence is gathered FIRST and unconditionally, so the field is
+    // present in BOTH return paths. Reporting it only when the button exists
+    // made `nextProgram.press` undefined exactly when a reader most wants it —
+    // and a test asserting on a present button never noticed.
+    const cur = state.current;
+    const press = {
+      calls: SKIP_PRESS_DIAG.calls,
+      lastBranch: SKIP_PRESS_DIAG.lastBranch,
+      lastCalledAt: SKIP_PRESS_DIAG.lastCalledAt,
+      lastRequestedStartMs: SKIP_PRESS_DIAG.lastRequestedStartMs,
+      lastTarget: SKIP_PRESS_DIAG.lastTarget,
+      lastBefore: SKIP_PRESS_DIAG.lastBefore,
+      lastAfter: SKIP_PRESS_DIAG.lastAfter,
+      // The live DVR window, so an out-of-window verdict can be judged.
+      seekableEnd: cur ? cur.seekableEnd : null,
+      seekableStart: cur ? cur.seekableStart : null,
+      seekableDuration: cur ? cur.seekableDuration : null,
+    };
     if (!btn) {
       // The button only exists when cur.dvrAvailable was true at render time.
-      return { present: false, visible: false, title: null, ariaLabel: null, mode: 'absent' };
+      // A press can still have been recorded earlier in the session, so
+      // `press` is reported rather than dropped.
+      return { present: false, visible: false, title: null, ariaLabel: null, mode: 'absent', press };
     }
     const visible = btn.style.display !== 'none';
     const fn = btn.onclick;
@@ -3904,28 +4012,20 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     else if (wired === 'programme') mode = 'programme';
     else if (wired === 'direct') mode = 'direct';
     else mode = wired; // 'unknown' | 'unwired' — never claim a mode we cannot see
-// Extra evidence for the device: the numbers the branch decision rests
-      // on, so one press plus one snapshot can settle reachability.
-      // (Read via a local binding, deliberately: the read-only guard in the
-      // test suite scans this region for writes to the current-track object,
-      // and a ternary reading it on the same line as a property access reads
-      // as a write to that detector.)
-      const cur = state.current;
-      return {
-        present: true,
-        visible,
-        title: btn.getAttribute('title'),
-        ariaLabel: btn.getAttribute('aria-label'),
-        mode,
-        // Extra evidence for the device: the numbers the branch decision rests
-        // on, so one press + one snapshot can settle reachability.
-        wired,
-        behindLive: cur ? (cur.atLiveEdge === false) : null,
-        secondsBehind: cur ? cur.distanceFromLiveEdge : null,
-        // WS6: the exact inputs the last syncNext() used, so a device snapshot
-        // shows WHICH branch ran and why, not just the resulting mode.
-        branch: META_DIAG.nextBranch ?? null,
-      };
+    return {
+      present: true,
+      visible,
+      title: btn.getAttribute('title'),
+      ariaLabel: btn.getAttribute('aria-label'),
+      mode,
+      wired,
+      behindLive: cur ? (cur.atLiveEdge === false) : null,
+      secondsBehind: cur ? cur.distanceFromLiveEdge : null,
+      // WS6: the exact inputs the last syncNext() used, so a device snapshot
+      // shows WHICH branch ran and why, not just the resulting mode.
+      branch: META_DIAG.nextBranch ?? null,
+      press,
+    };
   }
 
   // Build the snapshot. Called only when metaDiagGateOpen() is true.
@@ -4145,6 +4245,11 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         // snapshot.
         nextProgram: snap.dom.nextProgram
           ? `${snap.dom.nextProgram.mode}/${snap.dom.nextProgram.visible ? 'visible' : 'hidden'}`
+          : null,
+        // WS7: the press outcome on the same line — `skipPress: 3/out-of-window`
+        // reads the failure mode without opening the snapshot.
+        skipPress: snap.dom.nextProgram?.press
+          ? `${snap.dom.nextProgram.press.calls}/${snap.dom.nextProgram.press.lastBranch ?? 'none'}`
           : null,
         listeners: snap.listeners.netLive,
       })}`);
