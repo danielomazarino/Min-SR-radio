@@ -650,6 +650,21 @@ a:focus-visible {
      Without this, iOS scrolls the page behind while the finger drags —
      "everything moves" flakiness (user report 2026-09-23). */
   touch-action: none;
+
+  /* ---- WS5b: one shared text column for the whole player ----
+     The channel, the programme, the quality/mode pills and the song line all
+     have to start at the SAME x, and they have to stay there when the artwork
+     or the spacing changes. So the column is derived once, here, from the
+     artwork width plus the row gap, and everything that needs it reuses the
+     variables instead of repeating a pixel literal. Change --player-art or
+     --player-gap and the header, the pills and the song line move together;
+     a duplicated literal would have let them drift apart silently. */
+  --player-art: 44px;
+  --player-gap: 12px;
+  /* Where the text column starts, measured from the player's own left padding
+     edge. The header achieves it structurally: the close button occupies the
+     artwork's width, so flexbox puts the text exactly here. */
+  --player-col: calc(var(--player-art) + var(--player-gap));
 }
 
 /* While a vertical gesture is being read, hard-lock page scroll as well
@@ -697,34 +712,51 @@ body.player-gesture-lock {
   .player { transition: none; }
 }
 
-/* ---------- WS5: quiet header line above the player ---------- */
-/* Channel + programme sit ABOVE the player surface so the player can never
-   cover them. Deliberately smaller and lower-contrast than in-player text so
-   it reads as a header, not as competing with the controls. */
+/* ---------- WS5b: header row with the corner buttons ---------- */
+/* ONE row carries the close button (top-left corner), the channel and
+   programme (one line, sharing the text column), and the expand chevron
+   (top-right corner). WS5 had a separate row for the two buttons, which left
+   them floating in the middle of the player with dead space beside them; the
+   owner read that as unclear on a real iPhone.
+
+   Vertical placement is flexbox (`align-items: center`), never a hand-tuned
+   `top`/`margin-top` — a pixel offset drifts the moment the button height, the
+   font metrics or the safe-area inset change.
+
+   The text column is NOT a `padding-left` literal: the close button is given
+   the artwork's own width, so the gap after it is the same `--player-gap`
+   the pills use and the text lands on their left edge by construction. */
 .player-header {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
-  min-width: 0;
-  padding: 0 2px 4px;
-}
-.player-header .player-title { flex: none; max-width: 40%; }
-.player-header .player-sub { flex: 1; min-width: 0; }
-
-/* Shared row for the close (left) and expand chevron (right) buttons.
-   Flex alignment, NOT pixel offsets: `align-items` guarantees they share the
-   same vertical pixel row even as text and artwork metrics change, and
-   `justify-content` pushes the chevron to the far right. */
-.player-header-btns {
-  display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: var(--player-gap);
+  min-width: 0;
+  padding: 0 0 4px;
 }
+/* The close button doubles as the artwork-column spacer. 44x44 also makes it
+   the same size as the chevron and the artwork, so the top corners and the
+   artwork below read as one column, and the touch target grows from 32px. */
+.player-header .player-btn-close {
+  width: var(--player-art);
+  height: var(--player-art);
+  flex: none;
+}
+/* The chevron keeps the far-right corner. `margin-left: auto` pushes it past
+   the shrinking text rather than relying on a fixed width for the text. */
+.player-header .player-expand-btn {
+  flex: none;
+  margin-left: auto;
+}
+/* Both texts share the line and ellipsize. No max-width percentage: the old
+   40% cap truncated the channel name on narrow phones for no reason. The title
+   keeps its intrinsic width and only shrinks when the programme needs room. */
+.player-header .player-title { flex: 0 1 auto; min-width: 0; }
+.player-header .player-sub { flex: 1 1 auto; min-width: 0; }
 
 .player-row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--player-gap);
 }
 
 .player-close {
@@ -732,8 +764,8 @@ body.player-gesture-lock {
 }
 
 .player-thumb {
-  width: 44px;
-  height: 44px;
+  width: var(--player-art);
+  height: var(--player-art);
   border-radius: 10px;
   overflow: hidden;
   flex: none;
@@ -1061,6 +1093,7 @@ body.player-gesture-lock {
   font-size: 12px;
   color: var(--text-secondary);
   margin-top: 3px;
+  margin-left: var(--player-col);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1068,6 +1101,13 @@ body.player-gesture-lock {
 }
 .now-playing-line:empty { display: none; }
 .now-playing-line.has-song { color: var(--accent); }
+/* The indent above is for the FULL player, where the song line sits on its own
+   row under the artwork. The minimised mini-bar builds a compact text stack of
+   its own (40px thumb, 10px gap) whose title and programme are NOT indented, so
+   the song line there must not be either — otherwise it would sit 56px in
+   while the two lines above it sit at 0. Scoped by .player-mini, not by a
+   second literal offset, so the two layouts cannot drift apart. */
+.player-mini .now-playing-line { margin-left: 0; }
 
 /* Song artwork in the expanded player (iTunes Search, verified from
    GitHub Pages). Placeholder when artwork is missing/unavailable. */
@@ -1423,9 +1463,10 @@ body.player-gesture-lock {
   .stream-icon, .icon-empty { border-radius: 14px; }
   .news-thumb { width: 52px; height: 52px; }
   .reader-body { padding: 14px; }
-  /* WS5: keep the new header line readable on the narrowest phones. */
-  .player-header { gap: 6px; }
-  .player-header .player-title { max-width: 46%; }
+  /* WS5b: narrow phones get a slightly tighter column rather than a
+     percentage text cap, so the channel and programme stay on one line for as
+     long as possible and the pills below keep their left edge. */
+  .player { --player-gap: 10px; }
 }
 
 /* very narrow: icons shrink slightly but stay on one scrollable row */

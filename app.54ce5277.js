@@ -2448,15 +2448,30 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       }).catch(() => { /* schedule unavailable — buttons stay hidden */ });
     }
 
-    // ---- WS5 layout pieces ----
-    // Header line: channel + programme, ABOVE the player surface. Keeps the
-    // original class names (paintProgramTitle writes .player-sub into it) and
-    // stays inside $player so both the paint functions and the diagnostics
-    // find it. Hidden entirely in the minimised layout — the mini-bar builds
-    // its own compact title, so this line is not rendered there at all.
+    // ---- WS5b layout pieces ----
+    // Header row now carries the channel, the programme AND the two corner
+    // buttons on ONE row: close at the top-left, chevron at the top-right,
+    // text between them. Previously the buttons had their own row and floated
+    // in the middle of the player with empty space beside them.
+    //
+    // The alignment falls out of the layout rather than a magic number: the
+    // header uses the SAME flex gap as .player-row, and the close button is
+    // the same size as the artwork, so the text lands exactly on the artwork's
+    // right edge — the column where the quality/mode pills sit. The song line
+    // below repeats that offset via the same shared custom properties.
+    //
+    // CLASS NAMES AND PARENTING ARE LOAD-BEARING: paintProgramTitle() writes
+    // into '.player-sub' and paintNowPlaying() into '.now-playing-line', both
+    // via $player.querySelector(...), and the WS0 snapshot reads the same
+    // nodes. Renaming either, or moving either out of $player's subtree,
+    // silently stops programme titles and song lines painting — with green
+    // tests. Keep them as two separate elements: merging the title and
+    // programme into one text node would break paintProgramTitle entirely.
     const headerLine = el('div', { class: 'player-header' },
+      closeBtn,
       el('div', { class: 'player-title', text: cur.title || '' }),
-      el('div', { class: 'player-sub', text: cur._srProgramTitle || cur.subtitle || (live ? 'Direkt' : '') }));
+      el('div', { class: 'player-sub', text: cur._srProgramTitle || cur.subtitle || (live ? 'Direkt' : '') }),
+      expandBtn);
 
     // Song line: BELOW the player content, ABOVE the seek row. aria-live and
     // the :empty / .has-song CSS behaviour are preserved, so a talk channel
@@ -2467,10 +2482,6 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       : null;
 
     $player.appendChild(headerLine);
-    // Close on the left, expand chevron on the right, on ONE shared flex row
-    // so they are aligned by flexbox rather than by hand-tuned pixel offsets
-    // (which drift as soon as artwork or text metrics change).
-    $player.appendChild(el('div', { class: 'player-header-btns' }, closeBtn, expandBtn));
     $player.appendChild(el('div', { class: 'player-row' }, thumb, meta, controls));
     if (songLine) $player.appendChild(songLine);
     if (seekRow) $player.appendChild(seekRow);

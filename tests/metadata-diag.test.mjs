@@ -495,14 +495,16 @@ test('hook adds no unconditional side effect at load time', () => {
 
 // The renderPlayer() schedule-wiring block, as CODE (comments stripped, so
 // assertions cannot match this file's own documentation).
-// The end marker is a CODE line that is stable across the WS5 layout change
-// (which replaced the DOM-assembly lines this region used to end on):
-// `}).catch(() => { /* schedule unavailable ... */ });` closes the schedule
-// promise, and the region ends with the block's own closing brace.
+// The end marker is the comment that opens the layout block below the schedule
+// wiring. It was renamed in WS5b, so it is named here from the same string the
+// layout section uses -- one source of truth, so a future rename fails loudly
+// here instead of silently shrinking this region to the whole rest of the file.
+const LAYOUT_BLOCK = '// ---- WS5b layout pieces ----';
 const PROGRAM_SKIP = region(
   '// Wire program-skip buttons once the schedule resolves',
-  '// ---- WS5 layout pieces ----', APP_JS
+  LAYOUT_BLOCK, APP_JS
 );
+assert.ok(APP_JS.includes(LAYOUT_BLOCK), 'the layout block marker must exist');
 const PROGRAM_SKIP_CODE = stripComments(PROGRAM_SKIP);
 
 test('WS1: the programme-skip timeupdate listener is removed before it is added', () => {
@@ -1394,19 +1396,29 @@ test('WS5 Item 2: the song line sits below the player and above the seek row', (
 });
 
 test('WS5 Item 3: the chevron is on the right, aligned by flexbox with close', () => {
-  // Both buttons share one row, close first, expand second.
-  assert.ok(/\$player\.appendChild\(el\('div', \{ class: 'player-header-btns' \}, closeBtn, expandBtn\)\);/
-    .test(RENDER_WS5),
-  'close and expand must share one flex row, close first');
+  // SUPERSEDED BY WS5b, kept in the WS5 shape but pointed at the structure
+  // that replaced the standalone .player-header-btns row: close first and
+  // expand last, both inside the header row. Asserted positionally because
+  // the element order inside el(...) IS the DOM order -- that is the whole
+  // point of putting them in one row.
+  const header = stripComments(region(
+    "const headerLine = el('div', { class: 'player-header' }",
+    '$player.appendChild(headerLine);', APP_JS));
+  assert.ok(/closeBtn/.test(header),
+    'the close button must be built into the header row');
+  assert.ok(/expandBtn/.test(header),
+    'the expand chevron must be built into the header row');
+  assert.ok(header.indexOf('closeBtn') < header.indexOf('player-title'),
+    'the close button must come first, so it marks the top-LEFT corner');
+  assert.ok(header.indexOf('expandBtn') > header.indexOf('player-sub'),
+    'the chevron must come after the text, so it marks the top-RIGHT corner');
+  assert.ok(!/class: 'player-header-btns'/.test(APP_CODE),
+    'the WS5 standalone button row must be gone');
   // Alignment must come from flexbox, not from pixel offsets. The CSS lives in
-  // styles.css — slicing it out of app.js finds nothing.
-  const row = stripComments(region(
-    '.player-header-btns {', '.player-row {', STYLES_WS5));
-  assert.ok(/display: flex/.test(row), 'the button row must be a flex container');
-  assert.ok(/align-items: center/.test(row),
-    'align-items must guarantee they share the same vertical row');
-  assert.ok(/justify-content: space-between/.test(row),
-    'justify-content must push the chevron to the right');
+  // styles.css -- slicing it out of app.js finds nothing.
+  const row = stripComments(region('.player-header {', '.player-row {', STYLES_WS5));
+  assert.ok(/display: flex/.test(row), 'the header row must be a flex container'
+);
   assert.ok(!/top:|margin-top: \d|translateY\(/.test(row),
     'vertical alignment must NOT use hard-coded offsets');
   // The chevron rotation behaviour must survive, for BOTH buttons using the class.
@@ -1415,9 +1427,9 @@ test('WS5 Item 3: the chevron is on the right, aligned by flexbox with close', (
   // setExpandOpen must still find the button inside $player.
   assert.ok(/function setExpandOpen\(open\) \{[\s\S]*?querySelector\('\.player-expand-btn'\)/.test(APP_CODE),
     'setExpandOpen must still query .player-expand-btn inside $player');
-  assert.ok(RENDER_WS5.includes('$player.appendChild(songLine)') === false
-    || RENDER_WS5.indexOf('player-header-btns') < RENDER_WS5.indexOf('player-row'),
-  'the button row must be assembled before the player row');
+  assert.ok(RENDER_WS5.indexOf("$player.appendChild(el('div', { class: 'player-row'")
+    < RENDER_WS5.indexOf('$player.appendChild(songLine)'),
+  'the player row must be assembled before the song line');
 });
 
 test('WS5 Item 5: the footer attribution is gone, the About overlay keeps it', () => {
@@ -1449,8 +1461,15 @@ test('WS5 Item 4: the layout CSS exists and narrow viewports are handled', () =>
   assert.ok(STYLES_WS5.includes('@media (max-width: 340px)'),
     'the 340px media query must survive');
   const narrow = STYLES_WS5.slice(STYLES_WS5.indexOf('@media (max-width: 340px)'));
-  assert.ok(narrow.includes('.player-header'),
-    'the new header line must be handled at 340px so it cannot cramp');
+  // WS5b revised HOW this is handled: instead of shrinking the header's own
+  // gap, the media query tightens the shared --player-gap, which moves the
+  // header, the pills and the song line together. The requirement that
+  // survives is that the narrow query still reaches the header's column.
+  // The 340px query tightens --player-gap on .player. That single change moves
+  // the header, the pills and the song line together, so the block does not
+  // need to name .player-header at all.
+  assert.ok(/\.player\s*\{[^}]*--player-gap/.test(narrow),
+    'the header column must still be handled at 340px so it cannot cramp');
   // Legibility must not be bought back with font sizes.
   assert.ok(!/\.player-header[^{]*\{[^}]*font-size:\s*1[01](\.\d)?px/.test(STYLES_WS5),
     'the header must not shrink the base font sizes to claw back space');
@@ -1488,4 +1507,150 @@ test('WS5: no out-of-scope behaviour function was changed', () => {
   assert.ok(APP_CODE.includes('function metaDiagGateOpen()'), 'the WS0 gate must survive');
   assert.ok(APP_CODE.includes("localStorage.getItem(META_DIAG_FLAG)"),
     'the WS0 gate must still read its flag');
+});
+
+// ---------------------------------------------------------------------------
+// WS5b - layout correction after the owner saw WS5 on a real iPhone
+// ---------------------------------------------------------------------------
+
+test('WS5b Item 1: the header, the pills and the song line share ONE left edge',
+() => {
+  // The column is derived from the artwork width and the row gap, on .player,
+  // and reused. Three separate `padding-left: 56px` literals would satisfy a
+  // screenshot and still drift apart the moment one of them is edited, so the
+  // guard is on the SHARED CUSTOM PROPERTY, not on any pixel value.
+  const playerBlock = stripComments(region('.player {', '/* While a vertical gesture',
+    STYLES_WS5));
+  assert.ok(/--player-art: 44px/.test(playerBlock),
+    'the artwork width must be a single named custom property on .player');
+  assert.ok(/--player-gap: 12px/.test(playerBlock),
+    'the row gap must be a single named custom property on .player');
+  assert.ok(/--player-col: calc\(var\(--player-art\) \+ var\(--player-gap\)\)/.test(playerBlock),
+    'the text column must be DERIVED from art width + gap, not written as a literal');
+
+  // The song line indents by that derived column - the one thing that cannot
+  // be achieved structurally, because the artwork is on a DIFFERENT row.
+  const song = stripComments(region('.now-playing-line {', '.now-playing-line:empty',
+    STYLES_WS5));
+  assert.ok(/margin-left: var\(--player-col\)/.test(song),
+    'the song line must align using the shared column, not a hard-coded px');
+  assert.ok(!/margin-left: \d+px/.test(song),
+    'the song line must NOT carry a duplicated pixel literal');
+
+  // The header reaches the same edge STRUCTURALLY: the close button occupies
+  // the artwork's width and the row gap is the shared one, so flexbox puts the
+  // text on the pills' left edge. This is the part that cannot drift.
+  const row = stripComments(region('.player-header {', '.player-row {', STYLES_WS5));
+  assert.ok(/gap: var\(--player-gap\)/.test(row),
+    'the header must use the same gap as the player row');
+  assert.ok(/\.player-header \.player-btn-close \{[\s\S]*?width: var\(--player-art\)/.test(row),
+    'the close button must occupy the artwork column so the text lines up');
+  assert.ok(!/padding-left: \d+px/.test(row),
+    'the header must NOT hard-code a text indent');
+  // The artwork itself must read the same property, or the column lies.
+  const thumb = stripComments(region('.player-thumb {', '.player-thumb img', STYLES_WS5));
+  assert.ok(/width: var\(--player-art\)/.test(thumb) && /height: var\(--player-art\)/.test(thumb),
+    'the artwork must be sized from --player-art, the source of the column');
+  // The pills must not have gained an indent of their own either.
+  assert.ok(!/\.player-meta \{[^}]*padding-left/m.test(STYLES_WS5),
+    '.player-meta must not be indented - it defines the column by starting there');
+});
+
+test('WS5b Item 2: channel and programme share one line with no width cap', () => {
+  // Two SEPARATE elements, in the header row, in that order. The reason is
+  // silent failure, not style: paintProgramTitle() writes into '.player-sub'
+  // via $player.querySelector. If the two texts were merged into one node, or
+  // either were dropped, that function would keep returning without throwing
+  // and programme titles would stop updating with every test still green.
+  const header = stripComments(region(
+    "const headerLine = el('div', { class: 'player-header' }",
+    '$player.appendChild(headerLine);', APP_JS));
+  assert.ok(/class: 'player-title'/.test(header), 'the channel title must survive');
+  assert.ok(/class: 'player-sub'/.test(header), 'the programme subtitle must survive');
+  assert.ok(header.indexOf('player-title') < header.indexOf('player-sub'),
+    'the channel must come before the programme on the shared line');
+  // Both still reachable by the paint functions and the WS0 snapshot.
+  assert.ok(/metaDiagText\(\$player, '\.player-title'\)/.test(APP_CODE),
+    'the WS0 snapshot must still be able to read the channel title');
+  assert.ok((APP_CODE.match(/class: 'player-title'/g) || []).length === 2,
+    'the title must exist in exactly two places: the mini-bar and the header');
+  assert.ok(/querySelector\('\.player-sub'\)/.test(APP_CODE),
+    'paintProgramTitle must still be able to query .player-sub');
+  assert.ok(/\$player\.appendChild\(headerLine\);/.test(RENDER_WS5),
+    'the header must still be appended to $player');
+  // WS5 capped the channel at 40% of the header, which truncated it on narrow
+  // phones. The cap is gone; the title keeps its intrinsic width.
+  const row = stripComments(region('.player-header {', '.player-row {', STYLES_WS5));
+  assert.ok(!/max-width: \d+%/.test(row),
+    'the percentage width cap must be gone');
+  assert.ok(/\.player-header \.player-title \{ flex: 0 1 auto; min-width: 0; \}/.test(row),
+    'the title must shrink only when the programme needs room');
+  assert.ok(/\.player-header \.player-sub \{ flex: 1 1 auto; min-width: 0; \}/.test(row),
+    'the programme must take the remaining width and ellipsize');
+});
+
+test('WS5b Item 3: the buttons are corners of the header row, not a floating row',
+() => {
+  // Provenance, not just presence: the chevron is pushed out by
+  // `margin-left: auto`, so the shrinking text can never run underneath it.
+  const row = stripComments(region('.player-header {', '.player-row {', STYLES_WS5));
+  assert.ok(/\.player-header \.player-expand-btn \{[\s\S]*?margin-left: auto/.test(row),
+    'the chevron must be pinned to the right by auto margin, not a fixed width');
+  assert.ok(/\.player-header \.player-expand-btn \{[\s\S]*?flex: none/.test(row),
+    'the chevron must not be squeezed by the text');
+  // The close button grows from 32px to the artwork size, which both fills the
+  // column and enlarges the touch target.
+  // Anchor with the leading newline on purpose: '.player-btn-close {' is also a
+  // substring of '.player-mini .player-btn-close {', and matching that one
+  // would silently test the mini-bar override instead of the base rule.
+  const closeBtn = stripComments(region('\n.player-btn-close {', '.player-btn-close svg',
+    STYLES_WS5));
+  assert.ok(/width: 32px/.test(closeBtn),
+    'the base close button size must survive for other surfaces (mini-bar)');
+  assert.ok(/\.player-header \.player-btn-close \{[\s\S]*?height: var\(--player-art\)/.test(row),
+    'the header close button must match the artwork height');
+  // The mini-bar is a separate subtree with its own close button; the header
+  // rules are scoped to .player-header so they cannot leak into it.
+  assert.ok(!/^\.player-btn-close \{[^}]*var\(--player-art\)/m.test(STYLES_WS5),
+    'the shared close button must NOT be resized globally');
+});
+
+test('WS5b Item 4: nothing out of scope changed', () => {
+  // The brief explicitly forbids touching these. Each is a live defect or a
+  // deliberate decision, and a "small" layout edit is exactly where they get
+  // collateral damage.
+  assert.ok(/function seekToLive\(\)/.test(APP_CODE),
+    'the back-to-live bug is NOT this workstream - seekToLive must be untouched');
+  // `seekToLive()` legitimately appears in renderPlayer(): it is the WS4
+  // programme-skip wiring that renders the next/previous buttons, and WS5b did
+  // not add it. So the guard is scoped to the block WS5b actually authored --
+  // a seek/live call there would mean the layout edit reached into playback.
+  assert.ok(!/seek|position|currentTime|buffered/i.test(
+    stripComments(region(LAYOUT_BLOCK, '$player.appendChild(headerLine);', APP_JS))),
+  'no seek or playback code may live in the WS5b layout block');
+  // ...and the WS4 wiring itself must be untouched and still reachable.
+  assert.ok((APP_CODE.match(/seekToLive\(\)/g) || []).length >= 2,
+    'the WS4 back-to-live wiring must still be present (button handler + definition)');
+  // renderPlayer() contains BOTH layouts: the minimised branch (which builds
+  // .player-mini) and the full one (which the WS5b block belongs to). Asserting
+  // the mini-bar is absent from renderPlayer() as a whole is simply wrong; the
+  // requirement is that the WS5b block leaves it alone.
+  assert.ok(!/player-mini/.test(
+    stripComments(region(LAYOUT_BLOCK, '$player.appendChild(headerLine);', APP_JS))),
+    'the minimised mini-bar must not be rebuilt by the header change');
+  // The mini-bar keeps its own 40px/10px geometry, so the song-line indent added
+  // for the full player must be neutralised there rather than left to inherit.
+  assert.ok(/\.player-mini \.now-playing-line \{ margin-left: 0; \}/.test(STYLES_WS5),
+    'the mini-bar song line must not inherit the full player indent');
+  // The header is still inside $player, above the row: WS5 ordering holds.
+  assert.ok(RENDER_WS5.indexOf('$player.appendChild(headerLine)')
+    < RENDER_WS5.indexOf("$player.appendChild(el('div', { class: 'player-row'"),
+  'the header must still render above the player row');
+  // The narrow-screen tweak must narrow the COLUMN, not reintroduce a text cap.
+  const narrow = stripComments(region('@media (max-width: 340px) {', '/* very narrow',
+    STYLES_WS5));
+  assert.ok(/--player-gap: 10px/.test(narrow),
+    'narrow screens must tighten the shared gap');
+  assert.ok(!/player-title \{ max-width/.test(narrow),
+    'the percentage cap must not come back in the media query');
 });
