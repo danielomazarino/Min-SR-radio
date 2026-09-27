@@ -3342,3 +3342,33 @@ test('WS19: the header must not carry the bold duplicate channel name', () => {
   assert.ok(!/\.player-header \.player-title \{/.test(STYLES_WS5),
     'the dead .player-header .player-title rule must be deleted (WS19)');
 });
+
+test('WS19: a podcast icon must advertise that older episodes exist', () => {
+  // The owner could not reach yesterday's episode. Nothing was missing: the
+  // list exists, newest-first, behind a 500ms long-press with NO visible hint.
+  // So the affordance is asserted, not the feature -- and it is asserted
+  // podcast-only, because a channel icon has no episode list to advertise.
+  const build = stripComments(region('function buildIconSection(', '$main.appendChild(buildIconSection'));
+  assert.ok(/if \(isPod\)[\s\S]*?class: 'icon-hint'/.test(build),
+    'the caption must be appended only for a podcast (WS19)');
+  assert.ok(/'aria-hidden': 'true'/.test(build),
+    'the caption must be aria-hidden, so it is not read twice (WS19)');
+  // The hint must also reach a screen reader, or the gesture stays undiscoverable.
+  assert.ok(/Håll klick för att se alla avsnitt/.test(build),
+    'the accessible name must name the gesture, not just show it (WS19)');
+  // Tap behaviour must be UNCHANGED: a tap still plays the newest episode.
+  assert.ok(/onclick: \(\) => \(isPod \? playPodcast\(item\.id\)/.test(build),
+    'a tap must still play the newest episode (WS19: the affordance is additive)');
+  assert.ok(/addLongPress\(btn, \(\) => \(isPod \? openPodcastCard/.test(build),
+    'the long-press route to the episode list must survive (WS19)');
+  // The caption must be styled, and must be an overlay: .stream-icon is
+  // `overflow: hidden` with the artwork filling it, so an in-flow caption
+  // would be clipped away entirely and the affordance would be invisible.
+  const hint = region('.icon-hint {', '.stream-icon img {', STYLES_WS5);
+  assert.ok(/position:\s*absolute/.test(hint),
+    '.icon-hint must be an overlay, or overflow:hidden clips it away (WS19)');
+  assert.ok(/linear-gradient/.test(hint),
+    '.icon-hint needs a scrim, or white text is unreadable on a light cover (WS19)');
+  assert.ok(/pointer-events:\s*none/.test(hint),
+    '.icon-hint must not intercept the tap (WS19)');
+});
