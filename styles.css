@@ -768,16 +768,38 @@ body.player-gesture-lock {
 
    Width only, and deliberately NO height: the spacer exists to hold the
    column, not to keep a row of buttons tall, so the header still collapses to
-   the text once the buttons have moved down.
-
-   `.player-header .player-btn-close` and `.player-header .player-expand-btn`
-   were DELETED rather than left behind. A rule that matches nothing is worse
-   than no rule, because it would silently re-apply if a button ever returned
-   to the header. */
+   the text. */
 .player-header .player-header-spacer {
   width: var(--player-art);
   flex: none;
 }
+/* ---- WS14: chevron + close return to the header, RIGHT-grouped ----
+   The owner (2026-09-27) asked for the minimised bar's arrangement: both
+   buttons on the same line as the channel and programme title, after the
+   text, for radio and podcasts alike.
+
+   32px each, not 44px. The header row is NOT a button row -- it is a text row
+   with two buttons at the end -- and 44px buttons would leave the programme
+   title only 358 - 44(spacer) - 24(gaps) - 88(buttons) = 202px on a 390px
+   iPhone. At 32px it keeps 222px, and the buttons still read as tappable
+   because they sit in a --player-art-tall line box. Never let these grow back
+   to var(--player-art) without re-measuring the title at 360px.
+
+   `margin-left: auto` on the chevron pushes the PAIR to the far right, past
+   the shrinking text, rather than relying on a fixed width for the text. The
+   pair then travels together, which is the minimised bar's look. */
+.player-header .player-expand-btn,
+.player-header .player-btn-close {
+  width: 32px;
+  height: 32px;
+  flex: none;
+}
+.player-header .player-expand-btn { margin-left: auto; }
+.player-header .player-btn-close { color: var(--text); background: var(--border); }
+/* The two SVGs shrink with the buttons; the default .player-btn rule sizes
+   icons at 22px, which fills a 32px circle. */
+.player-header .player-expand-btn svg { width: 18px; height: 18px; }
+.player-header .player-btn-close svg { width: 16px; height: 16px; }
 /* Both texts share the line and ellipsize. No max-width percentage: the old
    40% cap truncated the channel name on narrow phones for no reason. The title
    keeps its intrinsic width and only shrinks when the programme needs room. */
