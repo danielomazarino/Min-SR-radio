@@ -146,11 +146,44 @@ test('episode expanded artwork never borrows a live channel song artwork', () =>
   const EXPAND = APP_JS.slice(APP_JS.indexOf('const renderSongView = () => {'));
   assert.ok(/const songArtwork = isEpisode\s*\?/.test(EXPAND),
     'the episode branch of songArtwork must remain explicit and separate');
-  assert.ok(/live\.artwork/.test(EXPAND),
-    "an episode's cover must be the programme image (live.artwork)");
-  // The live branch must still read nowPlaying.artwork and nothing else.
+  // WS13 Part B supersedes the WS12 conclusion that an episode must use the
+  // programme image and nothing else. That conclusion was WRONG: it rested on
+  // searches the code never makes (podcast NAMES), whereas this path searches
+  // a real song's "artist title". Re-measured on 51 real tracks: 73% resolve,
+  // 89% of those to a plausible artist.
+  //
+  // The rule that still stands, and is the real point of this test, is the one
+  // underneath: an episode must never inherit a LIVE CHANNEL's song cover.
+  // nowPlaying.episodeArtwork is a separate field precisely so the two cannot
+  // overwrite each other. That separation is asserted, not assumed.
   const decl = /const songArtwork = isEpisode[\s\S]*?;/.exec(EXPAND);
   assert.ok(decl, 'songArtwork must be a single readable declaration');
+  assert.ok(/nowPlaying\.episodeArtwork/.test(decl[0]),
+    "an episode's cover must prefer its own resolved album cover");
+  assert.ok(/live\.artwork/.test(decl[0]),
+    'and fall back to the programme image when no cover resolves');
+  // The two artwork fields must be distinct, so an episode can never show a
+  // live channel's song cover by accident.
+  // The two fields must be SEPARATE, which is the property N8 attacked.
+  // Asserting only that `episodeArtwork: null` appears was not enough: adding a
+  // DUPLICATE `artwork:` key to the same object literal satisfies that pattern
+  // and would let one kind's cover overwrite the other's. JavaScript accepts a
+  // duplicate key silently -- the last one wins -- so this has to be checked by
+  // counting, not by presence.
+  const npDecl = /const nowPlaying = \{[\s\S]*?episodeArtwork: null \};/.exec(APP_JS);
+  assert.ok(npDecl, 'the nowPlaying literal must be readable');
+  const npBody = npDecl[0];
+  assert.equal((npBody.match(/artwork:/g) || []).length, 1,
+    'exactly ONE artwork key -- a duplicate would silently shadow the live field');
+  assert.equal((npBody.match(/episodeArtwork:/g) || []).length, 1,
+    'exactly one episodeArtwork key');
+  // And the two must be read from two different fields at the two call sites,
+  // so neither path can inherit the other's cover.
+  assert.ok(/if \(isLive\) \{ nowPlaying\.artwork =/.test(APP_JS),
+    'the live target must write nowPlaying.artwork');
+  assert.ok(/else nowPlaying\.episodeArtwork =/.test(APP_JS),
+    'the episode target must write nowPlaying.episodeArtwork, not artwork');
+  // The live branch must still read nowPlaying.artwork and nothing else.
   assert.ok(/nowPlaying\.artwork/.test(decl[0]),
     'a live song must still use the rightnow/iTunes artwork');
   // The episode arm must be the PROGRAMME image and the live arm must be the
@@ -158,10 +191,14 @@ test('episode expanded artwork never borrows a live channel song artwork', () =>
   // swapping the two cannot pass.
   const arms = /isEpisode\s*\?\s*\(([^)]*)\)\s*:\s*([\s\S]*?);/.exec(decl[0]);
   assert.ok(arms, 'songArtwork must be a readable isEpisode ternary');
+  // WS13: the episode arm reads its OWN resolved album cover first and the
+  // programme image second. It must NOT read the live channel's artwork field.
+  assert.ok(/episodeArtwork/.test(arms[1]),
+    'the EPISODE arm must prefer its own resolved album cover');
   assert.ok(/live\.artwork/.test(arms[1]),
-    "the EPISODE arm must be the programme image (live.artwork)");
-  assert.ok(!/nowPlaying/.test(arms[1]),
-    'the episode arm must NOT read the live now-playing artwork');
+    'and fall back to the programme image');
+  assert.ok(!/nowPlaying\.artwork/.test(arms[1]),
+    "the episode arm must NOT read the LIVE channel's artwork field");
   assert.ok(/nowPlaying\.artwork/.test(arms[2]),
     'the LIVE arm must still read the rightnow/iTunes artwork');
   // Episodes must not trigger an iTunes lookup at all. Comments are stripped
@@ -173,36 +210,60 @@ test('episode expanded artwork never borrows a live channel song artwork', () =>
   // refreshNowPlayingArtwork() while explaining why it is unreachable, and a
   // raw-text scan would trip over its own documentation.
   const code = APP_JS.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-  // ONE call site, and it must be inside fetchNowPlaying -- which is itself
-  // only ever reached for a live channel (pollNowPlaying returns early unless
-  // `cur.kind === 'live'`). That is what makes nowPlaying.artwork null for an
-  // episode by construction rather than by policy.
-  //
-  // Sliced by FUNCTION, not by neighbouring markers: fetchNowPlaying happens to
-  // be defined between updateEpisodeTrack and paintNowPlaying, so a slice
-  // bounded by those two names CONTAINS the live call site and the assertion
-  // would fail for a slicing reason while the code was correct. Anchor on the
-  // function that must own the call.
-  const calls = code.split('refreshNowPlayingArtwork()').length - 1;
-  assert.equal(calls, 2, 'exactly one call site plus the definition');
+  // WS13 Part B: TWO call sites plus the definition -- the live poll and the
+  // episode track-change path. Both must be real, or the feature is dead code.
+  // The single-mechanism rule still holds: the same function, the same
+  // artworkCache, the same artworkSeq guard, no second lookup implementation.
+  const calls = code.split('refreshNowPlayingArtwork(').length - 1;
+  assert.equal(calls, 3, 'two call sites (live + episode) plus the definition');
+  assert.equal((code.match(/async function refreshNowPlayingArtwork/g) || []).length, 1,
+    'exactly ONE implementation -- the episode path must reuse it, not clone it');
+  // Only ONE cache and ONE seq guard, or the two paths could disagree.
+  assert.equal((code.match(/const artworkCache = new Map/g) || []).length, 1,
+    'exactly one artwork cache');
+  assert.equal((code.match(/const seq = \+\+artworkSeq/g) || []).length, 1,
+    'exactly one artworkSeq guard, inside the shared function');
+  // The episode call site must pass a real song and the shared target, and must
+  // be guarded on having an artist -- an empty artist is a garbage query.
+  assert.ok(/refreshNowPlayingArtwork\(next, nowPlaying\)/.test(code),
+    'the episode path must call the shared lookup with the resolved track');
+  assert.ok(/if \(next && next\.title && next\.artist\) \{\s*refreshNowPlayingArtwork\(next, nowPlaying\)/.test(code),
+    "the episode lookup must be guarded on a real title AND artist");
+  // The live call site is unchanged in substance: the live song, live target.
+  assert.ok(/refreshNowPlayingArtwork\(nowPlaying\.song, nowPlaying\)/.test(code),
+    'the live path must still pass the live song and the live target');
   // Sliced by FUNCTION, with the end marker taken from the code itself rather
   // than from neighbouring names: stopNowPlayingPoll is defined BEFORE
   // fetchNowPlaying, so a slice bounded by those two is EMPTY and every
   // assertion over it is vacuously red. pollNowPlaying is the real next
   // function after fetchNowPlaying.
+  // The call now TAKES ARGUMENTS (song, target), so a no-arg pattern can never
+  // match -- a pattern that can never match is a check that cannot fail.
   const fetchFn = code.slice(code.indexOf('async function fetchNowPlaying'),
     code.indexOf('function pollNowPlaying'));
-  assert.ok(fetchFn.length > 0 && /refreshNowPlayingArtwork\(\)/.test(fetchFn),
-    'the iTunes lookup must hang off fetchNowPlaying');
-  // ...and that function is live-gated, which is the whole reason.
+  assert.ok(fetchFn.length > 0
+    && /refreshNowPlayingArtwork\(nowPlaying\.song, nowPlaying\)/.test(fetchFn),
+  'the live iTunes lookup must hang off fetchNowPlaying');
+  // ...and that function is live-gated, so the LIVE cover is only ever a
+  // live channel's.
   const pollFn = code.slice(code.indexOf('function pollNowPlaying'));
   assert.ok(/kind !== 'live'/.test(pollFn),
     "pollNowPlaying must still refuse to run for anything but a live channel");
-  // updateEpisodeTrack itself must never reach for artwork.
+  // WS13 SUPERSEDES the old "episodes never touch the artwork lookup" rule:
+  // they now DO, through the same shared function, on a track change. What
+  // must still hold is that the episode call is inside updateEpisodeTrack's
+  // change-detection block and guarded on a real title AND artist -- a lookup
+  // on an empty artist is a garbage query, which is how a wrong cover arrives.
   const epFn = code.slice(code.indexOf('function updateEpisodeTrack'),
     code.indexOf('async function fetchNowPlaying'));
-  assert.ok(epFn.length > 0 && !/refreshNowPlayingArtwork/.test(epFn),
-    'the episode-track path must not touch the iTunes artwork lookup');
+  assert.ok(epFn.length > 0 && /refreshNowPlayingArtwork\(next, nowPlaying\)/.test(epFn),
+    'the episode lookup must live in updateEpisodeTrack, on a track change');
+  assert.ok(/if \(next && next\.title && next\.artist\)/.test(epFn),
+    "the episode lookup must be guarded on a real title AND artist");
+  // And it must be inside the CHANGE detection, never on every timeupdate:
+  // a lookup per tick would be four requests a second.
+  assert.ok(/episodeCurrentTrack = next;[\s\S]*?refreshNowPlayingArtwork\(next, nowPlaying\)/.test(epFn),
+    'the episode lookup must come after the track is committed, inside the change branch');
 });
 
 test('stopping live metadata invalidates pending artwork lookups', () => {

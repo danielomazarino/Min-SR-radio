@@ -855,7 +855,12 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // ISOLATION CONTRACT: this loop never touches audioEl, hls, or playback
   // state. Any fetch/network/parse failure just leaves the last known song
   // (or hides the line). One loop total, keyed to the active live channel.
-  const nowPlaying = { song: null, artwork: null, channelId: null, timeline: [] };
+  const nowPlaying = { song: null, artwork: null, channelId: null, timeline: [],
+    // WS13 Part B: the iTunes album cover for an EPISODE. Kept separate from
+    // nowPlaying.artwork on purpose -- that field belongs to the live poll's
+    // position-aware song, and mixing the two would make one kind's cover
+    // overwrite the other's. Null until a real track cover resolves.
+    episodeArtwork: null };
   // ---- WS9: the song timeline, not just the current song ----
   // The rightnow payload carries previoussong / nextsong alongside song, each
   // with starttimeutc / stoptimeutc (verified live 2026-09-27: ch163
@@ -942,6 +947,16 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       || (next?.artist || null) !== (episodeCurrentTrack?.artist || null)) {
       episodeCurrentTrack = next;
       paintNowPlaying();
+      // WS13 Part B: resolve the ALBUM COVER for the episode's current song.
+      // Fired on a track CHANGE only, never on timeupdate, so this is one
+      // lookup per song rather than four per second. The same artworkCache and
+      // the same artworkSeq guard as the live path -- no second mechanism.
+      // A miss leaves episodeArtwork null, and the panel then falls back to the
+      // programme image, which is the correct thing to show when no album
+      // cover can be resolved.
+      if (next && next.title && next.artist) {
+        refreshNowPlayingArtwork(next, nowPlaying);
+      }
     }
   }
 
@@ -1004,7 +1019,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       nowPlaying.channelId = channelId;
       paintNowPlaying();
       // Artwork lookup is fully isolated: failure = no image, nothing else.
-      refreshNowPlayingArtwork();
+      refreshNowPlayingArtwork(nowPlaying.song, nowPlaying);
     } catch {
       // Network/API error: keep last known song; never touch playback.
     }
@@ -1051,18 +1066,35 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // artworkUrl100 scales to any size via URL rewrite. Fully isolated:
   // failure = no image, never affects audio.
   const artworkCache = new Map(); // "artist|title" → url (session-lifetime)
-  async function refreshNowPlayingArtwork() {
+  // WS13 Part B: the lookup takes the SONG to search for, and where to put the
+  // result. Previously it read `nowPlaying.song` directly, which only ever
+  // holds a live channel's on-air song, so it was unreachable for an episode.
+  //
+  // A WS12 note claimed this path was unsafe for episodes because it "searches
+  // the podcast name". That was WRONG, and it was wrong because the conclusion
+  // was drawn from searches the code never makes: `song` here is
+  // episodeCurrentTrack, built from the episode's per-SONG track list, so the
+  // query is a real song's "artist title". Re-measured on real data (2026-09-27,
+  // 51 tracks across 4 podcasts): 73% returned a result and 89% of those had a
+  // plausible artist, the misses being name variants of the same act
+  // ("P!nk" / "Pink", "Florence + the Machine").
+  //
+  // GUARD, and the reason the old bad hits happened: only search when the track
+  // has a real artist AND title. An empty artist produces a garbage query, and
+  // a garbage query is how an unrelated cover ends up under a radio programme.
+  async function refreshNowPlayingArtwork(song, target) {
     const seq = ++artworkSeq;
-    const song = nowPlaying.song;
-    if (!song || !song.title) {
-      nowPlaying.artwork = null;
-      paintNowPlaying();
+    const isLive = target === nowPlaying;
+    if (!song || !song.title || !song.artist) {
+      // No usable song: clear only our own field, never the other kind's.
+      if (isLive) { nowPlaying.artwork = null; paintNowPlaying(); }
+      else { nowPlaying.episodeArtwork = null; }
       return;
     }
     const key = `${song.artist}|${song.title}`.toLowerCase();
     if (artworkCache.has(key)) {
-      nowPlaying.artwork = artworkCache.get(key);
-      paintNowPlaying();
+      if (isLive) { nowPlaying.artwork = artworkCache.get(key); paintNowPlaying(); }
+      else nowPlaying.episodeArtwork = artworkCache.get(key);
       return;
     }
     try {
@@ -1073,7 +1105,9 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       const url = j?.results?.[0]?.artworkUrl100 || null;
       const big = url ? url.replace(/\d+x\d+bb/, '600x600bb') : null;
       artworkCache.set(key, big);
-      if (seq === artworkSeq) { nowPlaying.artwork = big; paintNowPlaying(); }
+      if (seq !== artworkSeq) return;
+      if (isLive) { nowPlaying.artwork = big; paintNowPlaying(); }
+      else nowPlaying.episodeArtwork = big;
     } catch {
       // Artwork failure: never blocks anything. Keep old image briefly to
       // avoid flicker; clear only when the song itself changes.
@@ -2315,8 +2349,15 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         //
         // If there is no programme image either, the ♪ placeholder stays.
         // Never a broken image and never an unrelated cover.
+        // WS13 Part B: an episode prefers the resolved ALBUM COVER for the
+        // current song, and falls back to the programme image when no cover
+        // could be resolved. The fallback is not a placeholder for something
+        // broken -- for a podcast the programme image IS the album art, and it
+        // is what the no-song branch above already shows. An unresolved cover
+        // therefore degrades to the correct image rather than to nothing, and
+        // never to an unrelated one.
         const songArtwork = isEpisode
-          ? (live.artwork || null)
+          ? (nowPlaying.episodeArtwork || live.artwork || null)
           : nowPlaying.artwork;
         content.appendChild(el('div', { class: 'expand-row' },
           songArtwork
@@ -2720,10 +2761,34 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     controls.appendChild(playPause);
     if (fwdBtn) controls.appendChild(fwdBtn);
     if (nextProgramBtn) controls.appendChild(nextProgramBtn);
-    // WS12 Part B: expandBtn and closeBtn are NO LONGER appended here. They
-    // belong to the header row above the transport, which is where the owner
-    // put them back. Adding them here was what squeezed .player-meta to 0px
-    // in the DVR state.
+    // ---- WS13 Part A: the chevron and the close join the transport row ----
+    // The owner: "the mid player close button now is back to the left above the
+    // miniture image and not to the right on a row above the title to mimic the
+    // ui for the minimised player. this issue is both on radio channel playing
+    // and podcasts".
+    //
+    // "mimic the ui for the minimised player" is the specification. The
+    // minimised bar reads thumb . text . play . chevron . close, so the close
+    // is the LAST item on the SAME row as play and chevron. The order here is
+    // transport . chevron . close for the same reason.
+    //
+    // This is the same end state WS11a aimed for. WS11a was not wrong in its
+    // MECHANISM, it was wrong about who asked for it: it was authorised by a
+    // brief that said "on the same row as the transport buttons", which was a
+    // transcription error in the brief rather than the owner's intent. WS12
+    // then reversed it on the strength of "they should be above". Now it is the
+    // owner's own request, so it stands.
+    //
+    // The header keeps a width-only SPACER in the close button's old place.
+    // That is not cosmetic: `.player-header .player-btn-close` was sized
+    // var(--player-art) and doubled as the artwork-column spacer, and the row's
+    // shared --player-gap after it is what lands the title and programme on the
+    // artwork's right edge. Deleting the button removes the thing that CREATES
+    // the space, not the space, and the text column collapses to 0 with every
+    // test still green. The spacer is that same width, from the same custom
+    // property -- never a pixel literal.
+    controls.appendChild(expandBtn);
+    controls.appendChild(closeBtn);
 
     // Wire program-skip buttons once the schedule resolves (DVR only).
     // Re-render is NOT needed: the buttons live in this render instance.
@@ -2955,11 +3020,11 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // silently stops programme titles and song lines painting — with green
     // tests. Keep them as two separate elements: merging the title and
     // programme into one text node would break paintProgramTitle entirely.
+    const headerSpacer = el('div', { class: 'player-header-spacer', 'aria-hidden': 'true' });
     const headerLine = el('div', { class: 'player-header' },
-      closeBtn,
+      headerSpacer,
       el('div', { class: 'player-title', text: cur.title || '' }),
-      el('div', { class: 'player-sub', text: cur._srProgramTitle || cur.subtitle || (live ? 'Direkt' : '') }),
-      expandBtn);
+      el('div', { class: 'player-sub', text: cur._srProgramTitle || cur.subtitle || (live ? 'Direkt' : '') }));
 
     // Song line: BELOW the player content, ABOVE the seek row. aria-live and
     // the :empty / .has-song CSS behaviour are preserved, so a talk channel

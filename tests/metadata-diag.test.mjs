@@ -1467,35 +1467,44 @@ test('WS5 Item 2: the song line sits below the player and above the seek row', (
 });
 
 test('WS5 Item 3: the chevron is on the right, aligned by flexbox with close', () => {
-  // SUPERSEDED BY WS5b, then briefly by WS11a, and RESTORED BY WS12. The
-  // brief that authorised WS11a said "on the same row as the transport
-  // buttons"; that was a transcription error in the brief, by the reviewer,
-  // not a change of mind by the owner. The owner has since written "the close
-  // button and chevron were not to be placed on the player icons line. they
-  // should be above." So this is back to the WS5b shape: close first, chevron
-  // last, both in the header row.
+  // SUPERSEDED BY WS5b, then by WS11a, then restored by WS12, then SUPERSEDED
+  // AGAIN BY WS13. The trail is worth keeping because it is the whole lesson:
+  //   WS11a moved the buttons to the transport row, authorised by a brief that
+  //   mis-transcribed the owner ("on the same row as the transport buttons").
+  //   WS12 moved them back up, authorised by the owner's own words: "they
+  //   should be **above**."
+  //   WS13 moves them DOWN again, because the owner has now said: "the mid
+  //   player close button now is back to the left above the miniture image and
+  //   not to the right on a row above the title to mimic the ui for the
+  //   minimised player."
+  // "mimic the ui for the minimised player" is the specification, and the
+  // minimised bar reads thumb . text . play . chevron . close.
+  //
+  // What survives from WS5b is the REQUIREMENT, not the arrangement: the
+  // buttons exist, they are not on a row of their own, and the header's text
+  // column still starts on the artwork's right edge.
   const header = stripComments(region(
-    "const headerLine = el('div', { class: 'player-header' }",
+    'const headerSpacer = el(',
     '$player.appendChild(headerLine);', APP_JS));
-  assert.ok(/closeBtn/.test(header),
-    'the close button must be built into the header row');
-  assert.ok(/expandBtn/.test(header),
-    'the expand chevron must be built into the header row');
-  assert.ok(header.indexOf('closeBtn') < header.indexOf('player-title'),
-    'the close button must come first, so it marks the top-LEFT corner');
-  assert.ok(header.indexOf('expandBtn') > header.indexOf('player-sub'),
-    'the chevron must come after the text, so it marks the top-RIGHT corner');
-  // WS12: the WS11a spacer must not have survived the restore. Exactly one
-  // element may occupy the artwork column.
-  assert.ok(!/player-header-spacer/.test(APP_CODE),
-    'the WS11a spacer must be gone now the real button is back');
-  // The buttons must not ALSO be on the controls row -- that was what squeezed
-  // .player-meta to 0px in the DVR state.
+  // The header holds the SPACER, not the buttons.
+  assert.ok(/player-header-spacer/.test(header),
+    'the header must keep a spacer in the close button\'s place');
+  assert.ok(!/closeBtn/.test(header),
+    'the close button must no longer be built into the header row (WS13)');
+  assert.ok(!/expandBtn/.test(header),
+    'the expand chevron must no longer be built into the header row (WS13)');
+  // And both buttons are on the transport row, chevron before close.
   const controlsRow = stripComments(region('const controls = el(', '// Wire program-skip buttons', APP_JS));
-  assert.ok(!/controls\.appendChild\(expandBtn\)/.test(controlsRow),
-    'the chevron must not ALSO be on the controls row');
-  assert.ok(!/controls\.appendChild\(closeBtn\)/.test(controlsRow),
-    'the close button must not ALSO be on the controls row');
+  assert.ok(/controls\.appendChild\(expandBtn\)/.test(controlsRow),
+    'the chevron must be attached to the controls row (WS13)');
+  assert.ok(/controls\.appendChild\(closeBtn\)/.test(controlsRow),
+    'the close button must be attached to the controls row (WS13)');
+  assert.ok(controlsRow.indexOf('controls.appendChild(expandBtn)')
+    < controlsRow.indexOf('controls.appendChild(closeBtn)'),
+    'the order must read ... transport - chevron - close, like the mini-bar');
+  // EXACTLY ONE element may occupy the artwork column. Both the button and the
+  // spacer live in the stylesheet/source vocabulary, so the guard is that the
+  // header does not carry the button -- asserted above.
   assert.ok(!/class: 'player-header-btns'/.test(APP_CODE),
     'the WS5 standalone button row must be gone');
   // Alignment must come from flexbox, not from pixel offsets. The CSS lives in
@@ -1632,13 +1641,19 @@ test('WS5b Item 1: the header, the pills and the song line share ONE left edge',
   // column again, so the original assertion stands unchanged. (WS11a briefly
   // replaced the button with a spacer; the spacer is now gone again. Either
   // way the column must be held by exactly ONE element of that width.)
+  // WS13: the close button is back on the transport row, so the artwork column
+  // is held by the WIDTH-ONLY SPACER. The PROPERTY is unchanged and is what
+  // this test guards; the element carrying it changed twice (button -> spacer
+  // -> button -> spacer). EXACTLY ONE of them may be present.
   const row = stripComments(region('.player-header {', '.player-row {', STYLES_WS5));
   assert.ok(/gap: var\(--player-gap\)/.test(row),
     'the header must use the same gap as the player row');
-  assert.ok(/\.player-header \.player-btn-close \{[\s\S]*?width: var\(--player-art\)/.test(row),
-    'the close button must occupy the artwork column so the text lines up');
-  assert.ok(!/\.player-header \.player-header-spacer/.test(row),
-    'the removed WS11a spacer rule must not have come back');
+  assert.ok(/\.player-header \.player-header-spacer \{[\s\S]*?width: var\(--player-art\)/.test(row),
+    'the spacer must occupy the artwork column so the text lines up');
+  assert.ok(!/\.player-header \.player-btn-close/.test(row),
+    'the header-scoped close rule must be gone with the button (WS13)');
+  assert.ok(!/\.player-header \.player-expand-btn/.test(row),
+    'the header-scoped chevron rule must be gone with the button (WS13)');
   assert.ok(!/padding-left: \d+px/.test(row),
     'the header must NOT hard-code a text indent');
   // The artwork itself must read the same property, or the column lies.
@@ -1693,13 +1708,16 @@ test('WS5b Item 3: the buttons are corners of the header row, not a floating row
   // request, so the rule is live again and the original requirement returns.
   // Both header-scoped rules are asserted PRESENT, because a button with no
   // sizing rule is a button that silently stops being the artwork column.
+  // WS13: the chevron left the header, so these header-scoped rules are gone.
+  // They were DELETED rather than left behind: a rule matching nothing is
+  // worse than no rule, because it would silently re-apply if a button ever
+  // came back. The right-hand placement the auto-margin served is now the
+  // controls row's own ordering, asserted in the WS5 Item 3 test.
   const row = stripComments(region('.player-header {', '.player-row {', STYLES_WS5));
-  assert.ok(/\.player-header \.player-expand-btn \{[\s\S]*?margin-left: auto/.test(row),
-    'the chevron must be pinned to the right by auto margin, not a fixed width');
-  assert.ok(/\.player-header \.player-expand-btn \{[\s\S]*?flex: none/.test(row),
-    'the chevron must not be squeezed by the text');
-  assert.ok(/\.player-header \.player-btn-close \{[\s\S]*?height: var\(--player-art\)/.test(row),
-    'the header close button must match the artwork height');
+  assert.ok(!/\.player-header \.player-expand-btn/.test(row),
+    'the header-scoped chevron rule must be removed with the button (WS13)');
+  assert.ok(!/\.player-header \.player-btn-close/.test(row),
+    'the header-scoped close rule must be removed with the button (WS13)');
   // The close button's base size must survive for the other surfaces: the
   // mini-bar has its own close button and must not be resized by this change.
   // Anchor with the leading newline on purpose: '.player-btn-close {' is also a
@@ -2520,48 +2538,44 @@ test('WS11: out of scope -- every seek and position function is byte-identical',
 // anchored on headerLine again. region() searches FORWARD, so anchoring on the
 // removed `const headerSpacer` declaration silently began after the element
 // under test and could never see it -- that trap fired in WS11a.
+// Anchored on the SPACER's own declaration. region() searches FORWARD from
+// the start marker, so a region opened at `const headerLine` begins AFTER
+// `const headerSpacer` and can never see it -- which is exactly what happened
+// here: the test asserted the spacer was absent from a slice that started
+// after it. Anchor on the element under test.
 const HEADER_ROW_WS12 = stripComments(region(
-  "const headerLine = el('div', { class: 'player-header' }",
-  '$player.appendChild(headerLine);', APP_JS));
+  'const headerSpacer = el(', '$player.appendChild(headerLine);', APP_JS));
 const CONTROLS_WS11A = stripComments(region(
   'const controls = el(', '// Wire program-skip buttons', APP_JS));
 
-test('WS12 Part B: the close button IS the artwork-column spacer again', () => {
-  // Exactly ONE element may occupy the artwork column. WS11a left a width-only
-  // spacer behind when it moved the button; WS12 put the real button back, so
-  // the spacer had to go. Leaving both live would add 44px of dead space and
-  // push the text RIGHT of the artwork edge, past the quality pill and the song
-  // line. Both the presence and the absence are asserted deliberately.
-  assert.ok(/closeBtn/.test(HEADER_ROW_WS12),
-    'the close button must be back in the header row');
-  assert.ok(HEADER_ROW_WS12.indexOf('closeBtn') < HEADER_ROW_WS12.indexOf('player-title'),
-    'the close button must be the FIRST cell, so it marks the left column');
-  assert.ok(/expandBtn/.test(HEADER_ROW_WS12),
-    'the expand chevron must be back in the header row');
-  assert.ok(HEADER_ROW_WS12.indexOf('expandBtn') > HEADER_ROW_WS12.indexOf('player-sub'),
-    'the chevron must come after the texts, so it marks the far-right corner');
-  // THE SPACER MUST NOT SURVIVE ALONGSIDE THE BUTTON.
-  assert.ok(!/player-header-spacer/.test(HEADER_ROW_WS12),
-    'the WS11a spacer must be removed once the real button is back');
-  assert.ok(!/headerSpacer/.test(APP_CODE),
-    'no headerSpacer declaration may remain in app.js');
-  assert.ok(!/^\.player-header \.player-header-spacer/m.test(STYLES_WS5),
-    'the .player-header-spacer CSS rule must be removed with it');
-  // The column is held by the BUTTON's width, derived from --player-art.
+test('WS13 Part B: the header spacer IS the artwork column, and it is width-only', () => {
+  // Exactly ONE element may occupy the artwork column. WS13 moved the close
+  // button to the transport row, so the column is held by the spacer again.
+  // Leaving the button AND the spacer both live would add 44px of dead space
+  // and push the text RIGHT of the artwork edge, past the quality pill and the
+  // song line. Both the presence of the spacer and the absence of the button
+  // are asserted deliberately, because either one alone would pass.
+  assert.ok(!/closeBtn/.test(HEADER_ROW_WS12),
+    'the close button must NOT be in the header row (WS13)');
+  assert.ok(!/expandBtn/.test(HEADER_ROW_WS12),
+    'the chevron must NOT be in the header row (WS13)');
+  assert.ok(/player-header-spacer/.test(HEADER_ROW_WS12),
+    'the header must still contain a spacer standing in for the close button');
+  assert.ok(HEADER_ROW_WS12.indexOf('headerSpacer') < HEADER_ROW_WS12.indexOf('player-title'),
+    'the spacer must be the FIRST cell, so the text starts on the artwork edge');
+  // The column is held by the SPACER's width, derived from --player-art.
   const rule = stripComments(region(
-    '.player-header .player-btn-close {', '.player-header .player-expand-btn', STYLES_WS5));
+    '.player-header .player-header-spacer {', '.player-header .player-title', STYLES_WS5));
   assert.ok(/width: var\(--player-art\)/.test(rule),
-    'the close button must occupy the artwork column, derived from --player-art');
-  assert.ok(/height: var\(--player-art\)/.test(rule),
-    'and match the artwork height');
-  assert.ok(/flex: none/.test(rule), 'and must not be squeezed by the texts');
+    'the spacer must occupy the artwork column, derived from --player-art');
   assert.ok(!/width: \d+px/.test(rule),
-    'the width must NOT be a hard-coded pixel literal');
-  // The chevron is pushed to the right by an auto margin, not a fixed width.
-  const chev = stripComments(region(
-    '.player-header .player-expand-btn {', '.player-header .player-title', STYLES_WS5));
-  assert.ok(/margin-left: auto/.test(chev),
-    'the chevron must be pinned right by auto margin, not a fixed width');
+    'the spacer width must NOT be a hard-coded pixel literal');
+  assert.ok(/flex: none/.test(rule), 'the spacer must not be squeezed by the texts');
+  // WIDTH-ONLY. This is the part WS11a got wrong in spirit: a height here
+  // silently keeps a row of buttons tall, which is what the owner is asking us
+  // to remove. Asserted negatively so it cannot creep back.
+  assert.ok(!/height:/.test(rule),
+    'the spacer must carry NO height, or the header cannot get shorter');
   // The artwork must still be the source of that column, or the number lies.
   const thumb = stripComments(region('.player-thumb {', '.player-thumb img', STYLES_WS5));
   assert.ok(/width: var\(--player-art\)/.test(thumb),
@@ -2575,10 +2589,19 @@ test('WS12 Part B: the controls row carries the TRANSPORT only', () => {
   // the controls row squeezed .player-meta instead of overflowing the row:
   // measured at 390px in the DVR state, meta went to 0px, the row overflowed
   // 388 > 358 and the pill wrapped to two lines (17px -> 32px tall).
-  assert.ok(!/controls\.appendChild\(expandBtn\)/.test(CONTROLS_WS11A),
-    'the chevron must NOT be on the controls row (WS12)');
-  assert.ok(!/controls\.appendChild\(closeBtn\)/.test(CONTROLS_WS11A),
-    'the close button must NOT be on the controls row (WS12)');
+  // WS13 reverses WS12: the owner has now asked for the transport row
+  // explicitly ("not to the right on a row above the title to mimic the ui for
+  // the minimised player"). So the buttons ARE here, at the right-hand end.
+  // What still matters is the squeeze this caused, and the ORDER.
+  assert.ok(/controls\.appendChild\(expandBtn\)/.test(CONTROLS_WS11A),
+    'the chevron must be on the controls row (WS13)');
+  assert.ok(/controls\.appendChild\(closeBtn\)/.test(CONTROLS_WS11A),
+    'the close button must be on the controls row (WS13)');
+  assert.ok(CONTROLS_WS11A.indexOf('controls.appendChild(nextProgramBtn)')
+    < CONTROLS_WS11A.indexOf('controls.appendChild(expandBtn)')
+    && CONTROLS_WS11A.indexOf('controls.appendChild(expandBtn)')
+      < CONTROLS_WS11A.indexOf('controls.appendChild(closeBtn)'),
+  'the order must be ... transport - chevron - close, matching the mini-bar');
   // The transport itself is untouched: at most five buttons, in order.
   ['prevProgramBtn', 'backBtn', 'playPause', 'fwdBtn', 'nextProgramBtn']
     .forEach((b) => {
@@ -2588,13 +2611,17 @@ test('WS12 Part B: the controls row carries the TRANSPORT only', () => {
   assert.ok(CONTROLS_WS11A.indexOf('controls.appendChild(playPause)')
     < CONTROLS_WS11A.indexOf('controls.appendChild(fwdBtn)'),
     'the play button must stay between the two 15s buttons');
-  // The header-scoped CSS for both buttons must come BACK with the buttons, or
-  // the artwork column has no width and the alignment collapses.
+  // WS13: the buttons are on the controls row again, so the header-scoped rules
+  // are GONE again -- deleted rather than left behind, because a rule matching
+  // nothing would silently re-apply if a button ever came back. The artwork
+  // column is now held by the width-only spacer instead.
   const row = stripComments(region('.player-header {', '.player-row {', STYLES_WS5));
-  assert.ok(/\.player-header \.player-btn-close/.test(row),
-    'the header-scoped close rule must be restored with the button');
-  assert.ok(/\.player-header \.player-expand-btn/.test(row),
-    'the header-scoped chevron rule must be restored with the button');
+  assert.ok(!/\.player-header \.player-btn-close/.test(row),
+    'the header-scoped close rule must be gone with the button (WS13)');
+  assert.ok(!/\.player-header \.player-expand-btn/.test(row),
+    'the header-scoped chevron rule must be gone with the button (WS13)');
+  assert.ok(/\.player-header \.player-header-spacer/.test(row),
+    'the spacer rule must hold the artwork column in their place');
 });
 
 test('WS12 Part B: the pills degrade by clipping, never by wrapping', () => {
