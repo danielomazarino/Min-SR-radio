@@ -2255,3 +2255,155 @@ under seek. Gör ingen workaround innan den ansvariga vägen är bekräftad.
   avgjord" — inga slutsatser om `episodeCurrentTrack`.
 
 ---
+
+---
+
+## 2026-09-28 — WS18: DVR drag no longer changed the programme; LIVE pill moved to the song row
+
+Two owner-reported defects, fixed in `960a975` / `1985871` and deployed
+(`app.0911474c.js`, `styles.cb6a84d3.css`, SW `minradio-e16e0dae`,
+build id `960a975`).
+
+### 1. Dragging the P3 seek bar back stopped changing the programme title
+
+**What the owner reported:** *"the p3 with dvr drag doesn't change programme
+information anymore. look at why you created the bug and fix it."*
+
+**What I had done in WS9.** I added position-aware programme resolution:
+`resolveMetadataForPosition(cur)` picks the schedule entry containing the
+playhead and repaints `.player-sub`. The *only* thing that re-resolves after a
+seek is the `seeked` listener (`audioEl._srSeekedUpd`). The seek paths
+themselves — `seekToWindowFraction`, `seekBy`, `seekToProgramTime` — set
+`audioEl.currentTime`, call `updateSeekableState()` and `renderPlayer()`, and
+never ask for metadata. So the title depended entirely on the `seeked` event.
+
+**Hypotheses, and what the evidence said.**
+
+1. *The `seeked` event does not fire for a native-HLS drag on iOS.* Plausible,
+   and the reason I first reached for `seekToWindowFraction`. I did not adopt
+   it, because I had no way to observe the event on the owner's device and the
+   brief said not to touch the WS7-frozen seek functions without approval.
+2. *`cur._srSchedule` does not cover the target position.* **This one is
+   confirmed, and it is the real cause.** `fetchSchedule` requested
+   `localDateStr()` — **today only**. But `playheadWallMs()` maps a DVR position
+   to a *wall-clock* time, and with a 3-hour window that is routinely
+   **yesterday's date after midnight**. `pickByPosition` then found nothing, and
+   because the branch is `if (... && ev?.title && ev.title !== track._srProgramTitle)`
+   the stale title simply survived.
+
+**Why it was invisible.** The pill and the clock both kept moving correctly. The
+title also stayed *plausible* — it showed whatever was on air, which is a
+correct answer to a different question. So nothing looked broken; the failure
+was only visible to someone who knew the programme had changed. Measured on
+the live origin before the fix: after a seek the pill read `−3 h 1 min` while
+`.player-sub` still read `Vaken`.
+
+**The fix.** `fetchSchedule` now also loads `localDateStrOffset(1)`, but only
+when the DVR window can actually reach it — derived from `seekableStart`, so a
+channel with no DVR state pays nothing. The two days are merged into **one
+sorted** array, because both `pickByPosition` and `programBoundary` assume
+start-order; an unsorted merge would make the programme-skip buttons pick the
+wrong neighbour across midnight, trading one near-midnight bug for another.
+The per-day cache is already keyed `${channelId}:${dateStr}`, so the extra
+request is at most one per 10 minutes. Both single-day fallbacks are kept so an
+empty day cannot wipe out the other — the same bug class that already bit
+`writeFormerIfBetter` in the BKH app.
+
+**Evidence for the fix** (the app's own `localDateStrOffset` and
+`pickByPosition`, extracted from `app.js` and run over a realistic P3 schedule
+split across midnight):
+
+```
+counts today/yesterday/merged: 3 2 5
+sorted: true   contiguous: true   no duplicates: true
+order: Gattos kväll | Vaken | P3 Din Gata: Musik | P3 Nyheter | Gla
+
+ - 15min 2026-09-28 00:18  merged=P3 Din Gata: Musik  todayOnly=P3 Din Gata: Musik
+ - 45min 2026-09-27 23:48  merged=Vaken               todayOnly=null   <-- wrong
+ - 90min 2026-09-27 23:03  merged=Vaken               todayOnly=null   <-- wrong
+-119min 2026-09-27 22:34  merged=Vaken               todayOnly=null   <-- wrong
+-150min 2026-09-27 22:03  merged=Vaken               todayOnly=null   <-- wrong
+-179min 2026-09-27 21:34  merged=Vaken               todayOnly=null   <-- wrong
+
+positions a today-only schedule gets WRONG: 5/7
+```
+
+**5 of 7 positions inside a realistic 3-hour window were unresolvable before
+the fix.** The early-morning boundary check also shows the sort earning its
+keep: sorted returns `P3 Din Gata: Musik`, unsorted returns `Vaken`.
+
+**Not verified:** the live SR API could not be reached from this sandbox
+(`ERR_NAME_NOT_RESOLVED` both in-page and from Node), so the merge has not been
+exercised against real `scheduledepisodes` data — only against a fixture and
+the app's own selection functions. And Chromium genuinely cannot seek back
+(`dvrAvailable: false`), so the drag itself remains **unverified on a real
+device**; only the resolution logic is proven.
+
+### 2. LIVE / "−N min" pill moved to the song row, rightmost
+
+**The owner's correction:** *"move the live pill to where i asked in the first
+place meaning to the right hand of the position of song and artist
+information ... if where you set the pill now is right of row 2 i suppose i
+mean row 4 rightmost in your language."*
+
+I had read the original WS16 request as "far right of the channel-name row" and
+put it there. The owner means the **song + artist row**, rightmost. On a talk
+channel the channel-name row holds only the channel, so the pill read as if it
+described the channel rather than the playhead — which is exactly the confusion
+the correction names.
+
+**The change.** The pill now shares a row with `.now-playing-line` via a new
+`.player-time-row`. The song is `flex: 1 1 auto; min-width: 0` so it truncates
+first; the pill is `flex: none` so it can never be squeezed or wrapped;
+`margin-left: auto` puts it at that row's far right. The row is **live-only** —
+a podcast has no time state and keeps the bare song line, so it gains no useless
+box. `.player-sub` and `.now-playing-line` keep their class names and stay
+inside `$player`; both are load-bearing for `paintProgramTitle()` /
+`paintNowPlaying()` and the WS0 diagnostics, and renaming or reparenting either
+one stops painting **with green tests**.
+
+**Measured on the built bundle at 390px** (Chromium, song actually playing):
+
+```
+timeRow  x=72  w=302  right=374
+song     x=72  w=183  right=255
+pill     x=336  w=38   right=374     gap song->pill: 81px
+pillStillInMeta: false      pillIsChildOfTimeRow: true
+overflowX: 0
+```
+
+**Tests: 186 → 191.** The WS16 pill-placement assertion is **inverted**, not
+deleted: a pill left on the meta row would still be visible, so only a
+structural check catches the regression. Four WS18 tests cover the merge, the
+gate, the sort and a behavioural midnight resolution; one covers the row
+geometry, which the JS assertions cannot see.
+
+**Mutation-tested: 9 mutations, all red, 0 no-ops,** both files verified
+byte-identical (md5) after every one — M1 remove `.sort()`, M2 revert to
+today-only, M3 un-gate the second request, M4 put the pill back on meta, M5
+drop the pill from the song row, M6–M9 remove one CSS property each.
+
+**M3 was a no-op on the first pass and that mattered.** My guard only asserted
+the window arithmetic was *written down*, not that anything *consulted* it —
+replacing the gate with a constant left the suite green. The gate is now
+asserted against the variable the arithmetic feeds, and M3 re-confirmed red.
+
+### Process notes
+
+- **`git checkout -- app.js` after `npm run build` destroyed the WS18 source
+  edits.** The build rewrites the tracked root artifacts, so the working tree
+  looked dirty with build output; I ran a checkout to "clean" it and wiped my
+  own uncommitted work. The commit that resulted contained the tests but *not*
+  the fix. Recovered from `/tmp/app.bak` (the mutation-restore copy) —
+  `app.js` came back byte-identical at md5 `07242954db6bcc55c5d51621c12902be` —
+  but `styles.css` had to be re-typed. **Never `checkout --` a file you have
+  edited but not committed.** Commit first, or copy to `/tmp`.
+- **I got the test's expected value wrong twice in a row** while writing the
+  midnight boundary assertion, flipping which side sorted/unsorted was on. The
+  third version was checked against the actual array order rather than reasoned
+  about. Two of those three "failures" were my assertion, not the code.
+- **A fixture with backwards timestamps produced a green-looking result.**
+  `new Date() - 86400000` from midnight lands on midnight, not on the previous
+  evening, so every "yesterday" entry was timestamped today and the merge
+  looked like it worked while testing nothing. Fixed by building timestamps
+  with `setDate(getDate() - n)` + `setHours`, which is DST-safe.
