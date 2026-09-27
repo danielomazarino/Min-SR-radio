@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '07b41d5';
+  const APP_BUILD = 'ac95ac3';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -2687,6 +2687,19 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     controls.appendChild(playPause);
     if (fwdBtn) controls.appendChild(fwdBtn);
     if (nextProgramBtn) controls.appendChild(nextProgramBtn);
+    // ---- WS11a: the chevron and the close move ONTO this row ----
+    // The owner wants them at the right-hand end of the transport, in the same
+    // relative order as the minimised bar: ... play · chevron · close. The
+    // minimised order is miniPlay, miniExpand, miniStop (app.js ~2123), so
+    // chevron first, close last.
+    //
+    // `margin-left: auto` is NOT used: the transport buttons are already evenly
+    // spaced and centred in the row, and a leading auto-margin here would push
+    // the whole cluster left and misalign it with the mini-bar. The two
+    // buttons are appended after the existing gaps instead, so they simply
+    // extend the row.
+    controls.appendChild(expandBtn);
+    controls.appendChild(closeBtn);
 
     // Wire program-skip buttons once the schedule resolves (DVR only).
     // Re-render is NOT needed: the buttons live in this render instance.
@@ -2873,16 +2886,26 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     }
 
     // ---- WS5b layout pieces ----
-    // Header row now carries the channel, the programme AND the two corner
-    // buttons on ONE row: close at the top-left, chevron at the top-right,
-    // text between them. Previously the buttons had their own row and floated
-    // in the middle of the player with empty space beside them.
+    // The header row carries the channel and the programme. The two corner
+    // buttons used to live here too, which put them on a row of their own
+    // above the transport — the owner asked for them on the controls row at
+    // the right-hand end instead, matching the minimised bar
+    // (thumb · meta · play · chevron · close). They now live in `controls`.
     //
-    // The alignment falls out of the layout rather than a magic number: the
-    // header uses the SAME flex gap as .player-row, and the close button is
-    // the same size as the artwork, so the text lands exactly on the artwork's
-    // right edge — the column where the quality/mode pills sit. The song line
-    // below repeats that offset via the same shared custom properties.
+    // WS11a CRITICAL — DO NOT DELETE THE SPACER. The text column is not a
+    // padding-left literal: the close button occupied the artwork's own width
+    // (--player-art) and the row gap is the shared --player-gap, so flexbox
+    // put the title and the programme on the artwork's right edge — the same
+    // left edge as the quality pill and the song line. Removing the button
+    // without replacing it does not remove the space, it removes the thing
+    // that CREATES the space, and the WS5b alignment collapses to 0 with every
+    // test still green. The spacer is that same width, derived from the same
+    // custom property, so the column holds by construction and the header row
+    // also loses the 44px that the button's height was contributing.
+    //
+    // The spacer is width-only (no height) on purpose: the header row's height
+    // must collapse to the text, which is what makes the player SHORTER when a
+    // row of buttons is removed from it.
     //
     // CLASS NAMES AND PARENTING ARE LOAD-BEARING: paintProgramTitle() writes
     // into '.player-sub' and paintNowPlaying() into '.now-playing-line', both
@@ -2891,11 +2914,11 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // silently stops programme titles and song lines painting — with green
     // tests. Keep them as two separate elements: merging the title and
     // programme into one text node would break paintProgramTitle entirely.
+    const headerSpacer = el('div', { class: 'player-header-spacer', 'aria-hidden': 'true' });
     const headerLine = el('div', { class: 'player-header' },
-      closeBtn,
+      headerSpacer,
       el('div', { class: 'player-title', text: cur.title || '' }),
-      el('div', { class: 'player-sub', text: cur._srProgramTitle || cur.subtitle || (live ? 'Direkt' : '') }),
-      expandBtn);
+      el('div', { class: 'player-sub', text: cur._srProgramTitle || cur.subtitle || (live ? 'Direkt' : '') }));
 
     // Song line: BELOW the player content, ABOVE the seek row. aria-live and
     // the :empty / .has-song CSS behaviour are preserved, so a talk channel
