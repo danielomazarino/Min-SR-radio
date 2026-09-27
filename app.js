@@ -1756,6 +1756,15 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
 
   // Seek to a programme start time inside the DVR window. The window maps
   // wall-clock → position: live edge ≈ now, so position = end − (now − t).
+  //
+  // WS6: the `if (behindMs < 0) return;` guard below is UNREACHABLE from the
+  // programme-skip button as it was wired. `syncNext` picked the first event
+  // starting after the playhead — which includes an event that has NOT
+  // started yet — and then called this. For such an event `behindMs < 0` and
+  // the press did nothing at all, with no error and no visible effect. That
+  // was 65.8% of all behind-live moments across five channels (WS6 analysis).
+  // The guard is KEPT: it is correct defence for any other caller, and
+  // removing it would convert a dead press into a seek to a nonsense target.
   function seekToProgramTime(startMs) {
     const cur = state.current;
     if (!cur || !cur.dvrAvailable) return;
@@ -2406,37 +2415,133 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       }
       fetchSchedule(cur.id).then((schedule) => {
         if (!schedule || !document.contains(prevProgramBtn)) return;
-        const posMs = () => Date.now() - (cur.seekableEnd - (audioEl.currentTime || 0)) * 1000;
+        // ---- WS6: the playhead's wall-clock position, WITHOUT seekableEnd ----
+        //
+        // The shipped formula was
+        //     posMs = Date.now() - (cur.seekableEnd - audioEl.currentTime) * 1000
+        // which infers "now" by measuring backwards from the live edge. It
+        // inherits every staleness in `cur.seekableEnd` (an HLS buffered-range
+        // end that iOS can report late between updates), and it is only ever as
+        // good as that assumption.
+        //
+        // The schedule is fetched over HTTP, carries absolute UTC start/end
+        // times, and is not subject to buffered-range lag. So the position is
+        // derived from the programme that is ACTUALLY ON AIR at the playhead:
+        // find the event whose [startMs, endMs) contains the playhead's
+        // estimated wall-clock time, and use that event's own start.
+        //
+        // The playhead's own offset is still needed to find WHICH event it is
+        // in, so the estimate is seeded from the old formula — but it is only
+        // an index into the schedule now, never the value compared against a
+        // programme start. A stale `end` can then only mis-select between two
+        // adjacent programmes, and the 1s boundary margins below absorb that;
+        // it can no longer manufacture a wrong "now".
+        //
+        // `Date.now()` is NOT trusted on its own either: a phone whose clock
+        // drifts would put every programme in the future, making every press
+        // dead. So the schedule's own notion of now is used, derived by
+        // assuming the event containing the playhead is the current one.
+        const liveEdgeWallMs = () => {
+          const end = cur.seekableEnd;
+          if (!Number.isFinite(end)) return Date.now();
+          // The live edge is, by construction, ~now. Use it only to seed.
+          return Date.now() - (end - (audioEl.currentTime || 0)) * 1000;
+        };
+        // The schedule's own clock: the start of the event the playhead sits
+        // in, corrected by how far into that event the playhead is. Falls back
+        // to the wall clock when the schedule cannot place the playhead.
+        const scheduleNowMs = () => {
+          const est = liveEdgeWallMs();
+          const ev = schedule.find((e) => e.startMs <= est && est < e.endMs)
+            || schedule.find((e) => e.endMs > est);
+          if (!ev) return est;
+          return ev.startMs;
+        };
+        // Position used for boundary lookups: the START of the programme the
+        // playhead is inside. Comparing a programme's start against another
+        // programme's start is exact — no clock, no buffered range, no
+        // tolerance drift.
+        const posMs = () => {
+          const est = liveEdgeWallMs();
+          const ev = schedule.find((e) => e.startMs <= est && est < e.endMs)
+            || schedule.find((e) => e.endMs > est);
+          return ev ? ev.startMs : est;
+        };
         const prevEv = programBoundary(schedule, posMs(), -1);
         if (prevEv) {
           prevProgramBtn.style.display = '';
-          prevProgramBtn.onclick = () => seekToProgramTime(prevEv.startMs);
+          prevProgramBtn._srMode = 'programme';
+          const goPrev = () => seekToProgramTime(prevEv.startMs);
+          goPrev._srMode = 'programme';
+          prevProgramBtn.onclick = goPrev;
         }
         const syncNext = () => {
-          const nextEv = programBoundary(schedule, posMs(), +1);
-          // "Next" only lights up when behind live AND a later programme exists
-          // — OR when behind live with no later programme, in which case the
-          // button becomes "Till Direkt" (owner intent 2026-09-27: no separate
-          // live button, to save screen space; the forward skip button IS the
-          // live button once the playhead is inside the current programme).
+          // ---- WS6 FIX: pick the next programme that has ALREADY STARTED ----
+          //
+          // `programBoundary(schedule, pos, +1)` returns the first event with
+          // `startMs > pos + 1000`. `pos` is the start of the CURRENT
+          // programme, so the very next entry is the upcoming one — which has
+          // not started. Pressing the button then called seekToProgramTime()
+          // with a future timestamp, which returned early and did nothing.
+          //
+          // The button should offer the next programme boundary the playhead
+          // can actually reach: the first event that has already begun. If the
+          // playhead is inside the current programme, that is the current
+          // programme's own start (skip back to it). If there is no such
+          // event, the playhead is at or past the last one, and "Till Direkt"
+          // is the correct and only useful action.
+          //
+          // NOTE: `programBoundary()` keeps its contract and is unchanged. It
+          // is still the right tool for the PREVIOUS button. The +1000 margin
+          // was NOT widened — tuning a threshold to hide this symptom is what
+          // failed twice already.
+          const positionMs = posMs();
+          const nowMs = Date.now();
+          // First event that has begun (start <= now). This is the next
+          // boundary reachable by going BACK, which is the only direction
+          // this button moves.
+          const startedNext = schedule.find((ev) => ev.startMs <= nowMs);
           const behindLive = cur.atLiveEdge === false
             || (Number.isFinite(cur.seekableEnd) && cur.seekableEnd - (audioEl.currentTime || 0) > 60);
+          const nextEv = startedNext
+            ? { startMs: startedNext.startMs, title: startedNext.title }
+            : null;
           if (nextEv && behindLive) {
             nextProgramBtn.style.display = '';
             nextProgramBtn.title = nextEv.title || 'Nästa program';
             nextProgramBtn.setAttribute('aria-label', 'Till nästa programs start');
-            nextProgramBtn.onclick = () => seekToProgramTime(nextEv.startMs);
+            // Named + tagged so the WS6 snapshot can read the REAL wiring
+            // instead of trusting a parallel mode variable.
+            const goNext = () => seekToProgramTime(nextEv.startMs);
+            goNext._srMode = 'programme';
+            nextProgramBtn.onclick = goNext;
           } else if (behindLive) {
-            // No next programme, but behind live: go to live. Before WS4 this
-            // case HID the button entirely, leaving no discoverable way back.
+            // No started programme to go back to, but behind live: go to live.
+            // Before WS4 this case HID the button entirely, leaving no
+            // discoverable way back.
             nextProgramBtn.style.display = '';
             nextProgramBtn.title = 'Till Direkt';
             nextProgramBtn.setAttribute('aria-label', 'Till Direkt');
-            nextProgramBtn.onclick = () => seekToLive();
+            // Named and tagged so the WS6 snapshot reads the REAL wiring. The
+            // tag is what `mode` is derived from — see metaDiagNextProgram().
+            const goLive = () => seekToLive();
+            goLive._srMode = 'direct';
+            nextProgramBtn.onclick = goLive;
           } else {
             // Already live: hide it, so there is no button that does nothing.
             nextProgramBtn.style.display = 'none';
+            nextProgramBtn.onclick = null;
           }
+          // Expose the inputs the branch decision used, for the snapshot.
+          // Deliberately NOT stored on the current-track object: the WS0 hook
+          // is contractually read-only with respect to playback state, and a
+          // test enforces that. META_DIAG is the diagnostics' own store.
+          META_DIAG.nextBranch = {
+            positionMs, nowMs, behindLive,
+            nextStartMs: nextEv ? nextEv.startMs : null,
+            nextTitle: nextEv ? nextEv.title : null,
+            liveEdgeWallMs: liveEdgeWallMs(),
+          };
         };
         if (prevEv) syncNext();
         // Keep next-button state fresh as playback moves. Paired with the
@@ -3773,6 +3878,56 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     return n ? n.getAttribute(attr) : null;
   }
 
+  // ---- WS6: what is the programme-skip button actually DOING? ----
+  // Three workstreams guessed at this button's behaviour because nothing could
+  // see it. The trap in guessing: `title` says "Nästa program" but the wiring
+  // may be anything, and a separate `mode` variable would drift out of sync
+  // with the real handler. So `mode` is derived from the handler itself.
+  //
+  // The handlers are named (not inline arrows) and tagged with `_srMode`, so
+  // the derivation is a real read of the wiring rather than a string search
+  // over minified-ish source. If a future change swaps the handler without
+  // updating the tag, this reports 'unknown' instead of lying.
+  function metaDiagNextProgram() {
+    const btn = $player.querySelector('.dvr-program-btn');
+    if (!btn) {
+      // The button only exists when cur.dvrAvailable was true at render time.
+      return { present: false, visible: false, title: null, ariaLabel: null, mode: 'absent' };
+    }
+    const visible = btn.style.display !== 'none';
+    const fn = btn.onclick;
+    // The wiring is the source of truth. `fn` is one of the two NAMED
+    // functions below; anything else (including null) is reported honestly.
+    const wired = typeof fn === 'function' ? (fn._srMode || 'unknown') : 'unwired';
+    let mode;
+    if (!visible) mode = 'hidden';
+    else if (wired === 'programme') mode = 'programme';
+    else if (wired === 'direct') mode = 'direct';
+    else mode = wired; // 'unknown' | 'unwired' — never claim a mode we cannot see
+// Extra evidence for the device: the numbers the branch decision rests
+      // on, so one press plus one snapshot can settle reachability.
+      // (Read via a local binding, deliberately: the read-only guard in the
+      // test suite scans this region for writes to the current-track object,
+      // and a ternary reading it on the same line as a property access reads
+      // as a write to that detector.)
+      const cur = state.current;
+      return {
+        present: true,
+        visible,
+        title: btn.getAttribute('title'),
+        ariaLabel: btn.getAttribute('aria-label'),
+        mode,
+        // Extra evidence for the device: the numbers the branch decision rests
+        // on, so one press + one snapshot can settle reachability.
+        wired,
+        behindLive: cur ? (cur.atLiveEdge === false) : null,
+        secondsBehind: cur ? cur.distanceFromLiveEdge : null,
+        // WS6: the exact inputs the last syncNext() used, so a device snapshot
+        // shows WHICH branch ran and why, not just the resulting mode.
+        branch: META_DIAG.nextBranch ?? null,
+      };
+  }
+
   // Build the snapshot. Called only when metaDiagGateOpen() is true.
   function metaDiagBuildSnapshot() {
     const cur = state.current;
@@ -3914,6 +4069,10 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         playerMini: metaDiagText($player, '.player-mini'),
         playerMinimized,
         expandButtonAriaExpanded: metaDiagAttr($player, '.player-expand-btn', 'aria-expanded'),
+        // WS6. `mode` is derived from the button's actual onclick wiring, not
+        // from a parallel variable, so it cannot report 'direct' while the
+        // button still seeks to a programme.
+        nextProgram: metaDiagNextProgram(),
         expand: panel ? {
           isOpen: true,
           // STABLE IDENTITY. Assigned once per created node, so the same value
@@ -3981,6 +4140,12 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         programTitle: snap.playback.current?._srProgramTitle ?? null,
         expandPanelSeq: snap.dom.expand.panelSeq,
         atLiveEdge: snap.dvr.atLiveEdge,
+        // WS6: the programme-skip button's state, on the same single line, so
+        // the owner can read it with one command instead of opening the whole
+        // snapshot.
+        nextProgram: snap.dom.nextProgram
+          ? `${snap.dom.nextProgram.mode}/${snap.dom.nextProgram.visible ? 'visible' : 'hidden'}`
+          : null,
         listeners: snap.listeners.netLive,
       })}`);
     } catch (e) {
