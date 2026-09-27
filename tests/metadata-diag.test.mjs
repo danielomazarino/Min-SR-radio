@@ -2920,3 +2920,71 @@ test('WS12: hard boundaries -- setExpandOpen, the mini-bar and the paint targets
   assert.ok(!/class: 'attribution'/.test(APP_CODE),
     'the WS5 attribution footer must not return');
 });
+
+// ---------------------------------------------------------------------------
+// WS17 - the podcast "already loaded" guard compared the wrong ids
+// ---------------------------------------------------------------------------
+
+test('WS17: the podcast guard compares podcast ids, never the episode id', () => {
+  const PP = stripComments(region('async function playPodcast', 'function playNews', APP_JS));
+
+  // THE DEFECT. The guard read:
+  //   isCurrent('episode', programId) === false && ...
+  // `programId` is the PODCAST id; isCurrent() compares state.current.id,
+  // which for an episode is the EPISODE id. Different kinds of id, so the
+  // check could never be true and the guard never asked its real question.
+  assert.ok(!/isCurrent\('episode', programId\)/.test(PP),
+    'the guard must NOT compare the podcast id against the episode id (WS17)');
+  assert.ok(!/isCurrent\(/.test(PP),
+    'playPodcast must not use isCurrent() at all -- its `id` argument is an '
+    + 'episode id for an episode track, and `programId` is a podcast id (WS17)');
+
+  // What it must compare instead: the two values that ARE the same kind.
+  assert.ok(/audioEl\._podProgramId === programId/.test(PP),
+    'the guard must compare _podProgramId (the podcast id) with programId');
+  // And it must only toggle when an EPISODE is what is actually loaded. The
+  // reported symptom was the tap acting on the live channel instead.
+  assert.ok(/state\.current\.kind === 'episode'/.test(PP),
+    'the toggle must be gated on the loaded track being an episode (WS17)');
+  assert.ok(/toggleTrack\(state\.current\)/.test(PP),
+    'the toggle must act on the loaded track');
+});
+
+test('WS17: the podcast fetch is single-flight, and always released', () => {
+  const PP = stripComments(region('async function playPodcast', 'function playNews', APP_JS));
+
+  // Two taps before the first fetch resolved ran two fetches; whichever
+  // resolved last won. That is a plausible contributor to "it does not start",
+  // because the second playTrack can land after the user has given up.
+  assert.ok(/if \(podFetchInFlight === programId\) return;/.test(PP),
+    'a second tap for the same podcast must not start a second fetch (WS17)');
+  assert.ok(/podFetchInFlight = programId;/.test(PP),
+    'the in-flight slot must be claimed before awaiting');
+
+  // Released in a finally, NOT on the success path. Clearing only on success
+  // turns one network error into "this podcast never plays again".
+  assert.ok(/finally \{/.test(PP),
+    'the in-flight slot must be released in a finally (WS17)');
+  const tail = PP.slice(PP.indexOf('finally {'));
+  assert.ok(/if \(podFetchInFlight === programId\) podFetchInFlight = null;/.test(tail),
+    'the finally must release the slot, and only its OWN slot (WS17)');
+
+  // The state must be cleared with the player, or a stale podcast id outlives
+  // the thing it describes.
+  const STOP = stripComments(region('function stopAndClosePlayer', 'function updatePlayingMarks', APP_JS));
+  assert.ok(/audioEl\._podProgramId = null;/.test(STOP),
+    'closing the player must clear _podProgramId (WS17)');
+  assert.ok(/podFetchInFlight = null;/.test(STOP),
+    'closing the player must clear the in-flight slot (WS17)');
+
+  // Declared before first use. A `let` beside playPodcast() is only safe
+  // because stopAndClosePlayer() runs after the IIFE body evaluates -- an
+  // accident, not a guarantee, and a temporal-dead-zone error the moment that
+  // assumption changes.
+  const decl = APP_JS.indexOf('let podFetchInFlight');
+  const firstUse = APP_JS.indexOf('podFetchInFlight');
+  assert.ok(decl !== -1, 'podFetchInFlight must be declared with let');
+  assert.ok(decl < firstUse, 'podFetchInFlight must be declared before its first use (WS17)');
+  assert.ok(decl < APP_JS.indexOf('function stopAndClosePlayer'),
+    'podFetchInFlight must be declared before stopAndClosePlayer, which clears it (WS17)');
+});
