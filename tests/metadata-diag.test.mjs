@@ -3150,13 +3150,40 @@ test('WS18: yesterday is fetched ONLY when the window can actually reach it', ()
   // Mutation M3 replaced `if (!needsYesterday) return today || [];` with a
   // constant and the whole suite stayed GREEN: the two assertions above only
   // prove the arithmetic is written down, not that anything consults it. So
-  // the return that skips the second request is asserted against the variable
-  // the arithmetic feeds, which is the only version of this change that
+  // the return that skips the second request is asserted against the varia
+  // ble the arithmetic feeds, which is the only version of this change that
   // actually saves a request.
-  assert.ok(/needsYesterday\s*=\s*windowMs\s*>/.test(fn),
-    'needsYesterday must be assigned from the window comparison');
-  assert.ok(/if \(!needsYesterday\) return today \|\| \[\];/.test(fn),
+  //
+  // ---- WS21 SUPERSEDES the assignment's left-hand side ----
+  // WS18 assigned `needsYesterday = windowMs > 1h`. Measured live at 01:55,
+  // that gate NEVER opened: it is evaluated inside `resolveProgramTitle`,
+  // which `playTrack` calls immediately, before any `loadedmetadata` has
+  // populated the seekable range -- so `seekableStart` was still null,
+  // `windowMs` was 0, and yesterday was never requested. The fix adds a clock
+  // trigger. The requirement that survives is the one this assertion was
+  // really protecting: the WINDOW comparison must still feed the decision,
+  // not be computed and discarded.
+  assert.ok(/needsYesterday\s*=\s*pastMidnight\s*\|\|\s*windowMs\s*>/.test(fn),
+    'needsYesterday must be assigned from the window comparison, with the WS21 clock trigger OR-ed in');
+  // ---- WS21: the early return grew a body, so the assertion is on STRUCTURE ----
+  // The one-line `if (!needsYesterday) return today || [];` became a block that
+  // records the outcome before returning. Asserting the literal line would fail
+  // on correct code, so the requirement is restated: the branch must be taken
+  // on the VARIABLE, and it must return before the second request is issued.
+  // Ordering is the part that matters -- a gate that runs after the fetch is
+  // not a gate -- so the index of the branch is compared with the index of the
+  // `localDateStrOffset(1)` call.
+  assert.ok(/if \(!needsYesterday\) \{/.test(fn),
     'the second request must be gated on needsYesterday (M3: un-gating it is a no-op otherwise)');
+  const branch = fn.indexOf('if (!needsYesterday)');
+  const secondFetch = fn.indexOf('localDateStrOffset(1)');
+  assert.ok(branch !== -1 && secondFetch !== -1,
+    'both the gate and the second request must be present in fetchSchedule');
+  assert.ok(branch < secondFetch,
+    'the gate must be evaluated BEFORE the second request is issued (WS21)');
+  // The skipped path must still return today's schedule, not fall through.
+  assert.ok(/if \(!needsYesterday\) \{[\s\S]*?return today \|\| \[\];/.test(fn),
+    'the early-return must still return today when yesterday is not needed (WS21)');
 });
 
 test('WS18: the two days must be merged SORTED, or the programme-skip breaks', () => {
@@ -3452,4 +3479,80 @@ test('WS20: the podcast icon must be UNCHANGED, and tap still plays the latest',
     'the long-press episode list must survive untouched (WS20)');
   assert.ok(/Spela senaste avsnittet av/.test(build),
     "the accessible name must keep saying 'latest episode' (WS20)");
+});
+
+test('WS21: a rolling line must NOT paint the ellipsis over the track', () => {
+  // THE BUG, measured on the live origin on P2 Nottturno. The owner saw
+  // `♪ ...` and reasonably concluded the text was missing. The DOM held all
+  // 143 characters:
+  //   "Christian Ihle Hadland (piano), Trondheim Symphony Orchestra, ... -
+  //    Piano Concerto no 26 in D major, K.537 'Coronation'"
+  //
+  // The three dots were the LINE-level `text-overflow: ellipsis` firing, and
+  // the rolling track was sliding BEHIND it:
+  //     line.clientWidth   252
+  //     track.scrollWidth  775   (+ 21 for the note = 796 of inline content)
+  //     line.scrollWidth   785  -> exceeds the window, so the ellipsis paints
+  //
+  // `text-overflow: ellipsis` is correct for a STATIC label and wrong for a
+  // rolling one: the track is moved by transform, so the line's own inline
+  // content never shrinks and the decoration is permanent for the whole cycle.
+  // Stripped first, and bounded on a CODE end marker, not on prose. A previous
+  // version of this test sliced to `.rolling > .roll-track`, which appears in
+  // the explanatory COMMENT above the rule -- so deleting the rule entirely
+  // still matched the comment and the test passed. **That is mutation M1, which
+  // was a NO-OP: the exact defect the owner photographed had no guard.**
+  // `region()` searches forward from a comment and cannot tell prose from code.
+  const css = stripComments(STYLES_WS5);
+  const roll = region('.player-time-song .now-playing-line.rolling {',
+    '.player-time-song .now-playing-line.rolling > .roll-track', css);
+  assert.ok(/text-overflow:\s*clip/.test(roll),
+    'the line must switch to text-overflow:clip while rolling, or the ellipsis covers the text (WS21)');
+  // The ellipsis must SURVIVE for a title that does not roll -- that is the
+  // case it was written for, and it is the only case where it adds anything.
+  const base = region('.now-playing-line {', '.now-playing-line:empty', STYLES_WS5);
+  assert.ok(/text-overflow:\s*ellipsis/.test(base),
+    'a non-rolling line must keep the ellipsis (WS21)');
+  // ... and the rule must be scoped to the rolling state, not blanket.
+  assert.ok(!/^\.now-playing-line \{[^}]*text-overflow:\s*clip/m.test(STYLES_WS5),
+    'the ellipsis must not be removed globally (WS21)');
+});
+
+test('WS21: the yesterday gate must not depend on a value that is not set yet', () => {
+  // WS18 decided whether to load yesterday from `cur.seekableStart`, on the
+  // reasoning that a channel with no DVR window pays nothing. Measured live at
+  // 01:55 that gate NEVER opens:
+  //     transportKind  "direct"   (Chromium cannot load SR's HLS)
+  //     seekableStart  null
+  //     windowMs       0
+  //     needsYesterday false
+  // and the schedule actually held began at 00:00 today -- 1.94 h of "today"
+  // with the whole previous evening missing.
+  //
+  // The gate is evaluated inside `resolveProgramTitle`, which `playTrack` calls
+  // IMMEDIATELY, before any `loadedmetadata`/`durationchange` has populated the
+  // seekable range. **It was reading a value that had not been written yet, so
+  // yesterday was never requested and the WS18 fix could not engage on the very
+  // case it was written for.**
+  const fn = stripComments(region('async function fetchSchedule(channelId) {',
+    'function programBoundary('));
+  assert.ok(/pastMidnight/.test(fn),
+    'the gate must consult the CLOCK, which is always available (WS21)');
+  assert.ok(/new Date\(\)\.getHours\(\)\s*<\s*1/.test(fn),
+    'after local midnight a 1h+ window necessarily reaches yesterday (WS21)');
+  assert.ok(/needsYesterday\s*=\s*pastMidnight\s*\|\|/.test(fn),
+    'the clock must be one of the two triggers, not merely computed (WS21)');
+  // The window trigger is KEPT as a second path, so a known long window still
+  // reaches back at any hour of the day.
+  assert.ok(/windowMs\s*>\s*60\s*\*\s*60\s*\*\s*1000/.test(fn),
+    'a known long window must remain a trigger (WS21)');
+  // The gate must be OBSERVABLE, or the next silent failure is just as
+  // undiagnosable as this one was.
+  assert.ok(/META_DIAG\.lastScheduleGate\s*=/.test(fn),
+    'the gate decision must be recorded (WS21)');
+  const snap = stripComments(region('schedule: {', 'episodeTracks: {'));
+  assert.ok(/gate:\s*META_DIAG\.lastScheduleGate/.test(snap),
+    'the snapshot must expose schedule.gate (WS21)');
+  assert.ok(/fetchedDays/.test(fn),
+    'the recorded gate must say which days were actually fetched (WS21)');
 });

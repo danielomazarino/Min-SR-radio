@@ -1363,6 +1363,35 @@ body.player-gesture-lock {
   white-space: nowrap;
   will-change: transform;
 }
+/* ---- WS21: the "..." was the ELLIPSIS, not a missing string ----
+   The owner saw `♪ ...` on P2 Nottturno and the DOM held all 143 characters:
+   "Christian Ihle Hadland (piano), Trondheim Symphony Orchestra, ... –
+   Piano Concerto no 26 in D major, K.537 'Coronation'". The three dots were
+   the line-level `text-overflow: ellipsis` painting, and the rolling track was
+   sliding BEHIND it.
+
+   Measured on the live origin:
+     line.clientWidth   252
+     track.scrollWidth  775   (+ 21 for the note = 796 of inline content)
+     line.scrollWidth   785  -> exceeds the window, so the ellipsis fires
+
+   `.now-playing-line` is a block with `overflow: hidden` and
+   `text-overflow: ellipsis`. That is right for a STATIC label -- it is how a
+   short title that does not fit degrades. It is wrong for a rolling one: the
+   track is translated by transform, and the line's own inline content never
+   shrinks, so the ellipsis is permanent and rides over the animation for the
+   whole cycle. The owner saw the note and the dots and concluded the text was
+   missing; it was there the entire time, behind a decoration.
+
+   So the ellipsis is switched OFF whenever the line is actually rolling. A
+   title that does NOT overflow keeps it, which is the case it was written for
+   and the only case where it adds information. `clip` does the same job as
+   `hidden` here; the line already clips, so nothing is lost.
+   ---------------------------------------------------------------------------
+   `.player-time-song .now-playing-line.rolling { text-overflow: clip; }` */
+.player-time-song .now-playing-line.rolling {
+  text-overflow: clip;
+}
 /* ---- WS20: the roll was BROKEN and the owner's screenshot proves it ----
    The owner on P2 Nottturno saw `♪ ...` -- the note, and nothing else. The
    cause is a unit error in the keyframe, reproduced exactly:

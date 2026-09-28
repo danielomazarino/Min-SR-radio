@@ -400,6 +400,10 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     lastScheduleAt: null,
     lastScheduleChannelId: null,
     lastScheduleParsed: null,
+    // WS21: why fetchSchedule chose one day or two. See the snapshot's
+    // `schedule.gate`. Declared here so the shape is fixed, not created on
+    // first assignment deep inside an async function.
+    lastScheduleGate: null,
   };
 
   // Instrumented at the APP'S OWN registration sites only. EventTarget.prototype
@@ -2141,17 +2145,55 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // buttons pick the wrong neighbour across the midnight boundary.
   async function fetchSchedule(channelId) {
     const today = await fetchScheduleDay(channelId, localDateStr());
-    const cur = state.current;
-    const start = cur ? cur.seekableStart : null;
-    // How far back the window reaches, in ms. `start` is a media timestamp
-    // and the live edge is ~now, so this is the span of wall-clock time the
-    // DVR can show.
+    // ---- WS21: the yesterday gate consulted a value that did not exist yet ----
+    // WS18 decided whether to load yesterday from `cur.seekableStart`, on the
+    // reasoning that a channel with no DVR window pays nothing for the second
+    // request. Measured on the live origin at 01:55, that gate never opens:
+    //
+    //   transportKind : "direct"   (Chromium cannot load SR's HLS)
+    //   seekableStart : null
+    //   windowMs      : 0
+    //   needsYesterday: false
+    //
+    // and the schedule the app actually held began at 00:00 today — 1.94 h of
+    // "today", with the whole previous evening missing. So on a real iPhone the
+    // same thing happens whenever the window state is not yet known: the gate
+    // is evaluated inside `resolveProgramTitle`, which `playTrack` calls
+    // immediately, BEFORE any `loadedmetadata`/`durationchange` has populated
+    // the seekable range. **The gate was reading a value that had not been
+    // written yet, so yesterday was never requested, and the WS18 fix could
+    // not engage on the very case it was written for.**
+    //
+    // The decision is now made from the CLOCK, which is always available:
+    // after local midnight the live edge is within the same day's first hour,
+    // so any DVR window longer than an hour necessarily reaches into yesterday.
+    // `fetchScheduleDay` is cached per `${channelId}:${dateStr}` for 10
+    // minutes, so the cost is at most one extra request per channel per 10
+    // minutes, and only between 00:00 and 01:00 local.
+    const pastMidnight = new Date().getHours() < 1;
+    const start = state.current ? state.current.seekableStart : null;
+    // Kept as a second trigger: a known, genuinely long window reaches back
+    // regardless of the hour.
     const windowMs = Number.isFinite(start)
       ? Math.max(0, Date.now() - start * 1000)
       : 0;
-    const needsYesterday = windowMs > 60 * 60 * 1000; // more than an hour back
-    if (!needsYesterday) return today || [];
+    const needsYesterday = pastMidnight || windowMs > 60 * 60 * 1000;
+    // WS21: record the decision and its inputs. The gate failed silently for a
+    // whole pass because nothing exposed WHY it chose one day or two.
+    META_DIAG.lastScheduleGate = {
+      localHour: new Date().getHours(),
+      pastMidnight,
+      seekableStart: start ?? null,
+      windowMs: Math.round(windowMs),
+      needsYesterday,
+    };
+    if (!needsYesterday) {
+      META_DIAG.lastScheduleGate.fetchedDays = ['today'];
+      return today || [];
+    }
     const yesterday = await fetchScheduleDay(channelId, localDateStrOffset(1));
+    META_DIAG.lastScheduleGate.fetchedDays = ['today', 'yesterday'];
+    META_DIAG.lastScheduleGate.yesterdayCount = (yesterday || []).length;
     if (!yesterday || !yesterday.length) return today || [];
     if (!today || !today.length) return yesterday;
     // Merge and sort by start time. `[...a, ...b].sort(...)` on the two arrays
@@ -4983,8 +5025,15 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         channelId: META_DIAG.lastScheduleChannelId,
         rawScheduledEpisodes: metaDiagCapRaw(META_DIAG.lastScheduleRaw),
         rawReceivedAt: META_DIAG.lastScheduleAt,
+        // ---- WS21: the yesterday gate, recorded so it is OBSERVABLE ----
+        // WS18's gate read `cur.seekableStart` at schedule-fetch time, when it
+        // is still null, so it never opened and yesterday was never loaded.
+        // The cause was invisible from outside; these three fields make it a
+        // one-glance check on a real device: if `fetchedDays` is `['today']`
+        // while `pastMidnight` is true, the gate is broken again.
+        gate: META_DIAG.lastScheduleGate || null,
         parsed: (META_DIAG.lastScheduleParsed || []).map((e) => ({
-          startMs: e.startMs, endMs: e.endMs, title: e.title,
+          startMs: e.startMs, endMs: e.stopMs, title: e.title,
         })),
       },
 
