@@ -79,15 +79,30 @@ attributed an instruction to the owner.
 2. **Lock screen shows the programme twice when no song plays** (`Vaken` /
    `Vaken`). Deferred to a later pass at the owner's request. Focus stated:
    when music IS identified, line two must show the real artist.
-3. **Global podcast search** beyond Sveriges Radio. Investigation brief only,
-   not started. Reuse the existing search field, results, favourites and player;
-   no new UX.
+3. **Global podcast search** beyond Sveriges Radio. **Owner re-raised
+   2026-09-28; the brief is logged in full below, not started.** Search in the
+   existing field, results, then episodes in the existing podcast UI, played by
+   the existing player. Ideally no new UX. The long SR podcast list may
+   eventually be replaced by search results if that is simpler. Reuse existing
+   code first; do not design a multi-provider abstraction before the simplest
+   approach is proven to work in this static PWA.
 4. **Lock-screen button opens the wrong PWA** (regression, 2026-09-24). Never
    root-caused. Identify which installed app owns the active MediaSession.
-5. **P1→P2 channel-name mismatch and P2 metadata/artwork** on the lock screen.
-6. **Android Chrome untested** throughout. All verification is Chromium or iPhone.
-7. **P3 Soul's second-to-last episode has never played.** SR's episode-listing
-   endpoints returned 500 all session, so only the latest was reachable.
+5. ~~**P1→P2 channel-name mismatch and P2 metadata/artwork.**~~ **RESOLVED
+   (owner, 2026-09-28).** Verified in the browser: P1 header `Plånboken` → P2
+   header `Notturno`, the programme following the channel with no stale P1 data,
+   and P2 song/artist present. Mechanism: `panel._srRepaint()` now exists and is
+   called on every track change, so the expanded panel cannot keep the previous
+   channel's programme.
+6. **Android Chrome untested.** I cannot verify this — no Android device is
+   available to me. If the owner has tested it, say so and this closes;
+   otherwise it stays open as a known blind spot. **Not marked done: doing so
+   would repeat the false attribution corrected earlier in this audit.**
+7. ~~**P3 Soul's second-to-last episode has never played.**~~ **RESOLVED
+   (2026-09-28).** The 500s are gone: the long-press card now returns **10
+   episodes**, newest-first, and the second-to-last ("Durand Bernarr och den
+   blinda fläcken", 20 sep) **plays** — header shows the episode name, the meta
+   row the podcast name, and the episode seek bar is present.
 8. **Higher audio quality (E1)** — investigate, then document, before code.
    Highest priority among the enhancements; not started.
 9. **E1–E4 enhancements** (recorded 2026-09-23) not implemented.
