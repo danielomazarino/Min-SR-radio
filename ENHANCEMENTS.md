@@ -53,6 +53,41 @@ verify before relying on them.
 
 ---
 
+> ## ⚠ NEWEST — read the WS23 entry at the BOTTOM of this file first
+>
+> **State: `main` = `807846d`, clean tree, 209/209 tests.** Source and tests are
+> in ONE commit. **Nothing in WS23 has been observed on a device — not by me, not
+> by the owner.** Every DVR statement there is fixture- or code-proven only.
+>
+> **The one page the owner needs is `### Part 5` in that entry** — six numbered
+> iPhone checks, each with a table saying what every possible reading *means*.
+>
+> **Three things a future session must not get wrong:**
+>
+> 1. **The programme-skip offset is VARIABLE (~10 s once, ~30 s another time)
+>    and its cause is NOT established.** It is not a 10 s constant, and it is not
+>    in the stream — SR's own app lands on the second. There is deliberately **no
+>    correction value** in the code, and a test asserts none exists. The
+>    assumption is now *documented* and *measurable* (`?diag=metadata` →
+>    `dvr.streamEdge`), not fixed.
+> 2. **"Till Direkt" reaching the edge is the OWNER'S DECISION** (WS23), not a
+>    bug I found. Do not re-open it as a defect. Its margin is
+>    `SEEK_LIVE_MARGIN_S = 1`; the 10 s display rule is a *different* constant
+>    and must not be touched.
+> 3. **A full song list for a live programme DOES exist and IS reachable**
+>    (`web-api.sr.se/v1/player/ondemand?id=<episodeid>&type=episode`, CORS
+>    echoes the origin, 29/29 valid time bounds). This **contradicts** a claim
+>    recorded three times in this log for podcasts. The *podcast* limitation is
+>    still real (0/18 bounds) — the two populations were conflated. **Discovery
+>    only; no fix was written.** Two measured caveats are in the entry.
+>
+> **Part 0 corrected three WS22 claims in place** — an inflated "10801 correct"
+> (really: 0 wrong, but only 484 positions have a song at all), a tautological
+> L-lag table (logged as **H5**), and a withdrawn link between the 10 s margin
+> and the owner's report.
+
+---
+
 **Ordering:** the 2026-09-28 entries (WS17–WS21) are grouped together in
 chronological order at the end of the file rather than newest-first at the top.
 They were appended as each workstream landed, which is the dated record of how
@@ -3798,7 +3833,36 @@ number it produces is allowed to be called a finding.* The cheapest form of that
 proof is one injected `console.log` at the top of the extracted function — it
 should print **once per intended call**.
 
-### 1. THE 10-SECOND OFFSET — measured, and it is REAL, but it is not a bug in the arithmetic
+**H5 (added by WS23) — a metric that cannot fail is not a metric.** The
+"L-lag" table that closed §1 below printed `error 0s` for L = 0, 5, 10 and 20.
+It set the playhead relative to an edge that had L *already* subtracted, so L
+cancelled and the answer was 0 for any L. The table could not fail, and a
+reader would have taken away "a lagging edge causes no bias" — which is not
+established and is not what it was trying to show. **This is the WS6 lesson in
+a new disguise: a tautological check reads exactly like a passing one.** WS23
+found five more of these in its own new tests (M12–M14, M18, M28) and fixed
+each rather than deleting it.
+
+### 1. THE 10-SECOND OFFSET — a real, separate mechanism, but NOT the owner's offset
+
+> **CORRECTED BY WS23 (2026-09-28, later). Two things in this section were
+> wrong and are corrected in place below.**
+>
+> **(a) Withdrawn: the connection to the owner's report.** This section said the
+> 10 s "is very likely what the owner is seeing". **That was an overreach and it
+> is withdrawn.** The owner has since measured the offset on the same app as
+> **~30 s on one programme and ~10 s on another**, and the same skip in
+> Sveriges Radio's own app lands on the second. A *variable* offset cannot be
+> produced by a fixed margin. **Do not re-open "the 10 second offset" as a known
+> quantity anywhere** — it was an estimate from a single sample, and the 30 s
+> reading plus the SR-app comparison are better evidence than anything in this
+> log. The measurements below were sound; the conclusion drawn from one sample
+> was not.
+>
+> **(b) The `seekToLive` margin finding stands on its own** as a real and
+> separately-fixed mechanism, and it is what the owner decided to change in
+> WS23. It was never the owner's offset; it was a second, constant defect that
+> happened to be about ten seconds.
 
 ```
 === "Till Direkt" (seekToLive) ===
@@ -3821,11 +3885,12 @@ entirely to `seekToLive`, whose target is literally
 `app.js:773`). So **"Till Direkt" always parks the playhead exactly 10 s behind
 the live edge, on every press, by construction.**
 
-**This is very likely what the owner is seeing, and it is a real, reproducible
-10 s — not a misread.** The same 10 s was twice dismissed in this log as "I
-misread the screenshot"; that dismissal was about a *wall-clock skew* theory
-(a 128-minute offset), which is still refuted. **The 10 s itself is now
-measured and is caused by the seek TARGET, not by clock skew.**
+**This is a real, reproducible 10 s in `seekToLive` — but it is NOT the owner's
+reported offset** (see the correction above). The same 10 s was twice dismissed
+in this log as "I misread the screenshot"; that dismissal was about a
+*wall-clock skew* theory (a 128-minute offset), which is still refuted, and it
+was never about this margin. **The margin is measured and its cause is exact:
+the seek target, not clock skew.**
 
 **Is it a defect? Two readings, and the owner should decide:**
 
@@ -3846,23 +3911,49 @@ constant. **Do not change `LIVE_EDGE_TOLERANCE_S` itself** — it is load-bearin
 for the pill, `seekBy`'s clamp, and `atLiveEdge` classification, and three other
 tests reference it.
 
-**NOT measured here, and it remains a real possibility:** whether SR's HLS
+**NOT measured here, and it cannot be, from inside the app:** whether SR's HLS
 playlist edge *lags* the true live edge by some L. The app assumes
 `seekableEnd == now` in `playheadWallMs`, `dvrPositionToDate`,
 `seekToProgramTime` and `seekToLive` — all four. If L > 0 then **every**
-resolved wall-clock time is L seconds ahead of where the audio really is, and
-the visible offset would be 10 + L. **This needs the device**; do not re-raise
-it as a theory.
+resolved wall-clock time is L seconds ahead of where the audio really is.
+
+**This is not measurable offline, and it is not measurable from inside the app
+either** — the app has no second, independent clock to compare against;
+`Date.now()` is the one it already trusts. That is exactly why the question sat
+unanswered, and why the earlier table in this section was worthless (H5).
+**It needs the device plus the real broadcast as an external reference.** Do not
+re-raise it as a theory; WS23 made the app *report* the edge so the comparison
+can finally be made.
 
 ### 2. THE SONG-TITLE REGRESSION — the selection logic is CORRECT; the TIMELINE is nearly empty
 
-**First result: the selector is provably right.** Running the shipped
-`paintNowPlaying` selection expression over the full 3 h window at 1 s
-resolution: **10 801 positions tested, 10 801 correct, 0 wrong.** And
-`playheadWallMs()` returned the expected wall time with **0 s error**. So
-"the app picks the wrong song" and "the playhead maths is wrong" are both
-**ruled out**. That is worth stating plainly because it kills the two theories
-the log has been circling.
+**First result: of the positions where a song EXISTS, the selector never picks
+the wrong one.** Running the shipped `paintNowPlaying` selection expression over
+the full 3 h window at 1 s resolution:
+
+```
+positions tested       : 10801
+WRONG song shown       :     0
+  (of the positions where a song exists — see the correction below)
+positions showing a song:   484 / 10801  ( 4.5%)
+positions BLANK         : 10317 / 10801  (95.5%)
+```
+
+> **CORRECTED BY WS23.** This entry originally read **"10 801 positions
+> tested, 10 801 correct, 0 wrong"** and called the selector "provably
+> CORRECT". **That was inflated and it hid the number that matters.** The sweep
+> counted `null == null` as a match, so 10 317 of those "correct" readings are
+> positions where **no song exists at all** and the line is simply empty. The
+> claim is two separate facts, and only the first one is about correctness:
+>
+> 1. **0 positions show the WRONG song.** Where a song exists, the selection
+>    logic picks it correctly. That finding is real and it rules out
+>    "the app picks the wrong song".
+> 2. **Only 484 of 10 801 positions (4.5%) have a song available at all.**
+>
+> `playheadWallMs()` also returned the expected wall time with **0 s error**, so
+> "the playhead maths is wrong" is ruled out too. Both ruled-out theories were
+> worth killing — but neither is the same claim as "10801 correct".
 
 **The actual cause: the timeline only covers what one `rightnow` poll
 returned.** Reproducing `keep()`/`buildTimeline` exactly as `fetchNowPlaying`
@@ -3945,3 +4036,399 @@ settles it:
 Requires **both** `?diag=metadata` in the URL **and**
 `localStorage['sr-meta-diag'] = 'on'` — the URL flag alone is deliberately
 insufficient.
+
+---
+
+## 2026-09-28 (WS23) — the "Till Direkt" margin, the stream-edge assumption, the earbud resume, and a song-list answer
+
+**Baseline at session start: `acceadd`, clean tree, 201/201 tests** (run, not
+read from the log). `app.js` md5 `87ed7e8c6cc219d7a0031af785adb56a`, backed up
+to `/tmp/ws23/` before any edit. **End state: `807846d`, 209/209 tests.**
+
+**Nothing in this entry has been observed on a device — by me or by the owner.**
+Chromium cannot load SR's DVR stream, so every DVR statement here is
+**fixture-proven or code-proven, never device-verified.** The one thing that
+*is* device evidence is the owner's own measurement, quoted where it appears.
+
+### Part 0 — three corrections to WS22, made in place
+
+Corrected above, visibly, where they are wrong. In short:
+
+1. **"10 801 correct" was inflated.** The sweep scored `null == null` as a
+   match. The real facts are **0 positions show the wrong song** (selection
+   logic is correct) and **only 484 of 10 801 positions have a song at all**.
+2. **The L-lag table was a tautology** (H5). It printed `error 0s` for every L
+   because L cancelled in its own arithmetic. Removed; replaced with the honest
+   statement that the question cannot be answered from inside the app at all.
+3. **The connection between the 10 s margin and the owner's report is
+   withdrawn.** The owner has since measured **~30 s on one programme and
+   ~10 s on another**, and a *variable* offset cannot come from a constant. The
+   `seekToLive` margin is a real, separate defect and was fixed on its own
+   merits — it was never their offset.
+
+### Part 1 — "Till Direkt" now reaches the live edge (OWNER DECISION)
+
+**This is the owner's decision, 2026-09-28: the "Till Direkt" button should reach
+the live edge, not stop a visible margin short of it. It is not a bug I found
+and it must not later be re-opened as one.**
+
+**What the code did.** `LIVE_EDGE_TOLERANCE_S = 10` was doing **three separate
+jobs at once**: how close the playhead must be for the pill to read "LIVE", the
+cap on the +15 s step, and the margin `seekToLive` aimed short by. A display
+rule was sizing a seek target. At 10 s the button parked the playhead a visible
+margin behind the edge on **every** press, so a programme or song boundary
+inside those 10 s had not resolved yet when the button was pressed.
+
+**What it does now.** The seek target has its own constant,
+`SEEK_LIVE_MARGIN_S = 1`. The display rule is **untouched at 10**, so the pill
+still reads "LIVE" exactly where it does today.
+
+**Why 1, and not 0.** The margin exists for a reason recorded in the file: a
+seek onto the **exact buffered boundary** is treated by Safari / native HLS as a
+no-op, and that is why this button failed twice before it was given a margin.
+**Zero is known-broken, not ideal.** 1 s is inaudible, is far below the 10–16 s
+inter-song gaps measured on real P3 data, and sits ~1.7% inside a buffer whose
+usable span is at least `DVR_MIN_WINDOW_S` (60 s) — an interior point, not a
+boundary. **If the button ever fails to move again, this is the first number to
+revisit, and the fix is a larger margin here — never a change to the display
+rule.**
+
+### Part 2 — the programme-skip offset: VARIABLE, cause not established
+
+**The owner's own evidence, 2026-09-28, which outranks any offline reasoning:**
+
+- Skipping back to the **23:00 news on P1** in this app: the news started about
+  **30 seconds early**.
+- The **same skip in Sveriges Radio's own official app**: it hit **on the
+  second** the news started.
+
+**Two firm conclusions.** The offset is **not a fixed 10 s** — it was ~10 s on
+one occasion and ~30 s on another, and a variable offset cannot be produced by a
+constant. And the offset is **in this app, not in the stream** — SR's own app
+seeks the same schedule to the same second, so the schedule data is correct and
+the stream is not systematically behind. Something **this app does or assumes**
+on the way to the seek is responsible.
+
+**What the app assumes, now named in ONE place.** To turn a position in the
+recording into a clock time, the app asks "how far behind the end of the buffer
+am I?" and subtracts that from the current time. That treats **the end of the
+buffer as the present moment** — an assumption, not a measurement. The complete
+list of sites that make it is now written next to the assumption, so a sixth
+cannot appear silently:
+
+| # | Site | What it decides |
+|---|---|---|
+| 1 | `playheadWallMs()` | programme title + song selection |
+| 2 | `dvrPositionToDate()` | the clock shown in the seek row |
+| 3 | `seekToProgramTime()` | programme skip — maps a start time to a position |
+| 4 | `seekToLive()` | "Till Direkt" |
+| 5 | `liveEdgeWallMs()` | local to `renderPlayer()`; seeds the WS6/WS7 lookups |
+
+**WS6 had already found this staleness** — its own comment says the buffered end
+is something "iOS can report late between updates" — and **worked around it for
+site 5 only**, by resolving the programme from the schedule's absolute times.
+Sites 1–4 still carried the assumption in full, which is why it was invisible.
+
+**A consistent mechanism, offered as a HYPOTHESIS and nothing more.** Everything
+that can move the buffered edge relative to the true present — a slow-growing
+playlist, a stalled fetch, a re-registration, a slow HLS attach — shifts **every**
+resolved position by a **different amount each time**. That is the signature of
+a variable error and it matches what was measured. **It is not a proven root
+cause, and 30 must not be written into the code as a correction.**
+
+**No correction value was added, deliberately.** A fudge factor chosen from a
+sample is code written to agree with a report instead of with reality, and it
+would freeze one observation into a constant. A test asserts that no such
+constant exists (`STREAM_EDGE_CORRECTION`, `EDGE_CORRECTION_S`,
+`SEEK_CORRECTION` are all rejected by name), so a future session cannot quietly
+add one.
+
+**The assumption is now measurable on a device** at `?diag=metadata`:
+
+```
+dvr.streamEdge.edgeAsWallClockIso   the buffer's edge as a clock time
+dvr.streamEdge.nowIso               the actual current time
+dvr.streamEdge.edgeMinusNowS        the difference in seconds
+dvr.streamEdge.before / .after      the same, sampled around the last seek
+dvr.streamEdge.requestedTarget      what was asked for
+dvr.streamEdge.acceptedPosition     what the element ended up at
+dvr.streamEdge.clampedByS           the difference
+```
+
+**Read this honestly:** the app is comparing itself against the same clock it
+already trusts. **It cannot detect a device clock that is itself wrong, and it
+cannot by itself prove the stream is behind.** Its job is to make the assumption
+*observable*, so a human comparing it against the real broadcast can supply the
+independent reference the app lacks. `before` vs `after` answers one more
+question for free: if the seek itself moved the edge, the buffered range was
+re-registered during the seek, which would explain a variable offset on its own.
+
+**Reference, not specification:** SR's own app landing on the second is a useful
+control. It is **not** assumed that their approach is available to a web app,
+and their implementation was not sought out to copy.
+
+### Part 3 — DISCOVERY: a full song list for a programme DOES exist
+
+**The question, in plain terms.** When you scrub back to a music programme from
+earlier, the song line is empty. Is there any way to get the list of songs for
+that programme?
+
+**Two different things the report may be mixing — ask the owner which:**
+
+- a **live music programme** (a classical show on P2) reads its song line from a
+  rolling list built by polling, which covers roughly the last 11 minutes;
+- a **podcast** played on demand uses a different mechanism entirely, and the log
+  records the on-demand endpoint returning **empty start and end times** for
+  podcast tracks, which makes a position lookup impossible.
+
+These are **not the same defect** and the fix differs. **Not assumed to be the
+same.**
+
+**ANSWER: YES — and it is reachable from the app.** Measured 2026-09-28:
+
+```
+GET https://web-api.sr.se/v1/player/ondemand?id=2864865&type=episode
+    status 200, CORS allow-origin echoes the request origin  → USABLE
+    tracks: 29, with BOTH time bounds: 29/29
+    first : 00:00:00 -> 00:00:32  ""La Cheminee du Roi Rene" (excerpt...)"
+    keys  : title, artist, relativeStartTime, relativeEndTime
+```
+
+**This CONTRADICTS a claim recorded three times in this log** (WS11, WS13, WS14)
+that the on-demand endpoint "returns null relativeStartTime/relativeEndTime for
+18/18 tracks" and that podcasts 86/87/103/945/1123/202 have **0 tracks**. For
+**live-programme episodes both statements are now false**: 27–29 tracks with
+29/29 valid bounds. **The podcast figures are still true** — re-measured:
+program 78 → 18 tracks with **0/18** bounds; 86/87/91 → 0 tracks. So the old
+note conflated two populations. The podcast limitation is real; the live one
+is not.
+
+**A near-miss worth recording, because it would have produced a wrong "no":**
+a plain `fetch` of the same URL showed **no CORS header at all**, which read as
+"unusable from a browser". That is an artefact of sending **no `Origin`
+header** — a server may legitimately omit the header when no origin is
+presented. Re-tested with the GitHub Pages origin: the header comes back
+**echoing the origin**, and an `OPTIONS` preflight does the same.
+**`web-api.sr.se` is usable from the app. My first reading of it was wrong, and
+so was the conclusion I nearly drew from it.**
+
+**All candidates tried, with the failures recorded** (a failed endpoint proves
+only that *that* endpoint failed — this repo has been wrong this way twice):
+
+| endpoint | status | CORS | note |
+|---|---|---|---|
+| `api/v2/playlists/rightnow?channelid=163` | **200** | `*` | baseline; **now returns only `previoussong`** — see below |
+| `…/playlists/rightnow/previoussongs` | 500 | `*` | |
+| `…/playlists/history?channelid=163` | 500 | `*` | |
+| `…/playlists?channelid=163` | 500 | `*` | |
+| `…/channels/163/playlist` | 500 | `*` | |
+| `…/playlists/rightnow?…&from=<ISO time>` | 200 | `*` | **parameter is silently ignored** — identical payload |
+| `…/channels/163/rightnow` | 500 | `*` | the *other* form of the endpoint the owner remembers |
+| `…/programs/{id}?format=json` | 400/404 | `*` | program ids from `programs/index` are not usable here |
+| `…/programs/{id}/tracks` | 500 | `*` | |
+| `…/playlists/program/{id}` | 500 | `*` | |
+| `…/items?episodeid=…`, `…/itemlist?…`, `…/items/index?…` | 500 | `*` | no CORS-enabled mirror of the track list exists on `api.sr.se` |
+| `…/playbackitems/program/78`, `…/channel/163` | 500 | `*` | |
+| `web-api.sr.se/v1/player/ondemand?id=…&type=program` | 400 | echoes origin | `type=program` is not valid |
+| `web-api.sr.se/v1/player/ondemand?id=…&type=episode` | **200** | **echoes origin** | **29 tracks, 29/29 bounds — the answer** |
+
+**Available for recent programmes, both days checked** (P2, `ch163`): 9 of 10
+events on 2026-09-28 and 10 of 10 on 2026-09-27 carry an `episodeid`, and
+**every one of them returns a track list** (29, 27, 13, 17, 2 tracks; a few
+return 0). So historical music programmes are covered by data the app can
+already reach.
+
+**Two caveats any future fix must handle, both measured:**
+
+1. **The schedule slot does not reliably match the audio length.** Across 16
+   programme/episode pairs only 2 were aligned; e.g. `ep2864917` has **357 min
+   of audio in a 58 min slot**, and one entry has a **negative** duration
+   (−1010 min). So the track list's `relativeStartTime` is the reliable offset
+   and the **slot's length cannot be used to validate it**. Whether the slot
+   start is a usable anchor is **not settled** and must be before any fix.
+2. **`rightnow` currently returns only `previoussong`** on every channel tested
+   (P1, P2, P3), with **no `song` and no `nextsong`** across 6 polls over ~75 s —
+   except P3, which gained `song` at poll 3 and kept it. If `song`/`nextsong`
+   are usually absent, **one poll adds at most ONE timeline entry, and usually
+   ZERO** (the same `previoussong` until it changes). That is materially worse
+   than WS22's 3-entries-per-poll assumption and is consistent with the reported
+   symptom being severe.
+
+**No fix, no fallback, no feature flag was written — discovery only, as
+instructed.** The shape of any fix is the owner's decision. **This is a positive
+result and the question is now answerable**, but it is not yet an implemented
+feature, and nothing here has been seen working in the app.
+
+### Part 4 — the earbud resume: the owner's test does NOT disprove the report
+
+**OWNER EVIDENCE, 2026-09-28:** AirPods 3 paired to an iPhone 13 — **stop and
+play work fine.** The blanket claim "earbuds cannot resume" is **wrong as
+stated**, and this part is about the difference between two paths, not a broken
+handler.
+
+**In plain terms.** Three buttons control playback from headphones, and they are
+not interchangeable:
+
+| button | what it does | can it fail in a way that leaves the app stuck? |
+|---|---|---|
+| **pause** | just pauses the audio element | no |
+| **stop** | **tears the stream down** — stops playback, detaches HLS, clears the source and all player state | no, because play then starts everything from scratch |
+| **play** | resumes the **same** element in place | **yes — this is the only one that can reject** |
+
+**So "stop then play works" is exactly what correct behaviour looks like**, and
+it reproduces the teardown path, which was never in question. The reported
+failure is specific to **pause → play**, where a paused live stream may hold a
+stale connection and resuming produces silence. **That is a different code path
+and a different starting state.** The owner's test is recorded as establishing
+this, **not** as "cannot reproduce".
+
+**Two candidate failures, and they are not the same bug** (ask the owner which
+the tester pressed):
+
+- **tester pressed STOP then PLAY** → that path already works on the owner's own
+  AirPods. Something else is going on: a different channel state, a different
+  app version, or a restart before the test.
+- **tester pressed PAUSE then PLAY** → the element is resumed in place. A paused
+  native-HLS live stream can hold a stale edge, and `play()` may reject **or may
+  succeed silently while producing no audio**. Both look identical from outside:
+  silence.
+
+**What the code did.** The handler was `audioEl.play().catch(() => {})` — the
+**only** play site in the file that discarded the reason. The other eight toast
+`'Kunde inte starta uppspelning. Försök igen.'`.
+
+**What it does now.** It still calls `play()` exactly once and changes nothing
+about the success path. It records the outcome, and the **single most valuable
+distinction** it can produce:
+
+| `earbudResume.outcome` | meaning | what the fix would be |
+|---|---|---|
+| `rejected` | the browser refused; `errorName` says why (`NotAllowedError` = refused, `AbortError` = interrupted) | a visible message — now added |
+| `resolved` | resuming "worked" at the API level, so any silence is **downstream in the stream** | **a reconnect — a toast would achieve nothing** |
+| `null` | the button never reached the handler at all | the handler is not wired |
+
+Also recorded: `pausedBefore`, `readyState` / `networkState` / `errorCode` at
+the attempt **and re-sampled 3 s later**, so "resumed but silent" is
+distinguishable from "never actually started". **If the resume resolves and the
+audio is still silent, no amount of toasting will help** — and that is exactly
+what this instrumentation exists to find out.
+
+**On rejection only:** a toast reusing the **exact existing wording**, plus a
+re-render. **No retry, no reconnect, no candidate advance** — a speculative
+reconnect would put two changes in flight and make the next device result
+unreadable. **The silent-success branch is deliberately not handled**, because
+the code cannot yet detect it; claiming otherwise would repeat WS22's headline
+error.
+
+**Three other `.catch(() => {})` sites are untouched and pinned by a test** so
+a later consistency sweep cannot quietly widen this change: two in
+`advanceCandidate()` (where a play attempt legitimately races a track change)
+and one in the `seeked` re-resume. All three are **follow-up candidates**, not
+part of this change.
+
+### Tests and method
+
+**201 → 209 tests, all green.** **Six superseded assertions updated WITH their
+reasons recorded, not flipped** — six tests asserted `seekToLive` used
+`LIVE_EDGE_TOLERANCE_S`. Their real intent (never target the exact boundary) is
+still asserted; only the constant changed, by owner decision. Two of them now
+additionally assert the **old** expression is *gone*, so the two constants
+cannot drift back into sharing a number unnoticed.
+
+**28 mutations, all red, 0 vacuous, 0 harness errors**, `app.js` md5-verified
+after every one. **The harness found five of my OWN new tests were vacuous
+first** and they were fixed, not deleted:
+
+| # | What the mutation did | Why the test passed anyway | Fix |
+|---|---|---|---|
+| M12 | moved the edge sample below the two early-return guards | the assertion only compared against `const target` | assert position against the **first guard** — a refused press was never recorded at all |
+| M13 | renamed `edgeMinusNowS` → `edgeMinusNowSWasRemoved` | `.includes(name)` matched the **substring** | anchored on `name\s*:` |
+| M14 | deleted all three `SEEK_EDGE_DIAG` writes | the snapshot still *lists* the field names | assert the **writes** at the seek site |
+| M18 | deleted the two error writes in `.catch(...)` | the handler's **reset** block also assigns them to null | assert the **`.catch` branch alone** |
+| M28 | deleted the delayed re-sample | it was not asserted at all | assert the `setTimeout` and the `after` write |
+
+**M18 is the WS6 lesson again, in its purest form:** a check that passes for a
+reason other than the one it was written for. **A renamed field satisfied a
+name check by substring (M13), and a reset satisfied a catch-branch check
+(M18).** Both are the same defect: asserting a *mention* where the requirement
+is a *behaviour*.
+
+**Two more harness defects, reported as failures rather than "missed":** M27's
+whole-file replacement was **ambiguous** (three identical `readyState:` lines),
+so a scoped replacement was added — an ambiguous pattern is a harness defect,
+not a missed mutation. And the harness md5-compares before and after every
+mutation, reporting **NO-OP** as a hard failure, per the WS22 H1–H5 rule.
+
+### Part 5 — ONE iPhone pass (the owner is the only one who can close these)
+
+The gate needs **both** `?diag=metadata` in the URL **and**
+`localStorage['sr-meta-diag'] = 'on'`. The URL flag alone is deliberately
+insufficient. **Do not skip a step because of a later one.**
+
+**1. The programme-skip offset — the most valuable reading here.**
+Skip back to the **23:00 news on P1**, and separately to a **different**
+programme on P3. For each, note roughly **how early the content actually
+starts**. Then read `dvr.streamEdge` from `?diag=metadata` for each.
+
+| what you see | what it means |
+|---|---|
+| P1 ≈ 30 s, P3 ≈ 10 s (or any two **different** answers) | **confirms a variable offset.** Part 2's hypothesis stands and the edge readings will show by how much |
+| the two are **identical** | suggests a constant after all, and **Part 2 needs rethinking** — tell me, do not assume |
+| `edgeMinusNowS` ≈ 0 on both | the app's edge agrees with its own clock, so the offset is **not** in the edge — look for it in the seek itself |
+| `edgeMinusNowS` is **large** (tens of seconds) | **the assumption is the culprit** and the size is now measured rather than guessed |
+| `edgeMinusNowS` differs between the two skips | the edge moves between seeks, which explains the variable error directly |
+| `clampedByS` is **not ~0** | the **browser** clamped the seek; the offset is not in the app's arithmetic at all |
+| `before.edgeMinusNowS` ≠ `after.edgeMinusNowS` | the **seek itself moved the edge** (re-registered buffer) — a distinct mechanism |
+
+**2. "Till Direkt" (Part 1).** Press it, look at the title **immediately**, then
+wait about **15 seconds** without touching anything.
+
+| what you see | what it means |
+|---|---|
+| the title is right immediately | the 1 s margin **works**. Fixture-proven only until you say otherwise |
+| the title updates ~10 s **late on its own** | a `timeupdate`-driven repaint is lagging, **not** the seek — a different defect, and the seek is fine |
+| the title never updates | the target moved but metadata is not re-resolving — go to the pre-midnight check below |
+| the button does not move at all | **revert priority**: the 1 s margin is being rejected as a boundary. Raise `SEEK_LIVE_MARGIN_S`, do **not** touch the display rule |
+
+**3. The song line (Part 3) — a question, not an assumption.** Which is it: a
+**live music programme** (e.g. a classical show on P2), or a **podcast**? They
+are different defects with different fixes. Then note whether the song appears
+**at the live edge**, and whether it disappears when you scrub back.
+
+**4. Earbud resume (Part 4).** **Which button did the tester press — stop or
+pause?** Then, with the stream running: press **pause**, then **play**, and read
+`earbudResume`.
+
+| `earbudResume.outcome` | what it means |
+|---|---|
+| `rejected` + `errorName` | the browser refused. **The toast should now appear** — that branch is built |
+| `resolved` but still silent | **the fix is a reconnect, not a message.** This is the single most valuable reading in the whole pass |
+| `resolved` and audible | it worked; the tester's failure was the stop/pause distinction, or a stale build |
+| `calls` did not increase | the handler never ran — the button is not reaching the app at all |
+| `before.readyState` = 0, `after.readyState` still 0 | nothing ever started loading — a dead element, not a silent stream |
+
+If you can, repeat the test you already passed (stop, then play) to confirm the
+two paths really do behave differently.
+
+**5. Tablå scroll.** Long-press P1, scroll the programme list. Does it scroll?
+**Still unconfirmed — a code reading only.** It may be the same defect class as
+the old Inställningar crash, fixed there in 2026-09-22 and never carried to the
+tablå card.
+
+**6. The pre-midnight title (WS21, still unclosed).** Start P1 **before** local
+midnight, scrub back across midnight, read `schedule.gate.fetchedDays`:
+`['today','yesterday']` + the title changes ⇒ **closed**; both days + no change
+⇒ the `seeked` event; `['today']` ⇒ the gate regressed.
+
+### What is NOT done, stated plainly
+
+- **No device verification of anything in this entry.**
+- **The programme-skip offset is NOT fixed.** Its cause is a documented,
+  instrumented hypothesis, and the variable magnitude is unexplained. Do not
+  record it as a constant.
+- **The song-line gap is NOT fixed.** Part 3 proved the data exists and is
+  reachable; implementing it is a separate piece of work with two measured
+  caveats, and the shape is the owner's call.
+- **The silent-success resume branch is NOT handled**, and cannot be until a
+  device says which branch actually occurs.
+- **The tablå scroll defect is unconfirmed** and unchanged.
