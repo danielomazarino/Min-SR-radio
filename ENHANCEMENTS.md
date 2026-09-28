@@ -1,6 +1,73 @@
 # Enhancement Log — Min Radio
 
-Running notes on improvements to pick up later. Newest first.
+Running notes on improvements to pick up later.
+
+**Ordering:** the 2026-09-28 entries (WS17–WS21) are grouped together in
+chronological order at the end of the file rather than newest-first at the top.
+They were appended as each workstream landed, which is the dated record of how
+the night actually went. Everything above that group is in the original
+newest-first order. Do not reorder history — if a later pass supersedes an
+earlier entry, annotate it in place.
+
+## Session index — 2026-09-28 (WS17 → WS21)
+
+Audited against `git log` at the end of the night. Live at the close of WS21:
+`app.ac2dc64a.js` / `styles.f420a62b.css` / SW `minradio-53351f32`, build id
+`72efbb0`, **201/201 tests**.
+
+| WS | Owner report | Root cause | State |
+|---|---|---|---|
+| WS17 | podcast does not restart after switching to radio | guard compared a PODCAST id against an EPISODE id, so it could never be true | **fixed** (`6098c1b`) |
+| WS18 | DVR drag did not change the programme; LIVE pill placement | `fetchSchedule` requested **today only**, and the DVR playhead is routinely yesterday's date after midnight | **partly fixed** — the merge was correct but unreachable; see WS21 |
+| WS19 | pill vanished with a long song; slow roll wanted; bold header duplicate; lock-screen artist | a wrapper I added had **no CSS rule**, so it refused to shrink and pushed the pill 187px off-screen; the artist field used `songArtist` only as a boolean | **fixed, then two regressions of its own — see WS20** |
+| WS20 | episode name gone from the header; `Avsnitt` caption unwanted; roll still not working | my WS19 changes: the header cell carried the episode name and I deleted it, and the caption was an unrequested addition to a settled design | **fixed** (`42f225d`) |
+| WS21 | the `...` was the ellipsis, not a roll failure; programme info still missing before midnight | the line-level `text-overflow: ellipsis` painted **over** the rolling track; and the yesterday gate read `cur.seekableStart` **before anything wrote it**, so it never opened | **both fixed** (`72efbb0`) |
+
+### Regressions I introduced and the owner caught
+
+Three, all called correctly by the owner, all in WS19:
+
+1. **Deleted the podcast episode name** while removing the bold duplicate —
+   the cell held a channel name *and* an episode name, because the two kinds
+   took different branches.
+2. **Added an `Avsnitt` caption** nobody asked for, to a design the owner had
+   already said was settled.
+3. **Reported the `♪ ...` as missing data** when it was an ellipsis over
+   present text. The owner's two corrections — the symptom predates the roll,
+   and *Notturno* is classical music — were domain facts I could not have
+   derived from the code.
+
+### Still open
+
+- **Pre-midnight programme title.** The WS21 gate fix means yesterday's
+  schedule is now *requested and merged*; whether the title then updates on a
+  real DVR seek is **unverified** (Chromium has no DVR transport). Cheap
+  decisive check: `?diag=metadata`, read `schedule.gate.fetchedDays`. If it
+  says `['today','yesterday']` and the title still does not change, the cause
+  is the `seeked` event, not the data.
+- **Talk radio shows the programme in both MediaSession fields** (`Vaken` /
+  `Vaken`) when no song is playing. One-line fix; the owner has twice said not
+  to change it.
+- **Global podcast search** — see the investigation-only brief below. Not
+  started.
+- **P3 Soul's second-to-last episode** has never been played; SR's
+  episode-listing endpoints returned 500 throughout, so only the latest
+  episode was reachable.
+
+### Process findings worth carrying forward
+
+- `region()` cannot tell prose from code. It has now bitten in **three
+  distinct forms**: a comment as an end marker, a comment defeating a
+  negative match, and a comment satisfying a positive match for a rule that
+  was deleted. Every end marker must be code-only.
+- A **backgrounded page** freezes CSS animations, so any animation timing
+  measured through an unfocused tab is invalid. Use
+  `getAnimations()[0].currentTime`.
+- A wrapper that exists in the DOM but not in the stylesheet is **invisible to
+  source-text assertions**. Asserting a selector exists is not evidence it is
+  styled — only a browser measurement caught the off-screen pill.
+- **A shipped fix with no log entry is invisible to the next session.** WS17
+  was missing until this audit compared `git log` against the entry list.
 
 **Language note (2026-09-27):** new entries are written in English, matching
 the owner and the agent handoff files. **Entries dated 2026-09-24 and earlier
@@ -2258,6 +2325,52 @@ under seek. Gör ingen workaround innan den ansvariga vägen är bekräftad.
 
 ---
 
+---
+
+## 2026-09-28 — WS17: the podcast "already loaded" guard compared a podcast id against an episode id
+
+Commits `6098c1b` (source+tests) -> `df1b730` (artifacts). Live at the time:
+`app.75b8be32.js` / `styles.6b565716.css` / SW `minradio-f77a0fdf` / build id
+`6098c1b`. 184 -> **186 tests**. *(Superseded by later builds; recorded here as
+the first of the 2026-09-28 work.)*
+
+**Owner, on the iPhone:** play a podcast, switch to a radio channel, then tap
+the podcast icon again — it does not start, though the first tap worked.
+
+`playPodcast()`'s "already loaded" guard read:
+
+```js
+isCurrent('episode', programId) === false && audioEl._podProgramId === programId
+```
+
+`programId` is the **PODCAST** id. `isCurrent(kind, id)` compares
+`state.current.id`, which for an episode is the **EPISODE** id (`playTrack` is
+called with `id: ep.id`). Two different kinds of id, so `isCurrent()` could
+never be true, the `=== false` half was always true, and **the guard never asked
+its real question.**
+
+That made the reported sequence deterministic: after switching to radio,
+`state.current` is the live channel (truthy) and `_podProgramId` still equals
+`programId`, so the code took the TOGGLE branch and called
+`toggleTrack(state.current)` on the **live channel**. The podcast was never
+restarted; the tap either paused the channel or did nothing visible.
+
+Fixed with a same-kind comparison, a `kind === 'episode'` gate, a single-flight
+fetch released in `finally`, and cleanup in `stopAndClosePlayer`.
+
+**Honest limitation, recorded at the time:** the fix was established by
+inspection, NOT reproduced in Chromium. It is now on the live origin and the
+owner's iPhone, but no automated test in this repo exercises the sequence.
+
+### Why this entry was nearly lost
+
+It shipped at 00:05 on 2026-09-28, before this log was reopened, and was never
+written up. Found during a 2026-09-28 night audit that compared the commit list
+against the entry list. **A shipped fix with no log entry is invisible to the
+next session** — the audit that caught it is the mitigation, not a coincidence.
+
+---
+
 ## 2026-09-28 — WS18: DVR drag no longer changed the programme; LIVE pill moved to the song row
 
 Two owner-reported defects, fixed in `960a975` / `1985871` and deployed
@@ -2331,6 +2444,19 @@ positions a today-only schedule gets WRONG: 5/7
 **5 of 7 positions inside a realistic 3-hour window were unresolvable before
 the fix.** The early-morning boundary check also shows the sort earning its
 keep: sorted returns `P3 Din Gata: Musik`, unsorted returns `Vaken`.
+
+> **ADDED BY THE 2026-09-28 NIGHT AUDIT — the merge below was correct but
+> UNREACHABLE until WS21.** The fixture validates the *merge*. It does not
+> validate that the merge was ever *asked for*, and it was not: the gate that
+> decides to load yesterday read `cur.seekableStart` inside
+> `resolveProgramTitle`, which `playTrack` calls immediately, before anything
+> populates the seekable range. So `needsYesterday` was always `false` and
+> yesterday was never requested. **The "5 of 7 positions now resolve" figure is
+> true of the merge and says nothing about the running app.** WS21 measured this
+> on the live origin (`seekableStart: null`, schedule beginning 00:00 today) and
+> fixed the gate. Kept as written because it is the dated record of what was
+> believed, and of how a correct sub-fix can sit behind a gate that never opens
+> while a green suite says otherwise.
 
 **Not verified:** the live SR API could not be reached from this sandbox
 (`ERR_NAME_NOT_RESOLVED` both in-page and from Node), so the merge has not been
