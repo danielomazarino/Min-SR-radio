@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '72efbb0';
+  const APP_BUILD = 'cbc092a';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -770,7 +770,37 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // is false and the row is never built. Without a render on the flip, the
   // DVR row never appears on iPhone (observed). So: when dvrAvailable or
   // atLiveEdge CHANGES, re-render so the UI follows the state.
+  // Two DIFFERENT tolerances, deliberately separate from WS23.
+  //
+  // LIVE_EDGE_TOLERANCE_S — DISPLAY rule. How close the playhead must be to
+  // the edge before the pill reads "LIVE", and the cap on seekBy()'s forward
+  // step. Unchanged in WS23. Three existing tests reference it.
   const LIVE_EDGE_TOLERANCE_S = 10;
+  //
+  // SEEK_LIVE_MARGIN_S — SEEk TARGET rule. How far behind the buffered edge
+  // "Till Direkt" aims. This margin exists ONLY because Safari / native HLS
+  // treat a seek onto the exact buffered BOUNDARY as a no-op (the BUG 1 note
+  // in seekToLive's own comment: this is why the button failed twice before it
+  // was given a margin). It is NOT a display concern and must never be sized
+  // from one.
+  //
+  // OWNER DECISION (2026-09-28), recorded as theirs: "Till Direkt" should reach
+  // the live edge, not stop a visible margin short of it.
+  //
+  // VALUE 1 s, and the reasoning, because a value chosen to look right rather
+  // than to work is how this project has gone wrong before:
+  //   - it must be > 0: at exactly 0 the target IS the buffered boundary, which
+  //     is the no-op Safari was refusing. Zero is known-broken, not ideal.
+  //   - it must be inaudible and irrelevant to a title lookup: 1 s cannot be
+  //     heard as a delay, and it cannot hide a programme or song boundary,
+  //     because real inter-song gaps measured on P3 are 10-16 s.
+  //   - it must still be a genuine interior point: 1 s inside a buffer whose
+  //     usable span is >= DVR_MIN_WINDOW_S (60 s) is ~1.7% in, nowhere near a
+  //     boundary in practice.
+  // If a device ever shows the button failing to move again, THIS is the
+  // number to revisit first, and the fix is a larger margin here — never a
+  // change to the display rule below.
+  const SEEK_LIVE_MARGIN_S = 1;
   function updateSeekableState() {
     const cur = state.current;
     if (!cur || cur.kind !== 'live') return;
@@ -897,6 +927,25 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // it runs through the SAME seq-guarded path as the periodic poll, so it
   // cannot race the channel switch or leak a stale response.
   const NOW_PLAYING_TIMELINE_MAX = 60;
+  // ---- WS24: debounce for the artwork lookup of a SEEK-RESOLVED song ----
+  // Not a throttle on the request itself: refreshNowPlayingArtwork() already
+  // dedupes by song through artworkCache, so this only collapses the rapid
+  // succession of songs a scrub-drag crosses. 400 ms is long enough that a
+  // drag across a minute of music issues ONE lookup, and short enough that a
+  // deliberate seek still feels immediate. The cover appears a fraction of a
+  // second after the playhead settles, which is the same shape as the live
+  // path (poll -> fetch -> paint) and cannot be made synchronous without
+  // blocking the UI on a network call.
+  const SEEK_ARTWORK_DEBOUNCE_MS = 400;
+  // Timer handle, module scope, so a second song change can cancel the first
+  // and a channel switch can clear a pending lookup (see stopNowPlayingPoll).
+  // Same pattern as nowPlayingTimer and audioEl._srUpd.
+  let seekArtworkTimer = null;
+  // The song the current `nowPlaying.artwork` cover was fetched FOR. WS24: the
+  // seek path needs this to know whether the cover on screen belongs to the
+  // song now being resolved. It is written ONLY by the seek path below and is
+  // read only there, so the live path's behaviour is untouched by it.
+  let seekArtworkSongKey = null;
   let nowPlayingTimer = null;
   let nowPlayingSeq = 0; // stale-response guard on channel switches
   let artworkSeq = 0; // invalidates stale artwork lookups on every source change
@@ -978,6 +1027,15 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
 
   function stopNowPlayingPoll() {
     if (nowPlayingTimer) { clearTimeout(nowPlayingTimer); nowPlayingTimer = null; }
+    // WS24: a pending seek-artwork lookup belongs to the channel being left.
+    // Clearing it here means a channel switch cannot have the OLD channel's
+    // cover land in the new channel's panel. Same reason artworkSeq is bumped
+    // below, applied to the timer rather than to a response.
+    if (seekArtworkTimer) { clearTimeout(seekArtworkTimer); seekArtworkTimer = null; }
+    // WS24: the song->cover association is per channel, so it must not survive
+    // one. Otherwise the first song resolved on the new channel would compare
+    // equal to the old channel's last song and skip the clear.
+    seekArtworkSongKey = null;
     nowPlayingSeq += 1; // invalidate in-flight responses
     artworkSeq += 1; // an old live artwork response must not outlive the channel
     nowPlaying.song = null;
@@ -1288,6 +1346,60 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   //     playhead wall clock = now - (live edge - currentTime)
   // It lives at module scope (not inside renderPlayer) because resolveProgram-
   // Title and the seek paths need it without a player render.
+  // ---- WS23: THE STREAM-EDGE ASSUMPTION, named in ONE place ----
+  //
+  // In plain terms: to turn a position inside the recording into a clock time,
+  // the app asks "how far behind the end of the buffer am I?" and subtracts
+  // that from the current time. That treats THE END OF THE BUFFER as the
+  // current moment.
+  //
+  // That is an ASSUMPTION, not a measurement. The end of the buffer is whatever
+  // the streaming server last published. It can sit behind the true present if
+  // a playlist is slow to grow, a fetch stalls, or a stream re-registers. When
+  // it does, EVERY position the app works out is shifted by that same amount —
+  // and by a DIFFERENT amount each time, which is why the error is not a
+  // constant.
+  //
+  // OWNER EVIDENCE (2026-09-28), which outranks any offline reasoning:
+  // skipping back to the 23:00 news on P1 started about 30 s early, while the
+  // SAME skip in Sveriges Radio's own app landed on the second. Two things
+  // follow. The error is NOT a fixed margin — it was ~10 s once and ~30 s
+  // another time. And it is NOT in the stream: SR's own app seeks the same
+  // schedule to the same second, so the data is right and something THIS app
+  // assumes is wrong.
+  //
+  // There is NO correction value here, deliberately. A fudge factor picked from
+  // a sample is code written to agree with a report instead of with reality,
+  // and it would freeze one observation into a constant. If one is ever added
+  // it must default to 0 and be labelled unmeasured.
+  //
+  // Every site that reads `seekableEnd` as "now" — the complete list, so a
+  // future change cannot add a sixth silently:
+  //   1. playheadWallMs()        — app.js, below (titles + song selection)
+  //   2. dvrPositionToDate()     — the clock shown in the seek row
+  //   3. seekToProgramTime()     — programme skip; maps a start time to a position
+  //   4. seekToLive()            — "Till Direkt"
+  //   5. liveEdgeWallMs()        — local to renderPlayer(); seeds WS6/WS7 lookups
+  // WS6 already noticed this staleness and worked around it for site 5 ONLY,
+  // by resolving the programme from the schedule's own absolute times. Sites
+  // 1-4 still carry the assumption in full.
+  //
+  // The assumption is now MEASURABLE on a device: `?diag=metadata` exposes
+  // `streamEdge` (see metaDiagBuildSnapshot), which reports the buffer's edge
+  // as a clock time next to the real time, before and after a seek.
+
+  // The app's belief about which clock time the buffered edge represents.
+  // Read-only. Returns null when there is no usable window.
+  function streamEdgeWallMs() {
+    const end = state.current ? state.current.seekableEnd : null;
+    if (!Number.isFinite(end)) return null;
+    return Date.now() - (end - (audioEl.currentTime || 0)) * 1000;
+  }
+
+  // Maps media time to wall clock:
+  //     playhead wall clock = now - (live edge - currentTime)
+  // It lives at module scope (not inside renderPlayer) because resolveProgram-
+  // Title and the seek paths need it without a player render.
   function playheadWallMs() {
     const end = state.current ? state.current.seekableEnd : null;
     if (!Number.isFinite(end)) return Date.now();
@@ -1336,6 +1448,75 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       nowPlaying._srPaintedTitle = title || null;
       nowPlaying._srPaintedArtist = artist || null;
       paintNowPlaying();
+      // ---- WS24: fetch the COVER for a song resolved by a seek ----
+      // The title and artist above resolve correctly for a historical song, but
+      // the cover did not: `nowPlaying.artwork` is only ever written by
+      // refreshNowPlayingArtwork(), and that function has exactly two call
+      // sites — fetchNowPlaying() (the 45 s live poll) and
+      // updateEpisodeTrack() (episodes). The seek path called neither, so a
+      // seek-resolved song inherited whatever the LAST POLLED song's cover was.
+      //
+      // Measured before this change, by simulating the panel's own expression
+      // (`const songArtwork = isEpisode ? ... : nowPlaying.artwork`):
+      //   at the live edge, song A on air  -> title A, cover A   (correct)
+      //   scrub back into song B          -> title B, cover A   (MISMATCHED)
+      // The owner reported "a correct song and artist, no cover" — the same
+      // defect in the case where the on-air song had no resolved cover, i.e.
+      // `nowPlaying.artwork === null`, which shows the ♪ placeholder instead.
+      // So the symptom is one bug with two faces: a missing cover when the
+      // previous song had none, and a WRONG cover when it had one. The second
+      // is worse, and it is why the fix must never leave the old cover in place.
+      //
+      // ONE implementation, ONE cache: the same refreshNowPlayingArtwork() and
+      // the same artworkCache the live path uses. The `target === nowPlaying`
+      // guard inside it keeps the live/episode fields apart, so this cannot
+      // write into `episodeArtwork` and an episode's cover cannot appear here.
+      //
+      // BOUNDED, and deliberately: refreshNowPlayingArtwork() is already a
+      // network request per DISTINCT song, deduped by `artworkCache` for the
+      // session. But a user dragging the scrubber across an hour of history
+      // would cross many songs in a second, so an undebounced call would fire
+      // one request per boundary crossed. `seekArtworkTimer` collapses that
+      // into a single lookup for wherever the playhead finally settles, and the
+      // artworkSeq guard inside the function discards any response that a
+      // later song has already superseded. The timer is cleared by
+      // stopNowPlayingPoll(), so a channel switch cannot leave it pending.
+      //
+      // NOT added to any timeupdate handler: those run several times a second.
+      if (hit && hit.title && hit.artist) {
+        if (seekArtworkTimer) clearTimeout(seekArtworkTimer);
+        const key = `${hit.artist}|${hit.title}`.toLowerCase();
+        // The cover currently on screen belongs to whatever the last POLL
+        // resolved, which is a DIFFERENT song from this one. Showing it here
+        // would pair song B's title with song A's cover — the exact symptom,
+        // just narrower than before. So the moment the song CHANGES, the stale
+        // cover is cleared and the panel repaints through the same
+        // refreshNowPlayingArtwork() used for the live path (its no-song branch
+        // is the existing, tested way to clear this field).
+        //
+        // Clearing is safe at any time: the timer below re-fetches, and
+        // refreshNowPlayingArtwork() is a no-op on failure that leaves the
+        // field null. The worst case is the ♪ placeholder for the ~400 ms
+        // before the cover arrives, which is the correct, honest intermediate
+        // state. A wrong cover is never shown.
+        //
+        // Guarded on the key, so a re-resolve of the SAME song (a second seek
+        // landing inside it) does not clear a cover that is already correct —
+        // that is the common case when scrubbing inside one long song, and
+        // blanking it there would be a visible regression of its own.
+        if (seekArtworkSongKey !== key) {
+          seekArtworkSongKey = key;
+          if (nowPlaying.artwork) refreshNowPlayingArtwork(null, nowPlaying);
+        }
+        seekArtworkTimer = setTimeout(() => {
+          seekArtworkTimer = null;
+          // Re-check at fire time: the playhead may have moved on, and the
+          // song resolved then may be a different one (or none).
+          const now = pickByPosition(nowPlaying.timeline, playheadWallMs());
+          if (!now || !now.title || !now.artist) return;
+          refreshNowPlayingArtwork(now, nowPlaying);
+        }, SEEK_ARTWORK_DEBOUNCE_MS);
+      }
     }
   }
 
@@ -1686,10 +1867,112 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     renderPlayer();
   });
 
+  // ---- WS23: the earbud/lock-screen PLAY button, made diagnosable ----
+  //
+  // In plain terms. Three different buttons can control playback from a pair
+  // of headphones, and they are not interchangeable:
+  //
+  //   PAUSE just pauses the audio element. It cannot fail in a way that
+  //         leaves the app stuck.
+  //   STOP  tears the whole stream down (stops playback, detaches HLS,
+  //         clears the source and the player state). After that, pressing
+  //         play starts everything again from scratch — which is why
+  //         "stop then play" works.
+  //   PLAY  resumes the SAME element in place.
+  //
+  // So the owner's AirPods test (stop then play works) does NOT disprove the
+  // tester's report. It confirms the reset path. The reported failure is
+  // specific to pause -> play, where a paused live stream may be holding a
+  // stale connection and resuming produces silence.
+  //
+  // Until now that handler was:
+  //     audioEl.play().catch(() => {})
+  // The empty catch DISCARDED the reason. Every other play site in this file
+  // (four in playTrack, one on the play/pause button) reports a failure to the
+  // user; this was the only one that threw the reason away. It is recorded here
+  // because the reason is the entire question:
+  //
+  //   - the promise REJECTS   -> the browser refused (its error name says why)
+  //   - the promise RESOLVES  -> resuming "worked" and the silence is
+  //                              downstream, in the stream itself
+  //
+  // Those two look identical from outside the app, and no amount of reading
+  // the source can tell them apart. Only a device can. The first wants a
+  // message; the second wants a reconnect, and a toast would achieve nothing.
+  //
+  // READ-ONLY CONTRACT: written to this module-scope object only. It never
+  // writes `state.current` and never drives the element beyond the single
+  // `play()` call the handler already made. Registered once, at startup,
+  // beside the other handlers — never inside a timeupdate.
+  const RESUME_DIAG = {
+    calls: 0,             // how many times the handler actually ran
+    lastAt: null,
+    handlerRan: null,     // false would mean the button never reached us at all
+    pausedBefore: null,   // audioEl.paused immediately before play()
+    outcome: null,        // 'resolved' | 'rejected' | null (not yet known)
+    errorName: null,      // e.g. 'NotAllowedError', 'AbortError'
+    errorMessage: null,
+    before: null,         // { readyState, networkState, errorCode, currentTime }
+    // Sampled a few seconds after the attempt, so "resumed but silent" is
+    // distinguishable from "never actually started". If readyState is still 0
+    // here, nothing is loading and the resume did not take.
+    after: null,
+    afterDelayMs: 3000,
+  };
+
+  // Samples readyState/networkState/error into the resume record. The delay is
+  // scheduled by the caller, never awaited, so playback is never blocked.
+  function sampleResume(phase) {
+    return {
+      at: new Date().toISOString(),
+      readyState: audioEl.readyState,
+      networkState: audioEl.networkState,
+      errorCode: audioEl.error ? audioEl.error.code : null,
+      currentTime: audioEl.currentTime,
+      paused: audioEl.paused,
+    };
+  }
+
   if (mediaSession) {
     const safeSeek = (fn) => { try { fn(); } catch { /* live streams may reject */ } };
     try {
-      mediaSession.setActionHandler('play', () => audioEl.play().catch(() => {}));
+      // WS23: this handler used to swallow the failure entirely. It still
+      // calls play() exactly once and changes nothing about the success path;
+      // it now records WHY an attempt failed, and tells the user on rejection
+      // using the SAME wording every other play site in this file already uses.
+      //
+      // It deliberately does NOT retry, reconnect, or advance to another
+      // stream: if the resume resolves and the audio is still silent, the fix
+      // is a reconnect, and this code cannot yet tell that case apart. Adding
+      // a speculative reconnect here would also make the next device test
+      // unreadable, because two changes would be in flight at once.
+      mediaSession.setActionHandler('play', () => {
+        RESUME_DIAG.calls += 1;
+        RESUME_DIAG.handlerRan = true;
+        RESUME_DIAG.lastAt = new Date().toISOString();
+        RESUME_DIAG.pausedBefore = audioEl.paused;
+        RESUME_DIAG.outcome = null;
+        RESUME_DIAG.errorName = null;
+        RESUME_DIAG.errorMessage = null;
+        RESUME_DIAG.before = sampleResume('before');
+        audioEl.play().then(() => {
+          RESUME_DIAG.outcome = 'resolved';
+          RESUME_DIAG.after = sampleResume('after');
+        }).catch((err) => {
+          RESUME_DIAG.outcome = 'rejected';
+          RESUME_DIAG.errorName = err && err.name ? err.name : null;
+          RESUME_DIAG.errorMessage = err && err.message ? err.message : null;
+          RESUME_DIAG.after = sampleResume('after');
+          // Reuse the existing wording, do not invent new Swedish copy.
+          showToast('Kunde inte starta uppspelning. Försök igen.');
+          renderPlayer();
+        });
+        setTimeout(() => {
+          // Re-sample so a resume that resolved into silence is visible.
+          if (RESUME_DIAG.outcome === null) RESUME_DIAG.outcome = 'pending';
+          RESUME_DIAG.after = sampleResume('after');
+        }, RESUME_DIAG.afterDelayMs);
+      });
       mediaSession.setActionHandler('pause', () => audioEl.pause());
       mediaSession.setActionHandler('stop', () => stopAndClosePlayer());
       mediaSession.setActionHandler('seekbackward', () => safeSeek(() => { audioEl.currentTime = Math.max(0, audioEl.currentTime - 10); }));
@@ -1962,10 +2245,19 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // native HLS treat a seek onto the buffered BOUNDARY as a no-op or refuse
   // it, so the final step back to live appeared to do nothing. Programme skips
   // work precisely because they target a position in the MIDDLE of the buffer.
-  // So we aim slightly BEHIND the edge instead. LIVE_EDGE_TOLERANCE_S is the
-  // same tolerance updateSeekableState() uses to decide "at live", so the
-  // result is still classified as live while giving the browser a real,
-  // non-boundary target.
+  // So we aim slightly BEHIND the edge instead.
+  //
+  // ---- WS23: the margin is now its OWN constant, and it is smaller ----
+  // This used to subtract LIVE_EDGE_TOLERANCE_S (10). That constant is a
+  // DISPLAY rule (when does the pill say "LIVE"?) and has no business sizing
+  // a seek target. At 10 s the button always parked the playhead a visible
+  // margin behind the edge, so a programme or song boundary falling inside
+  // those 10 s had not resolved yet when the user pressed "Till Direkt".
+  //
+  // The margin still must not be 0 — see the SEEK_LIVE_MARGIN_S comment for
+  // the Safari no-op that makes a non-boundary target necessary. The display
+  // rule is untouched, so the pill still reads "LIVE" exactly where it does
+  // today.
   //
   // Clamped against seekableStart so it can never fall outside the buffer.
   // Back-to-live evidence (WS3). seekToLive() has FAILED to fix the owner's
@@ -1983,9 +2275,72 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     lastAfter: null,       // read back AFTER updateSeekableState()
   };
 
+  // ---- WS23: making the stream-edge assumption MEASURABLE on a device ----
+  //
+  // WHY THIS EXISTS, in plain terms: the app works out what time it is by
+  // asking how far behind the end of the recording it currently is, and
+  // subtracting that from the clock. That only gives the right answer if the
+  // end of the recording really IS the present moment. Nobody has ever been
+  // able to check that, because the app has no second, independent clock to
+  // compare against — `Date.now()` is the one it already trusts.
+  //
+  // So the question was unfalsifiable, and an unfalsifiable assumption in a
+  // time-mapping calculation is exactly how "about 10 s, then about 30 s"
+  // went unexplained. This records the pieces so a human with the real
+  // broadcast in front of them can supply the missing comparison.
+  //
+  // READ-ONLY CONTRACT: everything here is written to this module-scope
+  // object only. It never touches `state.current`, never assigns
+  // `audioEl.currentTime`, and never calls play/pause/load. The existing
+  // read-only test in tests/metadata-diag.test.mjs must stay green.
+  const SEEK_EDGE_DIAG = {
+    calls: 0,
+    lastCalledAt: null,
+    // `edgeWallMs` and `nowMs` are both clock readings taken together. The
+    // DIFFERENCE between them is the number that matters and the one that
+    // could not previously be obtained: if the buffered edge claims to be a
+    // moment other than now, that gap is the bias every resolved title and
+    // every programme skip inherits.
+    before: null,          // { edgeWallMs, nowMs, edgeMinusNowS, currentTime, readyState }
+    after: null,           // { edgeWallMs, nowMs, edgeMinusNowS } sampled post-seek
+    // A seek can be accepted, silently clamped, or ignored entirely. Recording
+    // both the value asked for and the value the element ended up at is the
+    // only way to tell those three apart from the outside.
+    requestedTarget: null,
+    acceptedPosition: null,
+    clampedByS: null,
+  };
+
+  // Record the stream edge and the real clock together. `phase` is 'before'
+  // or 'after' and is required so the two samples cannot be confused.
+  function recordStreamEdge(phase) {
+    const edge = streamEdgeWallMs();
+    const now = Date.now();
+    const sample = {
+      edgeWallMs: edge,
+      nowMs: now,
+      // Positive = the app believes the buffer's edge is BEHIND the real
+      // present, which pushes every resolved position FORWARD in time.
+      edgeMinusNowS: Number.isFinite(edge) ? (now - edge) / 1000 : null,
+      currentTime: audioEl.currentTime,
+      readyState: audioEl.readyState,
+    };
+    SEEK_EDGE_DIAG.calls += 1;
+    SEEK_EDGE_DIAG.lastCalledAt = new Date(now).toISOString();
+    if (phase === 'after') {
+      SEEK_EDGE_DIAG.after = sample;
+    } else {
+      SEEK_EDGE_DIAG.before = sample;
+    }
+    return sample;
+  }
+
   function seekToLive() {
     const cur = state.current;
     const d = SEEK_LIVE_DIAG;
+    // WS23: sample the edge BEFORE anything moves, so the pre-seek figure is
+    // never contaminated by the seek this press is about to perform.
+    recordStreamEdge('before');
     d.calls += 1;
     d.lastCalledAt = new Date().toISOString();
     d.lastBefore = {
@@ -2003,7 +2358,11 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       return;
     }
     const start = Number.isFinite(cur.seekableStart) ? cur.seekableStart : 0;
-    const target = Math.max(start, end - LIVE_EDGE_TOLERANCE_S);
+    // WS23: SEEK_LIVE_MARGIN_S (1 s), NOT LIVE_EDGE_TOLERANCE_S (10 s). The
+    // target and the "is this live?" display rule are separate concerns and
+    // must not share a number; see the constant's comment for the value's
+    // reasoning and for the Safari boundary no-op that forbids 0.
+    const target = Math.max(start, end - SEEK_LIVE_MARGIN_S);
     if (!Number.isFinite(target)) { d.lastExit = 'non-finite-target'; return; }
     d.lastTarget = target;
     d.lastExit = 'seeked';
@@ -2013,6 +2372,14 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // Read back what the element ACTUALLY accepted — the seek may be rejected
     // or clamped by the browser, which is exactly what we need to see.
     const now = state.current;
+    // WS23: what was asked for vs what the element ended up at. A large
+    // difference means the browser clamped the seek, which would look exactly
+    // like a wrong offset from outside — this makes the two distinguishable.
+    SEEK_EDGE_DIAG.requestedTarget = target;
+    SEEK_EDGE_DIAG.acceptedPosition = audioEl.currentTime;
+    SEEK_EDGE_DIAG.clampedByS = Number.isFinite(audioEl.currentTime)
+      ? audioEl.currentTime - target : null;
+    recordStreamEdge('after');
     d.lastAfter = {
       currentTime: audioEl.currentTime,
       seekableEnd: now ? now.seekableEnd : null,
@@ -2294,6 +2661,11 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
 
   function seekToProgramTime(startMs) {
     const cur = state.current;
+    // WS23: sample the stream edge BEFORE computing the target. This is the
+    // button that produced the owner's ~30 s reading, and this sample is what
+    // lets that reading be explained instead of guessed at. Sample first,
+    // because the target below is derived FROM the edge.
+    recordStreamEdge('before');
     if (!cur || !cur.dvrAvailable) return;
     const end = cur.seekableEnd;
     if (!Number.isFinite(end)) return;
@@ -2308,6 +2680,15 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     audioEl.currentTime = target;
     updateSeekableState();
     renderPlayer();
+    // WS23: record what was asked for and what the element accepted, then
+    // re-sample the edge so a reader can see whether the SEEK ITSELF moved the
+    // edge. A moved edge means the buffered range was re-registered during the
+    // seek, which would explain a variable offset on its own.
+    SEEK_EDGE_DIAG.requestedTarget = target;
+    SEEK_EDGE_DIAG.acceptedPosition = audioEl.currentTime;
+    SEEK_EDGE_DIAG.clampedByS = Number.isFinite(audioEl.currentTime)
+      ? audioEl.currentTime - target : null;
+    recordStreamEdge('after');
   }
 
   ['waiting', 'stalled'].forEach((ev) => {
@@ -5043,11 +5424,64 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         trackSeq: episodeTrackSeq,
       },
 
+      // ---- WS23: what happened the last time PLAY was pressed on a pair of
+      // headphones or the lock screen ----
+      // The single most useful field is `outcome`:
+      //   'rejected' -> the browser refused; `errorName` says why
+      //                 ('NotAllowedError' = refused, 'AbortError' = something
+      //                 else interrupted it).
+      //   'resolved' -> resuming "worked" at the API level, so any silence is
+      //                 DOWNSTREAM in the stream. This is the case that cannot
+      //                 be fixed by showing a message.
+      //   null       -> the button never reached this handler at all.
+      // Paired with the owner's own result: stop-then-play works, which is the
+      // full teardown path, and is a different code path from pause-then-play.
+      earbudResume: { ...RESUME_DIAG },
+
       dvr: {
         atLiveEdge: cur?.atLiveEdge ?? null,
         distanceFromLiveEdge: cur?.distanceFromLiveEdge ?? null,
         seekableStart: cur?.seekableStart ?? null,
         seekableEnd: cur?.seekableEnd ?? null,
+        // ---- WS23: the stream-edge assumption, made visible ----
+        // `edgeAsWallClock` is what the app BELIEVES the end of the buffer
+        // corresponds to as a clock time. `nowIso` is the actual current time.
+        // `edgeMinusNowS` is the difference in seconds, and it is the single
+        // most useful number here: it is the bias every resolved programme
+        // title and every programme skip inherits, and until now nothing in the
+        // app could report it.
+        //
+        // IMPORTANT, so nobody over-reads it: this is the app comparing
+        // itself against the same clock it already trusts. It CANNOT detect a
+        // device clock that is itself wrong, and it cannot by itself prove the
+        // stream is behind. Its job is to make the assumption observable, so a
+        // human comparing it against the real broadcast can supply the
+        // independent reference the app lacks.
+        //
+        // For the full reading guide see the WS23 entry in ENHANCEMENTS.md.
+        streamEdge: {
+          edgeAsWallClockIso: (() => {
+            const e = streamEdgeWallMs();
+            return Number.isFinite(e) ? new Date(e).toISOString() : null;
+          })(),
+          nowIso: new Date().toISOString(),
+          edgeMinusNowS: (() => {
+            const e = streamEdgeWallMs();
+            return Number.isFinite(e) ? Math.round((Date.now() - e)) / 1000 : null;
+          })(),
+          // Sampled around the most recent seek, so a reader can tell whether
+          // the seek itself moved the edge.
+          before: SEEK_EDGE_DIAG.before,
+          after: SEEK_EDGE_DIAG.after,
+          requestedTarget: SEEK_EDGE_DIAG.requestedTarget,
+          acceptedPosition: SEEK_EDGE_DIAG.acceptedPosition,
+          clampedByS: SEEK_EDGE_DIAG.clampedByS,
+          calls: SEEK_EDGE_DIAG.calls,
+          lastCalledAt: SEEK_EDGE_DIAG.lastCalledAt,
+          assumption: 'seekableEnd is read as "now" by playheadWallMs, '
+            + 'dvrPositionToDate, seekToProgramTime and seekToLive. The real '
+            + 'size of that error is NOT known and is NOT corrected for.',
+        },
         seekableDuration: cur?.seekableDuration ?? null,
         positionWallClockIso: positionWallClock,
         // WS3: back-to-live evidence. `lastExit` is the single most useful
