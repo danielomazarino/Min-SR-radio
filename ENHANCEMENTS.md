@@ -53,6 +53,48 @@ verify before relying on them.
 
 ---
 
+> ## ⚠ NEWEST — WS24 is DEPLOYED. Read its entry at the BOTTOM of this file.
+>
+> **State: `main` = `7d47adc`, PUSHED and in sync with `origin/main`.
+> 214/214 tests.** Live: `app.cef0a7f2.js` / `styles.f420a62b.css` / SW
+> `minradio-ceada8e2` / **build id `cbc092a`**. All four deploy checks PASSED
+> against the live site and the served bundle is byte-identical to local.
+>
+> **The owner's phone was on build `72efbb0` until this deploy — so NO WS23
+> result they gave was measured against WS23 code.** If a device result seems to
+> contradict this log, **check the build number first**: the line under NYHETER
+> must read `cbc092a`. Anything else means the service worker is serving the old
+> bundle.
+>
+> **Still awaiting the owner, in priority order:** the WS23 **Part 5** iPhone
+> protocol (six checks, each with a table of what every reading means) plus the
+> new artwork check in the WS24 entry. **Nothing in WS23 or WS24 has been
+> observed on a device by me.** The four deploy checks prove the right code is
+> *served*; they say nothing about how it *behaves*.
+>
+> **Three things a future session must not get wrong:**
+>
+> 1. **The programme-skip offset is VARIABLE (~10 s once, ~30 s another) and its
+>    cause is NOT established.** No correction value exists in the code, and a
+>    test rejects one by name. Documented and *measurable*
+>    (`?diag=metadata` → `dvr.streamEdge`), **not fixed**.
+> 2. **"Till Direkt" reaching the edge is the OWNER'S DECISION** (WS23), not a
+>    bug I found. Its margin is `SEEK_LIVE_MARGIN_S = 1`; the 10 s display rule
+>    is a *different* constant and must not be touched.
+> 3. **A full song list for a live programme EXISTS and IS reachable**
+>    (`web-api.sr.se/v1/player/ondemand?id=<episodeid>&type=episode`, CORS echoes
+>    the origin). It contradicts a claim recorded 3× in this log; the *podcast*
+>    limitation is still real, so two populations had been conflated.
+>    **Discovery only — no fix was written.**
+>
+> **Test-mutation lesson, now three times over:** a green mutation has meant the
+> **test** was wrong, not the code. WS24's M12 pinned the *declaration* of
+> `SEEK_ARTWORK_DEBOUNCE_MS` but not that the call site *uses* it; the fix then
+> exposed a regex that counted 0 timers where there was 1. Prefer asserting
+> **behaviour or an assignment**, never a declaration or a bare mention.
+
+---
+
 > ## ⚠ NEWEST — read the WS23 entry at the BOTTOM of this file first
 >
 > **State: `main` = `807846d`, clean tree, 209/209 tests.** Source and tests are
@@ -4457,3 +4499,284 @@ match, (3) a comment satisfying a POSITIVE match for a deleted rule,
 the handler used to be, and it is the reason a reader can tell this was a fix
 rather than a guess. **A count that a future reader cannot reconcile is a worse
 problem than the count itself** — so the discrepancy is documented here.
+
+---
+
+## 2026-09-29 (WS24) — DEPLOYED, plus artwork for a song found by scrubbing back
+
+**Baseline at session start (run, not copied): `npm test` → 209/209 pass, 0 fail.**
+`main` was 5 commits ahead of `origin/main` with **nothing pushed**. The owner's
+phone was running build **`72efbb0`** — the WS21 build — so **no part of WS23 had
+ever executed on a device.** Every device result the owner gave during WS23 was
+measured against the old code.
+
+**Shipped:** `cbc092a` (source + tests, one commit) → `7d47adc` (artifacts).
+**Pushed: `acceadd..7d47adc`.** End state **214/214**.
+
+### Part 1 — build and deploy
+
+Values recorded **before** pushing, then checked against the live site after:
+
+| value | value |
+|---|---|
+| hashed JS | `app.cef0a7f2.js` (was `app.ac2dc64a.js`) |
+| hashed CSS | `styles.f420a62b.css` (**unchanged** — see the change table) |
+| `CACHE_NAME` | `minradio-ceada8e2` (was `minradio-53351f32`) |
+| build id | `cbc092a` (was `72efbb0`) |
+
+**THE OWNER SHOULD READ THE BUILD ID OFF THEIR PHONE** (the small line under
+NYHETER on the main screen). It must read **`cbc092a`**. **If it does not, stop
+and tell me — they are testing the old code**, which is exactly the situation
+that made the WS23 device results uninformative.
+
+**All four deployment checks, run individually against the LIVE site:**
+
+| # | check | observed | result |
+|---|---|---|---|
+| 1 | live `index.html` references the new hashed JS | `app.cef0a7f2.js` | **PASS** |
+| 1 | live `index.html` references the new hashed CSS | `styles.f420a62b.css` | **PASS** |
+| 2 | live `sw.js` has the new `CACHE_NAME` | `minradio-ceada8e2` | **PASS** |
+| 3 | the **served** bundle contains the WS23 + WS24 changes | `SEEK_LIVE_MARGIN_S` ×5, `earbudResume` ×1, `streamEdge` ×6, `SEEK_ARTWORK_DEBOUNCE_MS` ×2, `seekArtworkSongKey` ×4, `RESUME_DIAG` ×19, `SEEK_EDGE_DIAG` ×18 | **PASS** |
+| 4 | live build id equals the recorded build id | `cbc092a` | **PASS** |
+
+The served bundle is **byte-identical** to the local one (278 899 bytes, `cmp`
+clean), so what is live is exactly what was tested.
+
+Pages served the old bundle for **two polls (~40 s)** after the push before
+serving the new one. **That lag is normal — keep polling, do not read it as a
+failed deploy.**
+
+### Part 2 — artwork for a song found by scrubbing back (the one code change)
+
+**First, the question the brief asks: is this deliberate or an oversight?**
+**It is an OVERSIGHT, and here is the evidence rather than the conclusion.**
+
+`refreshNowPlayingArtwork()` had exactly **two call sites** (enumerated on
+comment-stripped source, so a comment naming the function cannot inflate the
+count):
+
+| site | enclosing function | when it runs |
+|---|---|---|
+| `app.js:828` | `updateEpisodeTrack()` | episodes only, on a track change |
+| `app.js:901` | `fetchNowPlaying()` | **live poll only** (45 s) |
+
+The seek path, `resolveMetadataForPosition()`, called **neither**. So a song
+resolved by scrubbing back inherited whatever the **last polled** song's cover
+was, because that is the only thing `nowPlaying.artwork` ever held.
+
+**Two recorded decisions were checked and neither covers this case.** WS12 Part C
+and WS13 Part B both concern **episodes** and the **live/episode field split** —
+they decide that an *episode* must not borrow a *live channel's* song cover.
+**Nothing anywhere records an intent about a live channel scrubbed back to a
+historical song.** So there is no decision to overturn; the owner did not need to
+make one.
+
+**MEASURED, before changing anything**, by running the panel's own expression
+(`const songArtwork = isEpisode ? … : nowPlaying.artwork`):
+
+```
+live edge, song A on air  ->  title A, cover A     (correct)
+scrub back into song B    ->  title B, cover A     (MISMATCHED)
+```
+
+**The owner's report and this measurement are the SAME defect, in two faces.**
+The owner saw a correct title and artist with **no cover** — that is the case
+where the on-air song had no resolved cover, so the field was `null` and the ♪
+placeholder showed. **The other face is worse and had not been reported: when
+the on-air song DID have a cover, the panel paired the new title with the
+**previous** song's cover.** A wrong cover is a worse failure than a missing
+one, and it is why the fix must never leave the old cover on screen.
+
+**What changed — `app.js` only, two functions:**
+
+1. `resolveMetadataForPosition()` — when a seek resolves a **different** song,
+   it (a) clears the stale cover through the shared function's own existing
+   no-song branch, and (b) re-fetches it after a **400 ms debounce**,
+   **re-resolving the song at fire time** so a response for a song the playhead
+   has already left is never applied.
+2. `stopNowPlayingPoll()` — clears the pending timer and the song→cover key, so
+   a channel switch cannot land the old channel's cover in the new panel.
+
+**One implementation, one `artworkCache`, one `artworkSeq` guard** — the
+single-mechanism rule this repo has enforced since WS13. The
+`target === nowPlaying` guard inside the shared function still separates the
+live and episode fields, so a radio cover cannot be written into the episode's
+slot (asserted, not assumed).
+
+**Bounded, and how:** `artworkCache` already dedupes by `artist|title`, so this
+is not a throttle on the request itself. The debounce collapses the many songs a
+scrub-drag crosses into **one** lookup for wherever the playhead settles. 400 ms
+is asserted to be in `[100, 2000]` so it can neither vanish nor become a stall.
+**Nothing was added to any `timeupdate` handler** — those run several times a
+second, and a network request there would be a defect.
+
+**The clear is guarded on the song key.** Unguarded, it would blank a cover that
+is already correct every time the playhead is re-resolved *inside the same long
+song* — a visible regression of its own. The correct intermediate state is the
+♪ placeholder for the ~400 ms before the cover arrives.
+
+### 3a. Change table — what is actually different
+
+| file | function / lines | what changed | why |
+|---|---|---|---|
+| `app.js` | `resolveMetadataForPosition()` (+~60 lines) | on a seek-resolved song **change**: clears the stale cover, then debounced re-fetch with the song re-resolved at fire time | the cover was never requested for a seek-resolved song, so it showed the previous song's cover or none |
+| `app.js` | `stopNowPlayingPoll()` (+3 lines) | clears `seekArtworkTimer` and `seekArtworkSongKey` | a channel switch must not carry a pending lookup or a stale song→cover association into the new channel |
+| `app.js` | module scope, beside `nowPlayingTimer` (+~20 lines) | `SEEK_ARTWORK_DEBOUNCE_MS = 400`, `seekArtworkTimer`, `seekArtworkSongKey` | the debounce constant and its handles, declared once like every other timer here |
+| `tests/fixpass.test.mjs` | WS24 group (+5 tests), and one restated count | new guards; the artwork call-site count 3 → 5 with the reason recorded | one existing test asserted an exact call-site count, which the fix legitimately changes |
+| `index.html` | 1 line | references `app.cef0a7f2.js` | build output |
+| `sw.js` | 2 lines | `CACHE_NAME` → `minradio-ceada8e2` | build output |
+| `app.ac2dc64a.js` → `app.cef0a7f2.js` | whole file | replaced by the build | build output |
+
+**EXPLICITLY NOT CHANGED — stated so the reader is not left guessing:**
+
+- **`styles.css` — NOT modified.** `git diff acceadd..7d47adc -- styles.css` is
+  **empty**. The hashed CSS filename is `styles.f420a62b.css`, **the same as
+  before**, because the content hash is unchanged. No layout, no spacing, no
+  colour was touched in WS23 or WS24.
+- **`manifest.webmanifest` — NOT modified.**
+- **`server.js`, `scripts/`, `src/` — NOT modified.**
+- **The live song path, the live artwork path, the mini-bar, the expanded
+  player's structure, and the `atLiveEdge` display rule — NOT modified.** See
+  the regression statement below.
+
+### 3b. Three-way split
+
+**CODE CHANGE** — two functions and one module-scope block in `app.js`:
+`resolveMetadataForPosition()` (seek artwork), `stopNowPlayingPoll()` (cleanup),
+and the new constant/handles. One existing test's call-site count restated.
+Nothing else in any file.
+
+**MEASURED** — and what each does and does not prove:
+
+| measurement | how | proves | does NOT prove |
+|---|---|---|---|
+| seek path never requested artwork | enumerated call sites on comment-stripped source | the mechanism of the defect | anything about how it looks on a device |
+| title B + cover A after a scrub | ran the panel's own expression over a simulated two-song state | a **wrong** cover is possible, and is worse than a missing one | that the owner has seen the wrong-cover face |
+| extractor self-test 5/5 | asserted expected values, not printed output | the harness was executing real code | anything about SR's API |
+| all four deploy checks | fetched the **live** site | this build is what the site serves | that it behaves correctly on a device |
+
+**Fixture/code evidence**, never device evidence: everything about DVR, the
+seek, artwork, and the earbud resume. **Desktop Chromium cannot load SR's DVR
+stream**, so none of it is device-verified by me. **The only device evidence in
+this workstream is the owner's own**: the ~30 s and ~10 s offset readings, the
+AirPods stop/play result, and the missing cover after scrubbing.
+
+**PROPOSED OR NOT DONE** — named as not done, because a silent omission reads as
+"not needed":
+
+1. **The programme-skip offset is NOT fixed.** Documented and instrumented in
+   WS23; cause still unestablished. **Not done here.**
+2. **The song-line gap for historical programmes is NOT fixed.** WS23 proved a
+   full track list exists and is reachable; **no implementation was written.**
+3. **The silent-success earbud resume branch is NOT handled** and cannot be
+   until a device reports which branch occurs.
+4. **The tablå scroll lock is unconfirmed and unfixed** — still a code reading.
+5. **The pre-midnight programme title is unconfirmed on a device.**
+6. **Android is untested** and cannot be tested by me.
+7. **The tunnel/buffer report (E1b) remains deferred.**
+8. **The three other empty-catch sites** are untouched and pinned by a test.
+9. **No artwork fallback, placeholder or new source was added** — the existing
+   PWA icon behaviour is unchanged.
+10. **Global podcast search** — not started.
+
+### 3c. Regression statement
+
+**Confirmed unchanged, and how:**
+
+| behaviour | how confirmed |
+|---|---|
+| **the live song path** | `fetchNowPlaying()` still calls `refreshNowPlayingArtwork(nowPlaying.song, nowPlaying)` — asserted exactly; the poll is not gated on any WS24 state (asserted negatively) |
+| **artwork for a currently-playing song** | the shared function's live write path and the `target === nowPlaying` guard are asserted **byte-identical**; the cache key is asserted unchanged, so a cover fetched on the seek path is *reused* by the live path rather than becoming a second request |
+| **the 45 s poll interval** | asserted byte-identical (`NOW_PLAYING_INTERVAL_MS = 45000`) — the debounce did not leak into it |
+| **the mini-bar** | **not verified by measurement in this workstream.** No test asserts it and I did not change it. Stated as not verified rather than implied. |
+| **the expanded player** | the `songArtwork` isEpisode ternary arms are asserted positionally: the episode arm still does **not** read the live field, the live arm still does. Structure unchanged. |
+| **the `atLiveEdge` display rule** | `LIVE_EDGE_TOLERANCE_S = 10` asserted byte-identical in the served bundle, and `atLiveEdge` still classified by it (WS23 test) |
+| **`styles.css` in full** | `git diff` empty across `acceadd..7d47adc`; hashed CSS filename unchanged |
+| **read-only w.r.t. `state.current`** | the new seek code asserts no assignment to `state.current` or its properties, and never assigns `nowPlaying.artwork` directly — only the shared function may |
+
+**Full suite: 214/214, from 209.** One existing assertion was restated (the
+artwork call-site count 3 → 5) **with the reason recorded, not loosened** — the
+four single-mechanism assertions beneath it (one implementation, one cache, one
+seq guard) are unchanged and still exact at 1.
+
+**17 mutations, all red, 0 vacuous, `app.js` md5-verified after each.** **M12 was
+GREEN on the first pass and was a real gap in my own test:** it pinned the
+*declaration* of `SEEK_ARTWORK_DEBOUNCE_MS` but not that the call site *uses*
+it, so adding a second literal holding the same number passed. Fixed by counting
+occurrences. Fixing it then exposed a **second** fault in the same assertion — a
+regex `setTimeout\([^)]*\)` that stopped at the first `)` inside the arrow body
+and so counted **0 timers where there was 1**; a test that cannot count the
+thing it guards. Both are recorded here because the pattern is now the third
+time a green mutation has meant the test, not the code, was wrong.
+
+**Four harness faults of my own, all caught by the self-proving canary** (a
+counter the *extracted function* increments, printed every run, per the WS23
+rule): the rebuilt extractor's caller-detection reported `?()` for every site;
+its canary dependency was not injected; the runner discarded the return value,
+printing `null` for a lookup that matches; and the extracted function's own
+parameters **shadowed** the injected dependencies, so every call passed
+`undefined` internally. **The first three would each have produced a confident,
+wrong finding.** The 5/5 self-test is what caught them.
+
+### 3d. What the owner must do
+
+**1. FIRST, confirm you are running the new code.** Open the app and look at the
+small line under **NYHETER** on the main screen. It must read:
+
+```
+bygg cbc092a
+```
+
+**If it says anything else — especially `72efbb0` — stop and tell me. You are
+testing the old code**, which is what made the last round of results
+uninformative. If the old build persists, the service worker is holding it:
+close the app fully, reopen, and if it still shows the old number, delete the
+site from your home screen and reinstall it.
+
+**2. The artwork check (new this build).** Start P3, wait for a song to play so
+a cover appears, then drag the playhead **back** into an earlier song.
+
+| what you see | what it means |
+|---|---|
+| the new song's cover appears a moment after you stop dragging | **working as intended.** The cover is fetched over the network, so it arrives a fraction of a second after the playhead settles |
+| the cover briefly becomes the ♪ placeholder, then the new cover appears | **also intended** — that is the correct intermediate state, chosen so a **wrong** cover is never shown |
+| the cover is **missing** after it settles | the lookup found no match for that song, which is a data result and not a crash. Tell me which song and I will check that specific lookup |
+| the cover still shows the **previous** song's picture | **a real defect, and the more serious one.** Tell me immediately — that is exactly the case this change was meant to eliminate |
+| nothing at all changes when you scrub | you are probably on the old build; check the build number first |
+
+**3. Confirm the LIVE path is unharmed — this matters most.** With a song
+playing **now**, in the expanded player, check the cover is there and correct.
+**This is the path the owner is about to compare against a known-good build, and
+any difference here would be a regression introduced by this deploy.**
+
+**4. The WS23 iPhone protocol is still outstanding and still needed.** It is not
+replaced by this entry. Open `### Part 5` of the **WS23 entry** above and work
+through it — six checks, each with a table saying what every possible reading
+means. The most valuable is still the programme-skip offset: skip back to the
+**23:00 news on P1** and to a **different** programme on P3, note roughly how
+early each starts, then read `dvr.streamEdge` from `?diag=metadata` for each.
+
+The gate needs **both** `?diag=metadata` in the URL **and**
+`localStorage['sr-meta-diag'] = 'on'`. The URL flag alone is deliberately
+insufficient.
+
+**5. A short list of what WS23 added, so it is not lost among the above:**
+
+- **"Till Direkt" now reaches the live edge** (1 s margin instead of 10). It is
+  recorded as **your decision**, not a bug I found, and it is not something I
+  will re-open as a defect.
+- **`?diag=metadata` now reports `dvr.streamEdge`** — what the app *believes*
+  the end of the recording is, as a clock time, next to the real time. It cannot
+  detect a wrong device clock; it exists so you can compare it against the real
+  broadcast.
+- **`?diag=metadata` now reports `earbudResume`** — whether the last play
+  attempt was **refused** by the browser or **resumed into silence**. Those two
+  look identical from outside, and they need different fixes.
+
+### What is still NOT verified
+
+**Nothing in WS23 or WS24 has been observed on a device by me.** The four deploy
+checks prove the right code is being *served*; they say nothing about how it
+*behaves*. In particular the artwork fix, the 1 s "Till Direkt" margin, the
+stream-edge readings and the earbud resume are all **code-proven and
+device-unproven** until the owner reports back.
