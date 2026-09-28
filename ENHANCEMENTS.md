@@ -2748,6 +2748,14 @@ not be assumed impossible.**
 So the *schedule data* for a pre-midnight position is now present in
 `cur._srSchedule`.
 
+> **SUPERSEDED BY WS21 (2026-09-28) — this section was wrong about the
+> cause.** The "window gate" listed as candidate (1) below **was** the whole
+> cause, and it is now fixed. What is written here is kept as the dated record
+> of what was believed at the time, including the reasoning that led astray:
+> the fixture that "proved" 5/7 positions now resolve was exercising a merge
+> that was never asked for, so it validated the merge and not the gate.
+> See the WS21 entry for the measurement that settled it.
+
 ### Why the owner still sees nothing — NOT YET DIAGNOSED
 
 The gap between "yesterday's schedule is loaded" and "the title updates" has
@@ -2797,6 +2805,289 @@ On a **talk** radio channel with no song, `metaTitle` and `metaArtist` both
 fall back to the programme name, so the lock screen and the car show it twice
 (`Vaken` / `Vaken`, re-observed live during WS20). One-line fix if ever
 approved. Not to be touched without instruction.
+
+---
+
+## 2026-09-28 — INVESTIGATION ONLY: global podcast search with minimal/no UX changes
+
+**Status: NOT started, NOT implemented. Investigation brief only.** Nothing in
+the codebase is to be changed until the investigation below has established that
+the simplest approach works inside the current GitHub Pages / static-PWA
+architecture. Logged verbatim as given by the owner so the brief survives
+session boundaries.
+
+### Goal
+
+Investigate whether the existing podcast search and playback functionality can
+be extended to find and play podcasts outside Sveriges Radio, while reusing the
+**existing podcast search field, result presentation, favourites, episode
+presentation, and player**.
+
+The desired end state is deliberately simple:
+
+> The user searches for a podcast in the existing search field, gets search
+> results, selects a podcast, sees its episodes in the existing podcast UI, and
+> plays an episode with the existing player.
+
+Ideally, **no new UX is required**.
+
+The current long list of Sveriges Radio podcasts shown as the source for manual
+selection may eventually be removed/replaced by search results, if that produces
+a cleaner and simpler implementation.
+
+This is initially an **investigation only**. Do not implement the feature until
+the investigation has established that the simplest approach works within the
+current GitHub Pages/static-PWA architecture.
+
+### Guiding principle
+
+Start with the easiest possible implementation and reuse as much existing code
+as possible.
+
+Do NOT start by designing a new podcast architecture, new screens, new
+navigation, new backend, or a sophisticated multi-provider abstraction.
+
+First determine whether the existing podcast flow can simply be fed with
+podcasts from an external global podcast index.
+
+### Investigation — step 1: Understand the existing podcast flow
+
+Inspect the current implementation and document:
+
+1. Where the existing podcast search field is implemented.
+2. Where the current Sveriges Radio podcast search is performed.
+3. Where the long list of available SR podcasts comes from.
+4. How a podcast is represented internally after selection.
+5. How podcast episodes are loaded.
+6. How a selected episode is passed to the existing player.
+7. How podcast favourites are stored.
+8. Which components currently render:
+   - search results
+   - podcast selections/favourites
+   - podcast episodes
+   - playback controls.
+
+Do not modify files.
+
+The objective is to identify the **minimum existing interfaces/data structures
+that an external podcast could use**.
+
+### Investigation — step 2: Test the simplest external search source
+
+Investigate the simplest free global podcast search API suitable for a static
+GitHub Pages PWA.
+
+Start with the **Apple/iTunes Search API**.
+
+Do not investigate multiple APIs in parallel initially.
+
+Determine:
+
+- Can it search podcasts globally?
+- Can it be called directly from the browser?
+- Does it require an API key?
+- Are there practical rate limits?
+- Does it return sufficient metadata for the existing podcast result UI?
+- Most importantly: does it provide enough information to obtain the podcast's
+  RSS feed?
+
+If Apple/iTunes Search is sufficient for the basic use case, do not introduce
+Podcast Index or another provider yet.
+
+Only investigate alternatives if Apple cannot support the required flow.
+
+### Investigation — step 3: Prove the complete technical path
+
+Using one well-known podcast that is NOT a Sveriges Radio podcast, determine
+whether this complete flow is possible:
+
+```
+Existing search field
+        ↓
+External podcast search API
+        ↓
+Podcast search result
+        ↓
+Podcast RSS/feed
+        ↓
+Episode list
+        ↓
+Existing podcast episode UI
+        ↓
+Existing player
+```
+
+Choose one simple, well-known podcast for the test. **Do not build anything
+yet.**
+
+Determine specifically:
+
+1. Can the browser obtain the podcast metadata?
+2. Can the browser obtain the RSS feed?
+3. Does the RSS feed contain episode titles, dates, descriptions and audio
+   URLs?
+4. Can the existing episode representation consume that information?
+5. Can the existing player play the returned audio URL?
+6. Does GitHub Pages/static hosting introduce a CORS or other browser
+   restriction?
+7. Is a backend/proxy actually necessary?
+
+**Do not assume a proxy is necessary. Test the browser/static-hosting path
+first.**
+
+### Investigation — step 4: Compare the external data with the existing SR data model
+
+Determine whether an external podcast can be mapped into the existing internal
+podcast representation with a simple adapter.
+
+Prefer:
+
+```
+External podcast
+       ↓
+small mapping/adapter
+       ↓
+existing podcast model
+       ↓
+existing UI
+       ↓
+existing player
+```
+
+over creating a second completely separate podcast implementation.
+
+Identify any fields that the existing UI requires but an external podcast does
+not provide. Do not redesign the existing model unless it is genuinely
+necessary.
+
+### Investigation — step 5: Consider the desired UX with the existing UI
+
+The preferred UX is:
+
+```
+Podcast search
+[ Search __________________ ]
+
+Search results
+────────────────────────
+Podcast A
+Podcast B
+Podcast C
+...
+```
+
+Selecting a result should lead into the **existing podcast presentation**.
+
+The user should not have to learn a new external-podcast workflow.
+
+Investigate whether the existing long SR podcast list can simply be removed or
+replaced by search results.
+
+Specifically determine:
+
+- Is the current long SR list technically required?
+- Or is it only a discovery/selection mechanism?
+- Can search results become the primary podcast discovery mechanism?
+- Can SR podcasts still appear naturally in search results?
+- Can an external podcast be favourited using the existing favourite mechanism?
+- Can favourites continue to work without changing their visual presentation?
+
+Do not design new UX unless the investigation proves it is unavoidable.
+
+### Investigation — step 6: Define the smallest possible MVP
+
+If the previous steps succeed, propose the smallest implementation that would
+demonstrate the concept.
+
+The MVP should ideally be:
+
+- **Search** — use the existing podcast search field.
+- **Results** — use the existing podcast result visualisation.
+- **Selection** — use the existing podcast selection behaviour.
+- **Episodes** — use the existing episode visualisation.
+- **Favourites** — reuse the existing favourite mechanism.
+- **Playback** — reuse the existing player.
+- **SR podcasts** — keep Sveriges Radio podcasts working.
+- **External podcasts** — add global search results alongside, or instead of,
+  the current manually browsable SR catalogue, depending on what the
+  investigation shows is simplest.
+
+### Important constraints
+
+- This project is deployed as a **GitHub Pages static PWA**.
+- Do not introduce a backend/proxy unless the investigation proves that it is
+  required.
+- Do not introduce a database.
+- Do not introduce a new podcast app architecture.
+- Do not redesign the player.
+- Do not redesign podcast navigation.
+- Do not create a new search screen.
+- Do not create a new external-podcast screen.
+- Do not implement multiple external APIs in the first iteration.
+- Do not modify files during the investigation.
+
+The objective is to determine whether this can be a **small extension of the
+existing podcast functionality**, not a new subsystem.
+
+### Deliverable
+
+At the end of the investigation, provide a concise report containing:
+
+**A. Existing architecture** — where the current podcast search, selection,
+favourites, episode loading and playback are implemented.
+
+**B. Simplest external API** — which global podcast search API was tested and
+why it is suitable or unsuitable.
+
+**C. End-to-end feasibility** — answer explicitly: *Can an external podcast be
+searched, selected, have its episodes displayed and played using the existing
+PWA and player without a backend?* Answer **YES**, **YES, with specific
+limitation(s)**, or **NO**, and explain exactly why.
+
+**D. UX impact** — state exactly which existing UI can be reused unchanged, and
+identify any UI change that is actually necessary. The preferred answer is:
+
+> No meaningful UX changes required.
+
+if that is genuinely supported by the investigation.
+
+**E. Minimal implementation plan** — if feasible, describe the smallest sequence
+of coding tasks needed, broken into small independently testable steps.
+
+**F. Risks** — only concrete technical risks discovered during the
+investigation, especially CORS, RSS/feed accessibility, audio URL compatibility,
+API rate limits, missing metadata, favourite persistence, and GitHub
+Pages/static-hosting limitations.
+
+### Success criterion
+
+The investigation succeeds if we can demonstrate that the following concept is
+technically realistic:
+
+```
+USER
+  │
+  ▼
+Existing podcast search field
+  │
+  ▼
+Global podcast search
+  │
+  ▼
+Existing podcast result UI
+  │
+  ▼
+Existing podcast UI
+  │
+  ▼
+Existing player
+```
+
+with **minimal or zero UX changes**.
+
+Do not implement the enhancement during this investigation. Do not make
+architectural changes based on assumptions. First establish the simplest viable
+path.
 
 ---
 
