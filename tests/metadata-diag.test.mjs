@@ -719,14 +719,24 @@ const GESTURE_FINISH = stripComments(region(
 const EXPAND_BTN = stripComments(region(
   "expandBtn.addEventListener('click'", '// Direct AAC streams', APP_JS));
 
-test('WS2 Bug 1: seekToLive targets just BEHIND the edge, not onto the boundary', () => {
+test('WS2 Bug 1 (WS23 restated): seekToLive targets just BEHIND the edge, not onto the boundary', () => {
   // The defect: `audioEl.currentTime = end` — exactly the buffered end.
   assert.ok(!/audioEl\.currentTime = end;/.test(SEEK_TO_LIVE),
     'seekToLive must NOT assign the exact buffered end (the no-op boundary seek)');
-  // The fix: aim behind the edge by the same tolerance updateSeekableState()
-  // uses to classify "at live", so the result still counts as live.
-  assert.ok(/end - LIVE_EDGE_TOLERANCE_S/.test(SEEK_TO_LIVE),
-    'the target must sit behind the edge by LIVE_EDGE_TOLERANCE_S');
+  //
+  // ---- WS23: this assertion was `end - LIVE_EDGE_TOLERANCE_S` ----
+  // The INTENT is unchanged and still fully guarded: never aim at the
+  // boundary, always aim behind it. What changed is WHICH constant supplies
+  // the margin. `LIVE_EDGE_TOLERANCE_S` (10 s) is a DISPLAY rule -- when the
+  // pill reads "LIVE" -- and sizing a seek target from it was a category
+  // mistake. The margin now has its own constant, SEEK_LIVE_MARGIN_S.
+  //
+  // The old text is asserted to be GONE, so the two constants cannot drift
+  // back into sharing a number unnoticed.
+  assert.ok(!/end - LIVE_EDGE_TOLERANCE_S/.test(SEEK_TO_LIVE),
+    'the seek target must NOT be sized by the display tolerance (WS23 separated them)');
+  assert.ok(/end - SEEK_LIVE_MARGIN_S/.test(SEEK_TO_LIVE),
+    'the target must sit behind the edge by SEEK_LIVE_MARGIN_S');
   // Clamped so it can never fall below the start of the window.
   assert.ok(/Math\.max\(start,/.test(SEEK_TO_LIVE),
     'the target must be clamped against seekableStart');
@@ -1063,10 +1073,16 @@ test('WS3 Part 2: the snapshot exposes back-to-live evidence incl. the exit reas
   assert.ok(/lastAfter = \{[\s\S]*accepted:/.test(APP_CODE),
     'the diagnostic must read back whether the browser accepted the seek target');
   // The seek logic itself must be UNCHANGED — this workstream gathers evidence.
+  //
+  // ---- WS23: the second assertion below was `end - LIVE_EDGE_TOLERANCE_S` ----
+  // WS3's point was "this workstream attempts no fix". WS23 IS the authorised
+  // fix, by owner decision, and it changes the target margin from the display
+  // tolerance to a separate seek constant. The clamping, validation and
+  // update+render sequence around it are still asserted unchanged below.
   assert.ok(/audioEl\.currentTime = target;/.test(SEEK_TO_LIVE),
     'the seek target assignment must be unchanged');
-  assert.ok(SEEK_TO_LIVE.includes('Math.max(start, end - LIVE_EDGE_TOLERANCE_S)'),
-    'the target arithmetic must be unchanged from WS2 — WS3 attempts no fix');
+  assert.ok(SEEK_TO_LIVE.includes('Math.max(start, end - SEEK_LIVE_MARGIN_S)'),
+    'WS23: the target must use the dedicated seek margin, not the display tolerance');
   assert.ok(SEEK_TO_LIVE.includes('updateSeekableState();') && SEEK_TO_LIVE.includes('renderPlayer();'),
     'the update+render sequence must be unchanged');
 });
@@ -2053,10 +2069,15 @@ test('WS6: out of scope -- seekBy, seekToLive and programBoundary unchanged', ()
   assert.ok(/if \(!cur \|\| !cur\.dvrAvailable\) return;/.test(SEEK_BY),
     'the dvrAvailable guard in seekBy() must survive untouched');
   // seekToLive() is likewise untouched.
+  // ---- WS23: the assertion below now expects SEEK_LIVE_MARGIN_S ----
+  // Everything ELSE in this test still holds: seekBy's clamp, its guard, the
+  // SEEK_LIVE_DIAG fields, programBoundary's +/-1000 margins. Only seekToLive's
+  // margin constant changed, by owner decision, and the clamp shape around it
+  // is asserted exactly as before.
   const SEEK_LIVE_UNTOUCHED = stripComments(region(
     'function seekToLive()', '// ---- DVR transport', APP_JS));
-  assert.ok(/const target = Math\.max\(start, end - LIVE_EDGE_TOLERANCE_S\);/.test(SEEK_LIVE_UNTOUCHED),
-    'seekToLive() target arithmetic must be unchanged');
+  assert.ok(/const target = Math\.max\(start, end - SEEK_LIVE_MARGIN_S\);/.test(SEEK_LIVE_UNTOUCHED),
+    'seekToLive() target must use the dedicated seek margin (WS23)');
   assert.ok(/updateSeekableState\(\);/.test(SEEK_LIVE_UNTOUCHED),
     'seekToLive() must still refresh the seekable state');
   // The WS3 SEEK_LIVE_DIAG block must still exist with ALL its fields.
@@ -2194,9 +2215,12 @@ test('WS7: out of scope -- seekBy, seekToLive, posMs, programBoundary, constants
   assert.ok(/if \(!cur \|\| !cur\.dvrAvailable\) return;/.test(SEEK_BY),
     'the seekBy dvrAvailable guard must be byte-identical');
   // seekToLive(): the target arithmetic, exactly.
+  // ---- WS23: the margin constant changed from the display tolerance to the
+  // dedicated seek margin. The EXPRESSION is asserted in full so the clamp
+  // shape is still exact, and the constant is asserted in the WS23 tests.
   const SEEK_LIVE = stripComments(region('function seekToLive()', '// ---- DVR transport', APP_JS));
-  assert.ok(/const target = Math\.max\(start, end - LIVE_EDGE_TOLERANCE_S\);/.test(SEEK_LIVE),
-    'the seekToLive target must be byte-identical');
+  assert.ok(/const target = Math\.max\(start, end - SEEK_LIVE_MARGIN_S\);/.test(SEEK_LIVE),
+    'the seekToLive target must use SEEK_LIVE_MARGIN_S (WS23)');
   // programBoundary(): its contract, exactly, including the margins.
   const PB = stripComments(region('function programBoundary(schedule, positionMs, direction)',
     '// Seek to a programme start time', APP_JS));
@@ -2258,8 +2282,8 @@ test('WS9: out of scope -- every seek function and the DVR constants are byte-id
   assert.ok(/const upper = Number\.isFinite\(cur\.seekableEnd\)\s*\? Math\.max\(start, cur\.seekableEnd - LIVE_EDGE_TOLERANCE_S\)\s*: Infinity;/.test(SEEK_BY),
     'the seekBy upper clamp must be byte-identical');
   const SEEK_LIVE = stripComments(region('function seekToLive()', '// ---- DVR transport', APP_JS));
-  assert.ok(/const target = Math\.max\(start, end - LIVE_EDGE_TOLERANCE_S\);/.test(SEEK_LIVE),
-    'the seekToLive target must be byte-identical');
+  assert.ok(/const target = Math\.max\(start, end - SEEK_LIVE_MARGIN_S\);/.test(SEEK_LIVE),
+    'the seekToLive target must use SEEK_LIVE_MARGIN_S (WS23)');
   // seekToProgramTime: behaviour AND the out-of-window toast are untouched
   // (WS8 Part B, not authorised here).
   const SPT = stripComments(region('function seekToProgramTime(startMs)', "['waiting', 'stalled'].forEach", APP_JS));
@@ -2480,8 +2504,8 @@ test('WS10: out of scope -- playback, seek, metadata and DVR are byte-identical'
   assert.ok(/const upper = Number\.isFinite\(cur\.seekableEnd\)\s*\? Math\.max\(start, cur\.seekableEnd - LIVE_EDGE_TOLERANCE_S\)\s*: Infinity;/.test(SEEK_BY),
     'the seekBy clamp must be byte-identical');
   const SEEK_LIVE = stripComments(region('function seekToLive()', '// ---- DVR transport', APP_JS));
-  assert.ok(/const target = Math\.max\(start, end - LIVE_EDGE_TOLERANCE_S\);/.test(SEEK_LIVE),
-    'the seekToLive target must be byte-identical');
+  assert.ok(/const target = Math\.max\(start, end - SEEK_LIVE_MARGIN_S\);/.test(SEEK_LIVE),
+    'the seekToLive target must use SEEK_LIVE_MARGIN_S (WS23)');
   // The WS9 position-aware machinery must be untouched by WS10.
   assert.ok(/function playheadWallMs\(\)/.test(APP_CODE), 'playheadWallMs must still exist');
   assert.ok(/e\.startMs <= atMs && atMs < e\.stopMs/.test(APP_CODE), 'pickByPosition must be unchanged');
@@ -3555,4 +3579,326 @@ test('WS21: the yesterday gate must not depend on a value that is not set yet', 
     'the snapshot must expose schedule.gate (WS21)');
   assert.ok(/fetchedDays/.test(fn),
     'the recorded gate must say which days were actually fetched (WS21)');
+});
+
+
+// ===================================================================
+// WS23 — the "Till Direkt" margin, the stream-edge assumption, and the
+// earbud resume outcome.
+//
+// Three separate concerns, one workstream. Each group below states what it
+// guards and WHY, because two of them exist to stop a specific future change
+// that has already been made once in this project.
+// ===================================================================
+
+test('WS23: the seek margin and the live-display tolerance are SEPARATE constants', () => {
+  // WHY: `LIVE_EDGE_TOLERANCE_S` (10 s) answers "when does the pill say LIVE?".
+  // It is a display rule. WS22 measured that seekToLive() was also using it to
+  // size the seek TARGET, which parked the playhead a visible margin behind
+  // the edge on every press. The owner decided "Till Direkt" should reach the
+  // edge, so the two jobs now have their own constants.
+  //
+  // These are asserted on RAW source deliberately: the definitions live
+  // beside explanatory comments, and stripComments() would leave only the
+  // assignment. The values, not the prose, are what must not drift.
+  assert.ok(APP_JS.includes('const LIVE_EDGE_TOLERANCE_S = 10;'),
+    'the display tolerance must be unchanged in WS23 — only the seek margin moved');
+  assert.ok(APP_JS.includes('const SEEK_LIVE_MARGIN_S = 1;'),
+    'the seek target must have its own dedicated constant');
+
+  // The margin must be a real, finite, POSITIVE number, and strictly SMALLER
+  // than the display tolerance. Each bound is a distinct way the change could
+  // be wrong, so they are checked separately rather than as one expression.
+  const m = /const SEEK_LIVE_MARGIN_S = (\d+);/.exec(APP_JS);
+  assert.ok(m, 'SEEK_LIVE_MARGIN_S must be a plain integer literal so it can be asserted');
+  const margin = Number(m[1]);
+  assert.ok(margin > 0,
+    'the margin must NOT be 0: seeking onto the exact buffered boundary is the Safari no-op that made this button fail twice before it was given one');
+  assert.ok(margin < 10,
+    'the seek margin must be smaller than the display tolerance, or the separation is cosmetic');
+  // A margin is only "inaudible" if it is under a second. Real inter-song gaps
+  // measured on P3 are 10-16 s, so anything in that range could still hide a
+  // boundary; 1 s cannot.
+  assert.ok(margin <= 1,
+    'the margin must be at most 1 s to be inaudible and unable to hide a title boundary');
+});
+
+test('WS23: seekToLive targets the dedicated margin and NOT the display tolerance', () => {
+  // The positive form and the INVERTED form are both required. Asserting only
+  // that the new constant is used would also pass if the old one were used as
+  // well; asserting only the negative would pass if the target were deleted
+  // entirely. Together they pin the arithmetic.
+  assert.ok(/end - SEEK_LIVE_MARGIN_S/.test(SEEK_TO_LIVE),
+    'the target must be sized by the seek margin');
+  assert.ok(!/end - LIVE_EDGE_TOLERANCE_S/.test(SEEK_TO_LIVE),
+    'the target must NOT be sized by the display tolerance — they are different jobs');
+  // Still clamped, still validated, still the value that gets assigned. These
+  // are the WS2 guarantees and WS23 must not have disturbed them.
+  assert.ok(/Math\.max\(start, end - SEEK_LIVE_MARGIN_S\)/.test(SEEK_TO_LIVE),
+    'the margin must remain clamped against seekableStart');
+  assert.ok(/audioEl\.currentTime = target;/.test(SEEK_TO_LIVE),
+    'the clamped target is still what gets assigned');
+  assert.ok(/Number\.isFinite\(target\)/.test(SEEK_TO_LIVE),
+    'the target must still be validated before use');
+  // The BUG 1 no-op guard from WS2, restated: the exact boundary is forbidden.
+  assert.ok(!/audioEl\.currentTime = end;/.test(SEEK_TO_LIVE),
+    'the exact buffered boundary must never be the target (WS2 BUG 1)');
+});
+
+test('WS23: the display rule is untouched — the pill still reads LIVE where it did', () => {
+  // The owner asked for the seek margin to change ONLY. If the display rule had
+  // moved too, the pill's meaning would have changed silently and the next
+  // device test would be unreadable. These assert the display side is intact.
+  const dvr = stripComments(region('function updateSeekableState()',
+    '// ---- expand-panel open/close STATE', APP_JS));
+  assert.ok(/cur\.atLiveEdge = !usable \|\| cur\.distanceFromLiveEdge <= LIVE_EDGE_TOLERANCE_S;/.test(dvr),
+    'atLiveEdge must still be classified by the display tolerance, unchanged');
+  // seekBy()'s forward clamp also belongs to the display/live family and was
+  // explicitly NOT in scope for WS23.
+  const seekBy = stripComments(region('function seekBy(deltaSeconds)', '// Fetch today', APP_JS));
+  assert.ok(/cur\.seekableEnd - LIVE_EDGE_TOLERANCE_S/.test(seekBy),
+    'seekBy() must still clamp to the display tolerance — WS23 changed only seekToLive');
+});
+
+test('WS23: the stream-edge assumption is named once, with its site list', () => {
+  // WHY: the app converts a recording position into a clock time by assuming
+  // the buffered edge IS the present moment. WS6 already found that this edge
+  // can be reported late and worked around it for ONE call site only; the rest
+  // still carry the assumption silently. A silent assumption is what turned
+  // "about 10 s" into folklore, so it is now documented in one place.
+  const doc = region('// ---- WS23: THE STREAM-EDGE ASSUMPTION', 'function playheadWallMs()');
+  assert.ok(/seekableEnd/.test(doc), 'the documented assumption must name seekableEnd');
+  // Every site that reads the edge as "now" must be listed. The list is what
+  // stops a sixth site appearing without anyone noticing.
+  ['playheadWallMs', 'dvrPositionToDate', 'seekToProgramTime', 'seekToLive', 'liveEdgeWallMs']
+    .forEach((fn) => {
+      assert.ok(doc.includes(fn),
+        `the assumption's site list must name ${fn} — a new caller must see the caveat`);
+    });
+  // And it must say plainly that the error is variable and uncorrected, so the
+  // next session cannot inherit "the offset is 10 s" as a constant.
+  assert.ok(/VARIABLE|NOT A FIXED|not a fixed|variable/i.test(doc),
+    'the note must record that the offset is variable, not a fixed margin');
+  assert.ok(/NO correction|NOT corrected|not corrected|no correction/i.test(doc),
+    'the note must state that no correction value is applied');
+  // There must be no correction constant in the source at all. This is the
+  // assertion that stops a fudge factor being introduced quietly.
+  assert.ok(!/STREAM_EDGE_CORRECTION|EDGE_CORRECTION_S|SEEK_CORRECTION/.test(APP_JS),
+    'no hardcoded stream-edge correction may exist — the error is unmeasured');
+});
+
+test('WS23: the stream edge is MEASURABLE on a device, sampled around a seek', () => {
+  // WHY: whether the buffered edge lags the true live edge could never be
+  // answered from inside the app, because the app has no second clock to
+  // compare against. These fields make the assumption visible so a human with
+  // the real broadcast can supply the missing reference.
+  const snap = stripComments(region('dvr: {', 'dom: {', APP_JS));
+  assert.ok(/streamEdge:/.test(snap), 'the snapshot must expose a streamEdge section');
+  ['edgeAsWallClockIso', 'nowIso', 'edgeMinusNowS']
+    .forEach((f) => {
+      assert.ok(snap.includes(f), `streamEdge must expose ${f}`);
+    });
+  // Before/after around the seek, so a reader can see whether the SEEK moved
+  // the edge — a re-registered buffer would explain a variable offset alone.
+  ['before', 'after', 'requestedTarget', 'acceptedPosition', 'clampedByS']
+    .forEach((f) => {
+      assert.ok(snap.includes(f), `streamEdge must expose ${f}`);
+    });
+  // The requested/accepted pair is what distinguishes a browser-clamped seek
+  // from a genuine offset; without it a clamp is indistinguishable from one.
+  const rec = stripComments(region('function recordStreamEdge(phase)',
+    'function seekToLive()', APP_JS));
+  // Anchored on `name:` or `name =` so a RENAMED field cannot pass by
+  // substring. M13 renamed edgeMinusNowS -> edgeMinusNowSWasRemoved and the
+  // suite stayed GREEN, because the old assertion only checked whether the
+  // name appeared somewhere in the region. That is the substring trap, and it
+  // is now closed for every field asserted here.
+  assert.ok(/edgeMinusNowS\s*:/.test(rec),
+    'the recorder must compute the edge-versus-now difference');
+  // Both seek paths must sample it. seekToProgramTime is the button that
+  // produced the ~30 s reading, so an instrumented "Till Direkt" alone would
+  // not answer the question.
+  const spt = stripComments(region('function seekToProgramTime(startMs)',
+    "['waiting', 'stalled'].forEach", APP_JS));
+  assert.ok(/recordStreamEdge\('before'\)/.test(spt),
+    'the programme-skip path must sample the edge before computing its target');
+  assert.ok(/recordStreamEdge\('after'\)/.test(spt),
+    'the programme-skip path must re-sample the edge after seeking');
+  assert.ok(/recordStreamEdge\('before'\)/.test(SEEK_TO_LIVE),
+    'seekToLive must sample the edge before seeking');
+  assert.ok(/recordStreamEdge\('after'\)/.test(SEEK_TO_LIVE),
+    'seekToLive must re-sample the edge after seeking');
+  // BEFORE must precede EVERY guard and the target computation. M12 moved the
+  // sample just below the two early-return guards and the suite stayed GREEN,
+  // which would have meant a REFUSED press (no track, or no DVR) was never
+  // recorded at all -- exactly the press a reader most needs to see. The
+  // assertion is therefore positional against the first guard, not just
+  // against `const target`.
+  const beforeIdx = spt.indexOf("recordStreamEdge('before')");
+  const firstGuardIdx = spt.indexOf('if (!cur || !cur.dvrAvailable) return;');
+  const targetIdx = spt.indexOf('const target =');
+  assert.ok(beforeIdx !== -1, 'the programme-skip path must sample the edge');
+  assert.ok(firstGuardIdx !== -1, 'the DVR guard must still exist in seekToProgramTime');
+  assert.ok(targetIdx !== -1, 'the target computation must still exist');
+  assert.ok(beforeIdx < firstGuardIdx,
+    'the edge must be sampled BEFORE the early-return guards, or a refused press is never recorded');
+  assert.ok(beforeIdx < targetIdx,
+    'the edge must be sampled BEFORE the target is derived from it');
+
+  // The three figures that make a clamped seek visible must be WRITTEN at the
+  // seek site, not merely listed in the snapshot. M14 deleted all three writes
+  // and the suite stayed GREEN, because the snapshot still names the fields.
+  // Anchored on the property name with a preceding `=`, so a renamed field
+  // (e.g. `errorNameWasRemoved`) cannot satisfy the match by substring.
+  [SEEK_TO_LIVE, spt].forEach((regionSrc, i) => {
+    const where = i === 0 ? 'seekToLive' : 'seekToProgramTime';
+    assert.ok(/SEEK_EDGE_DIAG\.requestedTarget =/.test(regionSrc),
+      `${where} must WRITE the requested target`);
+    assert.ok(/SEEK_EDGE_DIAG\.acceptedPosition =/.test(regionSrc),
+      `${where} must WRITE the position the element accepted`);
+    assert.ok(/SEEK_EDGE_DIAG\.clampedByS =/.test(regionSrc),
+      `${where} must WRITE the clamped-by difference`);
+  });
+});
+
+test('WS23: the earbud resume records its outcome instead of discarding it', () => {
+  // WHY: the MediaSession play handler was `audioEl.play().catch(() => {})` —
+  // the only play site in the file that threw the reason away. A rejected
+  // resume and a resume that succeeded into silence look identical from
+  // outside, and only a device can tell them apart. The name and message of a
+  // rejection are the whole point.
+  const handler = stripComments(region("mediaSession.setActionHandler('play'",
+    "mediaSession.setActionHandler('pause'", APP_JS));
+  assert.ok(!/\.catch\(\(\) => \{\}\)/.test(handler),
+    'the play handler must NOT discard the failure with an empty catch');
+  assert.ok(/audioEl\.play\(\)/.test(handler),
+    'play() must still be called');
+  assert.ok(/\.then\(/.test(handler) && /\.catch\(/.test(handler),
+    'the handler must distinguish a resolved resume from a rejected one');
+  // The REJECTION branch specifically, isolated from the reset block.
+  // M18 deleted the two error writes in `.catch(...)` and the suite stayed
+  // GREEN, because the handler opens with a reset that also assigns
+  // `errorName`/`errorMessage` to null. Asserting over the whole handler
+  // therefore proved nothing about the branch that does the recording — the
+  // same lesson as WS6's M8, and the reason this is now a separate slice.
+  const catchBranch = handler.slice(handler.indexOf('.catch('));
+  ['errorName', 'errorMessage', 'outcome']
+    .forEach((f) => {
+      assert.ok(new RegExp(`RESUME_DIAG\\.${f}\\s*=`).test(catchBranch),
+        `the REJECTION branch must ASSIGN ${f} — the rejection reason is the question`);
+    });
+  // And the value must come from the error object, not be a constant null.
+  assert.ok(/RESUME_DIAG\.errorName\s*=\s*err\s*&&\s*err\.name/.test(catchBranch),
+    'errorName must be read from the rejection, not hardcoded');
+  assert.ok(/RESUME_DIAG\.errorMessage\s*=\s*err\s*&&\s*err\.message/.test(catchBranch),
+    'errorMessage must be read from the rejection, not hardcoded');
+  // The reset on entry is required too, or a previous failure's name would be
+  // misread as this one's.
+  const resetBranch = handler.slice(0, handler.indexOf('.then('));
+  assert.ok(/RESUME_DIAG\.outcome\s*=\s*null/.test(resetBranch),
+    'each attempt must clear the previous outcome before recording a new one');
+  // readyState/networkState are what separate "never started" from "started
+  // and silent", which is the distinction the owner can act on. M27 could not
+  // even be applied unambiguously at first (three identical lines), which is
+  // itself the lesson: assert on a scoped region, not on the whole file.
+  const sampler = stripComments(region('function sampleResume(phase)',
+    'if (mediaSession) {'));
+  ['readyState', 'networkState', 'errorCode']
+    .forEach((f) => {
+      assert.ok(new RegExp(`${f}\\s*:`).test(sampler),
+        `the sampler must record ${f}`);
+    });
+  // The delayed re-sample is what makes "resumed but silent" visible at all:
+  // without it, a resume that resolved is recorded once and never checked
+  // again. M28 deleted the whole setTimeout and the suite stayed GREEN.
+  assert.ok(/setTimeout\(/.test(handler),
+    'the resume path must re-sample after a delay, or a silent resume is invisible');
+  assert.ok(/afterDelayMs/.test(handler),
+    'the re-sample delay must be the recorded constant, not a magic number');
+  assert.ok(/RESUME_DIAG\.after\s*=\s*sampleResume\(/.test(handler),
+    'the delayed re-sample must write the after sample');
+  // And it must only be scheduled, never awaited — blocking playback on a
+  // diagnostic would be a behaviour change.
+  assert.ok(!/await\s+.*setTimeout/.test(handler),
+    'the re-sample must not be awaited');
+  // Exposed in the snapshot so it is readable on a device.
+  const snap = stripComments(region('episodeTracks: {', 'dvr: {', APP_JS));
+  assert.ok(/earbudResume:/.test(snap), 'the snapshot must expose earbudResume');
+  assert.ok(snap.includes('RESUME_DIAG'),
+    'earbudResume must report the resume record, not a parallel copy');
+});
+
+test('WS23: a rejected resume shows the EXISTING wording, and changes nothing else', () => {
+  // The toast must reuse the Swedish string every other play site already
+  // uses. Inventing new copy here would make the next device test ambiguous.
+  const handler = stripComments(region("mediaSession.setActionHandler('play'",
+    "mediaSession.setActionHandler('pause'", APP_JS));
+  assert.ok(handler.includes("showToast('Kunde inte starta uppspelning. Försök igen.')"),
+    'the rejection path must reuse the existing play-failure wording verbatim');
+  assert.ok(/renderPlayer\(\)/.test(handler),
+    'the rejection path must re-render so the UI matches the element');
+  // The success path is untouched, and NO speculative recovery was added.
+  // A reconnect or retry here would put two changes in flight and make the
+  // next device result unreadable.
+  assert.ok(!/advanceCandidate|hlsDetach|hlsAttach|loadHlsJs/.test(handler),
+    'no retry, reconnect or candidate advance may be added to the resume path');
+  // The success branch is a pure observer.
+  const resolvedBranch = handler.slice(handler.indexOf('.then('), handler.indexOf('.catch('));
+  assert.ok(!/showToast/.test(resolvedBranch),
+    'a RESOLVED resume must not toast — silent-but-resumed is a different fault');
+
+  // ---- INVERTED GUARD (required) ----
+  // The other empty-catch sites in this file are deliberate and out of scope.
+  // Widening this change to them would make the next device test unreadable,
+  // so they are pinned as still-empty. A negative match, so it is asserted on
+  // comment-stripped source: a comment mentioning a site is harmless.
+  //
+  // Both remaining sites live in the candidate-advance path, which is where a
+  // play attempt legitimately races a track change and its failure is
+  // genuinely uninteresting. They are sliced individually rather than counted
+  // alone, so a future edit that empties or fills ONE of them is attributable.
+  const advanceFn = stripComments(region('function advanceCandidate()',
+    'function armPlaybackWatchdog()', APP_JS));
+  const advanceCatches = advanceFn.split('audioEl.play().catch(() => {})').length - 1;
+  assert.equal(advanceCatches, 2,
+    'both advanceCandidate() play attempts must keep their empty catches — '
+    + 'WS23 changed only the MediaSession site');
+
+  // The seek re-resume site (a `seeked` handler resuming a paused stream) is
+  // the third. It is deliberately left alone for the same reason.
+  assert.ok(APP_CODE.includes('if (audioEl.paused) audioEl.play().catch(() => {});'),
+    'the seek re-resume site must keep its empty catch in WS23');
+
+  // Count, so a NEW empty catch added later is also caught by this test, and
+  // so filling one of these three is caught even if a slice is rewritten.
+  const emptyCatches = APP_CODE.split('.catch(() => {})').length - 1;
+  assert.equal(emptyCatches, 3,
+    'exactly three empty-catch sites must remain (WS23 removed only the MediaSession one)');
+});
+
+test('WS23: the new diagnostics stay read-only with respect to playback state', () => {
+  // The existing contract test guards HOOK, but the WS23 recorders are declared
+  // OUTSIDE that region, so they need their own guard. Recording must never
+  // become a second control path.
+  const recorders = stripComments(region('function streamEdgeWallMs()',
+    '// Maps media time to wall clock'));
+  assert.ok(!/state\.current\s*=/.test(recorders), 'the recorder must not assign state.current');
+  assert.ok(!/state\.current\.\w+\s*=/.test(recorders),
+    'the recorder must not write any property of state.current');
+  assert.ok(!/audioEl\.currentTime\s*=/.test(recorders), 'the recorder must not seek');
+
+  const resumeBlock = stripComments(region('const RESUME_DIAG = {',
+    "mediaSession.setActionHandler('pause'", APP_JS));
+  assert.ok(!/state\.current\s*=/.test(resumeBlock),
+    'the resume record must not assign state.current');
+  assert.ok(!/audioEl\.(src|load)\s*=/.test(resumeBlock),
+    'the resume record must not set src or reload the element');
+  // It calls play() once, exactly as before, and never pause().
+  const playCalls = resumeBlock.split('audioEl.play()').length - 1;
+  assert.equal(playCalls, 1, 'the resume path must call play() exactly once');
+  assert.ok(!/audioEl\.pause\(\)/.test(resumeBlock),
+    'the resume path must not pause — that would be a second control path');
+  // Registered once, at startup, beside the other handlers.
+  assert.ok(APP_CODE.split("setActionHandler('play'").length - 1 === 1,
+    "the 'play' handler must be registered exactly once");
 });
