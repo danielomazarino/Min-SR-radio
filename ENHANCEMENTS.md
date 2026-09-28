@@ -3763,3 +3763,185 @@ verify before relying on them, do not queue them blind.
   plausible mechanism, different evidence, and merging them would let an
   unreproduced report borrow credibility.
 - **Did not queue the weather remark.** It is a new feature, not a defect.
+
+---
+
+## 2026-09-28 (later) — WS22 investigation: DVR song titles + the ~10 s offset. MEASURED, no code changed
+
+Owner added two reports to item 3 and asked to *trace why*, not to fix yet:
+
+1. the regression that made **DVR song titles not show other than for the live
+   programme**;
+2. a **slight offset of ~10 seconds** for the programmes when skipping.
+
+**Method (new for this repo):** rather than retyping the logic into a script —
+which is how WS8/WS9 produced two wrong conclusions — the harness **extracts the
+real functions from `app.js` by brace matching** and executes them against
+synthetic inputs. So every number below is produced by shipped code.
+
+### 0. FOUR HARNESS BUGS OF MY OWN, all found by distrusting a result
+
+Worth recording, because the failure mode is identical to WS8's: a number that
+looks like a finding and is actually my own error.
+
+| # | Bug | What it made me believe | How it was caught |
+|---|---|---|---|
+| H1 | `new Function(body)` where `body` **defines** the function but never **calls** it | the seek functions "do nothing" | injected a `console.log` probe and it never printed |
+| H2 | passed an **empty arrow** as the run stub, so the call was a no-op | again "no movement" | same probe |
+| H3 | injected a fake `Date` object; `new Date()` is then **not a constructor** | `playheadWallMs` returned 0 / epoch | a standalone `new Date()` probe threw `TypeError` |
+| H4 | called `seekToProgramTime()` with **no argument**, so `startMs` was `undefined` and `behindMs` was `NaN` | "error 1790586000 s", "playhead 00:00:00" | the magnitude was absurd; re-ran with the argument passed → error 0.0000 s |
+
+**H1/H2 and H4 all produced results that looked like strong app bugs.** H3 too.
+**Every one of them was an instrumentation defect.** The rule, stated for this
+repo: *a harness must prove it is executing the code under test before any
+number it produces is allowed to be called a finding.* The cheapest form of that
+proof is one injected `console.log` at the top of the extracted function — it
+should print **once per intended call**.
+
+### 1. THE 10-SECOND OFFSET — measured, and it is REAL, but it is not a bug in the arithmetic
+
+```
+=== "Till Direkt" (seekToLive) ===
+  from -3600s  exit=seeked  playhead 21:21:13   10.00 s behind live
+  from  -600s  exit=seeked  playhead 21:21:13   10.00 s behind live
+  from   -60s  exit=seeked  playhead 21:21:13   10.00 s behind live
+  from   -10s  exit=seeked  playhead 21:21:13   10.00 s behind live
+
+=== programme skip (seekToProgramTime) ===
+  -3600s: ERROR 0.0010 s      -600s: ERROR 0.0000 s
+  -1800s: ERROR 0.0000 s      -120s: ERROR 0.0000 s
+  -  30s: ERROR 0.0000 s
+  4 h back: REFUSED — "Programmet ligger utanför spolbart område (3 timmar)."
+```
+
+**Reading:** the programme-skip button is **exact to the millisecond** at every
+distance tested, and correctly refuses outside the window. The 10 s belongs
+entirely to `seekToLive`, whose target is literally
+`seekableEnd - LIVE_EDGE_TOLERANCE_S` (`LIVE_EDGE_TOLERANCE_S = 10`,
+`app.js:773`). So **"Till Direkt" always parks the playhead exactly 10 s behind
+the live edge, on every press, by construction.**
+
+**This is very likely what the owner is seeing, and it is a real, reproducible
+10 s — not a misread.** The same 10 s was twice dismissed in this log as "I
+misread the screenshot"; that dismissal was about a *wall-clock skew* theory
+(a 128-minute offset), which is still refuted. **The 10 s itself is now
+measured and is caused by the seek TARGET, not by clock skew.**
+
+**Is it a defect? Two readings, and the owner should decide:**
+
+- *Working as designed.* 10 s behind is the same tolerance that makes the pill
+  read "LIVE"; parking exactly on the boundary is what WS4 explicitly chose so
+  the browser gets a non-boundary target. `seekBy(+15)` has the same upper
+  clamp, so +15 repeatedly cannot cross it either — measured: four presses of
+  `seekBy(+15)` from 40 s behind leave the playhead at exactly 40 s.
+- *A defect worth fixing.* "Till Direkt" is supposed to mean *direct*. If a
+  programme or song boundary falls inside those 10 s, the title will still be
+  the previous one immediately after pressing it. Since song gaps of 10–16 s
+  are normal (measured on real ch163 data below), this is visible in practice.
+
+**Recommended minimal change, if the owner wants it:** make the *target* of
+`seekToLive` the live edge itself, and keep the 10 s only in the **display**
+rule (`atLiveEdge`). Those are two different concerns that currently share one
+constant. **Do not change `LIVE_EDGE_TOLERANCE_S` itself** — it is load-bearing
+for the pill, `seekBy`'s clamp, and `atLiveEdge` classification, and three other
+tests reference it.
+
+**NOT measured here, and it remains a real possibility:** whether SR's HLS
+playlist edge *lags* the true live edge by some L. The app assumes
+`seekableEnd == now` in `playheadWallMs`, `dvrPositionToDate`,
+`seekToProgramTime` and `seekToLive` — all four. If L > 0 then **every**
+resolved wall-clock time is L seconds ahead of where the audio really is, and
+the visible offset would be 10 + L. **This needs the device**; do not re-raise
+it as a theory.
+
+### 2. THE SONG-TITLE REGRESSION — the selection logic is CORRECT; the TIMELINE is nearly empty
+
+**First result: the selector is provably right.** Running the shipped
+`paintNowPlaying` selection expression over the full 3 h window at 1 s
+resolution: **10 801 positions tested, 10 801 correct, 0 wrong.** And
+`playheadWallMs()` returned the expected wall time with **0 s error**. So
+"the app picks the wrong song" and "the playhead maths is wrong" are both
+**ruled out**. That is worth stating plainly because it kills the two theories
+the log has been circling.
+
+**The actual cause: the timeline only covers what one `rightnow` poll
+returned.** Reproducing `keep()`/`buildTimeline` exactly as `fetchNowPlaying`
+builds it, from a realistic P3 payload (the real ch163 shape measured
+2026-09-27):
+
+```
+09:51:30-09:54:19  Kehlani - Folded
+09:54:30-09:58:54  Aylike  - Everything In The Shade
+09:59:10-10:02:40  Darin  - Candy
+COVERS wall-clock 09:51:30 .. 10:02:40        ("now" = 10:00:00)
+```
+
+Over the 3 h window, 1 s steps:
+
+```
+positions showing a song :  484 / 10801  ( 4.5%)
+positions BLANK          : 10317 / 10801  (95.5%)
+```
+
+**So the song line is blank at 95.5% of DVR positions, and blank ≠ wrong:**
+`liveSong` is `null`, the line empties, and the owner sees the **programme
+title** instead — which is exactly the reported symptom ("song titles not
+showing other than for the live programme").
+
+**A 16-second gap between songs is normal in the real data** (09:58:54 →
+09:59:10 above), so even *inside* the covered range the line blanks for 16 s at
+every boundary. With `LIVE_EDGE_TOLERANCE_S = 10` sitting inside such a gap,
+"Till Direkt" can land inside it.
+
+**This confirms and sharpens the earlier item 4c finding, and explains why the
+owner is seeing a regression where my code reading said "no regression":**
+WS9 *added* the timeline, but the timeline's **reach is one poll wide** — a
+single `rightnow` response yields 3 songs ≈ 11 minutes. The reachable range only
+grows if the app is left polling for a long time. So:
+
+- a session open for minutes, then a 1-hour seek back ⇒ **blank**;
+- the same seek after an hour of listening ⇒ the range has filled in and it
+  works.
+
+**That is a data-reach ceiling, not a code regression — but it is a poor
+experience and it is fixable in code.** The `seeked` handler already
+re-polls (`scheduleNowPlayingPoll()`), but that poll is **time-agnostic**: it
+re-reads the window around *now* and merges it, so it cannot fill in a song
+that finished an hour ago. This is the same structural limit already recorded
+for item 4c (`rightnow` has no time parameter; `previoussong` is a single
+object). **Do not re-derive it; it is already written down and still holds.**
+
+**⇒ The only real code lever is SR's own schedule/`scheduledepisodes`, which
+the app already has per programme, plus whatever the timeline holds.** Before
+writing anything, the decisive question is whether SR exposes a per-programme
+track list for live channels at all. That is an **endpoint discovery task**, and
+per the repo's discovery rule it must enumerate candidates rather than accept
+the first 404/500.
+
+### 3. What this means for the two reports — they are DIFFERENT defects
+
+| Report | Root cause | Status |
+|---|---|---|
+| ~10 s programme offset | `seekToLive`'s target is `seekableEnd - 10` | **MEASURED, real.** Fixable with an owner decision. |
+| DVR song titles missing | timeline covers 4.5% of the window | **MEASURED.** Selector is correct. Needs endpoint discovery before any code. |
+
+They are unrelated. **Do not fix them in one change** — they have different
+causes, different risk, and one is a design decision.
+
+### 4. Test plan for the pre-midnight item (owner: "solved yesterday, needs user test")
+
+Agreed — WS21 shipped the gate fix and it is **proven to request and merge
+yesterday's schedule**; only the on-device confirmation is missing. One reading
+settles it:
+
+1. Open the app and start P1 **before** local midnight.
+2. Scrub the DVR playhead back across midnight into yesterday.
+3. Read `?diag=metadata` → `schedule.gate.fetchedDays`:
+   - `['today','yesterday']` **and** the title changes ⇒ **CLOSED**.
+   - `['today','yesterday']` and the title does **not** change ⇒ the `seeked`
+     event is the cause, as WS20 predicted.
+   - `['today']` ⇒ the gate regressed; that reading is the alarm.
+
+Requires **both** `?diag=metadata` in the URL **and**
+`localStorage['sr-meta-diag'] = 'on'` — the URL flag alone is deliberately
+insufficient.
