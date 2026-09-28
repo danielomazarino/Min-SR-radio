@@ -45,14 +45,70 @@ Three, all called correctly by the owner, all in WS19:
   decisive check: `?diag=metadata`, read `schedule.gate.fetchedDays`. If it
   says `['today','yesterday']` and the title still does not change, the cause
   is the `seeked` event, not the data.
-- **Talk radio shows the programme in both MediaSession fields** (`Vaken` /
-  `Vaken`) when no song is playing. One-line fix; the owner has twice said not
-  to change it.
+- **My observation, NOT an owner report:** on a channel playing a programme
+  with no song, `title` and `artist` both show the programme (`Vaken` / `Vaken`).
+  *Owner, 2026-09-28:* *"the focus from me has been to make sure that when
+  music is identified the second line on the lock screen should show the real
+  artist and the title the song title. so the Vaken case is a bit special as
+  there is no song playing."* Deferring it to a later pass is **the owner's
+  decision**, not a standing instruction from them — a previous version of this
+  line wrongly claimed they had twice said not to change it. They had not; the
+  only related thing on record is *"don't change any mappings to the lock screen
+  for radio channels and podcasts. verify though that there is no accidental
+  change."* (2026-09-27 20:50), which scoped a single verification pass.
+  No owner requirement exists either way. See the open-questions section.
 - **Global podcast search** — see the investigation-only brief below. Not
   started.
 - **P3 Soul's second-to-last episode** has never been played; SR's
   episode-listing endpoints returned 500 throughout, so only the latest
   episode was reachable.
+
+### Every undone task in the log, ≤50 words each
+
+Compiled 2026-09-28 by reading the whole log rather than the session's own
+notes, so older items are included. **Owner-reported** and **my observation**
+are marked, because two of these were never reported and I had wrongly
+attributed an instruction to the owner.
+
+**Owner-reported**
+
+1. **Pre-midnight programme title.** Yesterday's schedule is now fetched and
+   merged (WS21), but whether the title updates on a real DVR seek is unverified.
+   Check `?diag=metadata` → `schedule.gate.fetchedDays`. If it lists both days
+   and the title still does not change, the cause is the `seeked` event.
+2. **Lock screen shows the programme twice when no song plays** (`Vaken` /
+   `Vaken`). Deferred to a later pass at the owner's request. Focus stated:
+   when music IS identified, line two must show the real artist.
+3. **Global podcast search** beyond Sveriges Radio. Investigation brief only,
+   not started. Reuse the existing search field, results, favourites and player;
+   no new UX.
+4. **Lock-screen button opens the wrong PWA** (regression, 2026-09-24). Never
+   root-caused. Identify which installed app owns the active MediaSession.
+5. **P1→P2 channel-name mismatch and P2 metadata/artwork** on the lock screen.
+6. **Android Chrome untested** throughout. All verification is Chromium or iPhone.
+7. **P3 Soul's second-to-last episode has never played.** SR's episode-listing
+   endpoints returned 500 all session, so only the latest was reachable.
+8. **Higher audio quality (E1)** — investigate, then document, before code.
+   Highest priority among the enhancements; not started.
+9. **E1–E4 enhancements** (recorded 2026-09-23) not implemented.
+10. **About/Info view is legacy** and needs a rewrite to match today's app.
+
+**My observations — not owner requirements**
+
+11. `Vaken` / `Vaken` duplication is item 2 above; the code cause is
+    `metaArtist` falling back to `programme || channel` when no song is
+    playing. One-line change if ever wanted.
+12. **Episode track repaint** — source fix shipped, but the real audio-boundary
+    retest is still open; the first headless pass had no working media element.
+13. **Older open items** in the Swedish sections (E1–E4, the About rewrite, the
+    buffer indicator work) may be stale. They were last reconciled 2026-09-23
+    and have not been re-audited against the code.
+
+**Environment limits, not tasks**
+
+Chromium cannot load SR's DVR-capable HLS, so every DVR behaviour is iPhone-only.
+DNS is blocked for direct fetches; the app can reach the API, so use the app's
+own `srMetaDiag()` rather than a script.
 
 ### Process findings worth carrying forward
 
@@ -2658,10 +2714,13 @@ in-app "artist – title".
 **Verified live:** `title: "Folded"`, `artist: "Kehlani · P3 Din Gata: Musik ·
 P3 Din gata"`. A podcast is unchanged and still correct: `artist: "P3 Soul"`.
 
-**Still open, unchanged by owner instruction:** a **talk** channel with no song
-still shows the programme in both fields (`Vaken` / `Vaken`, observed live
-again during this pass). That is the no-song fallback working as designed, not
-this regression.
+**Still open — my observation, never reported by the owner:** a channel playing
+a programme with no song shows the programme in both fields (`Vaken` /
+`Vaken`, observed live again during this pass). That is the no-song fallback
+working as designed, not this regression. The owner has since (2026-09-28)
+called this "a bit special as there is no song playing" and deferred it to a
+later pass. **No owner instruction exists either way; the earlier phrasing
+"unchanged by owner instruction" was wrong.**
 
 ### 5. YESTERDAY'S PODCAST EPISODE — NOTHING WAS MISSING, IT WAS UNDISCOVERABLE
 
@@ -2925,12 +2984,23 @@ the DVR constants remain **byte-identical to `745493c`**. Any fix that needs to
 edit them requires the owner's explicit approval and a comment saying why the
 exemption is being broken.
 
-### Still open, unchanged by owner instruction
+### Still open — my observation, never reported by the owner
 
-On a **talk** radio channel with no song, `metaTitle` and `metaArtist` both
-fall back to the programme name, so the lock screen and the car show it twice
-(`Vaken` / `Vaken`, re-observed live during WS20). One-line fix if ever
-approved. Not to be touched without instruction.
+On a radio channel playing a programme with no song, `metaTitle` and
+`metaArtist` both fall back to the programme name, so the lock screen and the
+car show it twice (`Vaken` / `Vaken`, re-observed live during WS20).
+
+*Owner, 2026-09-28:* *"the focus from me has been to make sure that when music
+is identified the second line on the lock screen should show the real artist
+and the title the song title. so the Vaken case is a bit special as there is no
+song playing."* Deferred to a later pass at the owner's request.
+
+One-line fix if ever wanted. **This is NOT an owner requirement in either
+direction** — an earlier version of this entry said the owner had twice
+instructed that it not be changed. They had not. The only related words on
+record are *"don't change any mappings to the lock screen for radio channels and
+podcasts. verify though that there is no accidental change."* (2026-09-27
+20:50), which scoped one verification pass, not a standing rule.
 
 ---
 
