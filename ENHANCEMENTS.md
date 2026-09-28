@@ -4432,3 +4432,28 @@ midnight, scrub back across midnight, read `schedule.gate.fetchedDays`:
 - **The silent-success resume branch is NOT handled**, and cannot be until a
   device says which branch actually occurs.
 - **The tablå scroll defect is unconfirmed** and unchanged.
+
+### A note on the empty-catch count, since a reader will check it
+
+`grep -c "catch(() => {})" app.js` returns **4**, while the test asserts **3**.
+Both are right, and the gap is worth stating rather than leaving as a surprise:
+
+| line | what it is |
+|---|---|
+| 1562 | real code — `advanceCandidate()`, HLS candidate |
+| 1568 | real code — `advanceCandidate()`, direct candidate |
+| 2658 | real code — the `seeked` re-resume |
+| **1792** | **a COMMENT**, in `RESUME_DIAG`'s own doc block, saying *"Until now that handler**was**: `audioEl.play().catch(() => {})`"* — i.e. the history of the fix |
+
+The test counts on **comment-stripped** source, so it sees 3. That is the
+deliberate idiom of this suite, and this is now the **fourth distinct instance**
+of the same trap: a comment that mentions a pattern an assertion is trying to
+prove is *absent*. The full list is in the `region()` note in the test file —
+(1) a comment as an END marker, (2) a comment defeating a NEGATIVE raw-source
+match, (3) a comment satisfying a POSITIVE match for a deleted rule,
+(4) a comment inflating a COUNT.
+
+**The comment is kept deliberately.** It is the only place the file records what
+the handler used to be, and it is the reason a reader can tell this was a fix
+rather than a guess. **A count that a future reader cannot reconcile is a worse
+problem than the count itself** — so the discrepancy is documented here.
