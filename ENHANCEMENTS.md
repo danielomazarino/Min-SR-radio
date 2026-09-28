@@ -2797,3 +2797,139 @@ On a **talk** radio channel with no song, `metaTitle` and `metaArtist` both
 fall back to the programme name, so the lock screen and the car show it twice
 (`Vaken` / `Vaken`, re-observed live during WS20). One-line fix if ever
 approved. Not to be touched without instruction.
+
+---
+
+## 2026-09-28 — WS21: the "..." was the ellipsis hiding the roll; the yesterday gate read a value not yet set
+
+Commits `72efbb0` (source+tests) -> `493a486` (artifacts). Live:
+`app.ac2dc64a.js` / `styles.f420a62b.css` / SW `minradio-53351f32` / build id
+`72efbb0`. 199 -> **201 tests**. Clean worktree verified before push.
+
+**The owner was right twice and I was wrong twice. Both corrections are recorded
+rather than smoothed over.**
+
+### 1. THE `♪ ...` WAS NOT MISSING DATA AND NOT A BROKEN ROLL
+
+I claimed the dots were the app writing an ellipsis character, and separately
+that a title which fits can never slide. **Both claims were wrong.** The owner
+supplied two facts that settle it:
+
+- **The same screenshot appeared BEFORE the roll existed.** At that time the
+  line was a plain static label, so the dots could only have come from CSS.
+- **P2 *Notturno* is a classical-music programme, not talk.** So the app
+  receives a long artist+song for that channel and the text was never absent.
+
+Measured on the live origin, P2, 01:55, from the real feed:
+
+```
+app parsed title  : "Piano Concerto no 26 in D major, K.537 'Coronation'"
+app parsed artist : "Christian Ihle Hadland (piano), Trondheim Symphony
+                    Orchestra, Pietari Inkinen (conductor)"
+line.textContent  : all 143 characters PRESENT
+
+line.clientWidth  : 252
+track.scrollWidth : 775    (+ 21 for the note = 796 of inline content)
+line.scrollWidth  : 785    -> exceeds the window, so the ellipsis fires
+```
+
+**The three dots were the line-level `text-overflow: ellipsis`, and the rolling
+track was sliding BEHIND it.** The text was there the entire time, under a
+decoration. `text-overflow: ellipsis` is correct for a static label and wrong
+for a rolling one: the track moves by `transform`, so the line's own inline
+content never shrinks and the decoration is permanent for the whole cycle.
+
+**Fix:** `.player-time-song .now-playing-line.rolling { text-overflow: clip; }`.
+A title that does NOT roll keeps the ellipsis — the only case where it adds
+anything. Verified with the real *Notturno* string: `textOverflow: clip`, track
+travelling `0 -> -240 -> -480px` landing exactly on the computed shift, and the
+owner confirming the roll is visible for the first time.
+
+**The generalisable lesson:** two of my assertions about this line were
+reasoned from the screenshot rather than measured, and the owner's two
+corrections were both *domain* facts I could not have derived — that the
+symptom predates the feature, and what the programme actually broadcasts.
+**When a symptom is a rendering artefact, the DOM already holds the answer;
+`line.textContent.length` would have settled it in one call.**
+
+### 2. THE PRE-MIDNIGHT GATE READ A VALUE THAT DID NOT EXIST YET
+
+WS18 decided whether to load yesterday's schedule from `cur.seekableStart`, so
+a channel with no DVR window would pay nothing. Measured on the live origin at
+01:55, **the gate never opens**:
+
+```
+transportKind   "direct"    (Chromium cannot load SR's HLS)
+seekableStart   null
+windowMs        0
+needsYesterday  false
+schedule held   begins 00:00 today -- 1.94 h of "today", the whole
+                previous evening missing
+```
+
+The gate is evaluated inside `resolveProgramTitle`, which `playTrack` calls
+**immediately**, before any `loadedmetadata`/`durationchange` has populated the
+seekable range. So the WS18 fix could not engage on the very case it was
+written for, and waiting would never have helped.
+
+**Fix:** the decision now comes from the **CLOCK**, which is always available.
+After local midnight the live edge is within the first hour of the day, so any
+window longer than an hour necessarily reaches into yesterday. The window
+trigger is KEPT as a second path. `fetchScheduleDay` is cached per
+`${channelId}:${dateStr}` for 10 minutes, so the cost is at most one extra
+request per channel per 10 minutes, and only between 00:00 and 01:00 local.
+
+**The gate is now RECORDED** and exposed as `schedule.gate` in the diagnostics
+snapshot, with `fetchedDays`. This failure was invisible from outside for a
+whole pass; if it recurs it is a one-glance check on a real device — if
+`fetchedDays` is `['today']` while `pastMidnight` is true, the gate is broken
+again.
+
+**STILL UNVERIFIED:** Chromium has no DVR transport, so the seek itself remains
+device-only. What is now provable is that yesterday's schedule is **requested
+and merged**, which was not true before.
+
+### 3. M1 WAS A NO-OP, AND IT GUARDED THE OWNER'S OWN SCREENSHOT
+
+The new ellipsis test sliced a `region()` whose END marker appears in the
+explanatory **comment** above the rule. Deleting the entire
+`.rolling { text-overflow: clip }` rule therefore left the suite **GREEN**. The
+defect the owner had just photographed had no working guard.
+
+Fixed by stripping comments before slicing; M1 re-confirmed red.
+
+**This is the same trap documented in this file, now in its third distinct
+form:**
+1. a comment as an END marker for a `stripComments()`ed region (WS9),
+2. a comment defeating a NEGATIVE match on raw source (WS20),
+3. **a comment satisfying a POSITIVE match for a rule that was deleted (WS21).**
+
+`region()` cannot tell prose from code. Every end marker must be a construct
+that only appears in code.
+
+| # | Mutation | Result |
+|---|---|---|
+| M1 | delete the whole `.rolling` clip rule (**the owner's exact bug**) | red (was a NO-OP) |
+| M2 | drop the clock trigger, back to window-only (the gate never opens) | red |
+| M3 | move the gate AFTER the second fetch (a late gate is not a gate) | red |
+| M4 | drop the gate recording (the next failure is undiagnosable) | red |
+
+`app.js` and `styles.css` md5-verified byte-identical after every one.
+
+### 4. A CORRECTION TO THE WS20 ENTRY
+
+WS20 recorded the pre-midnight gap as "not diagnosed", with the window gate
+listed as candidate (1). **It was candidate (1), and it was the whole cause.**
+The other candidates remain open for whatever is still wrong after this:
+
+- the `seeked` event may not fire for a native-HLS drag on iOS (the re-resolve
+  hangs off ONE `seeked` listener; the seek functions never call
+  `resolveMetadataForPosition`),
+- a same-day schedule arriving from another code path may still be unsorted,
+- SR may genuinely lack pre-midnight programme data for a channel.
+
+**The decisive next check is now cheap and available to the owner:** open
+`?diag=metadata` before midnight and again after, and read
+`schedule.gate.fetchedDays`. If it says `['today','yesterday']` and the title
+still does not change when scrubbing back, the cause is the `seeked` event, not
+the data.
