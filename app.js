@@ -927,6 +927,25 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // it runs through the SAME seq-guarded path as the periodic poll, so it
   // cannot race the channel switch or leak a stale response.
   const NOW_PLAYING_TIMELINE_MAX = 60;
+  // ---- WS24: debounce for the artwork lookup of a SEEK-RESOLVED song ----
+  // Not a throttle on the request itself: refreshNowPlayingArtwork() already
+  // dedupes by song through artworkCache, so this only collapses the rapid
+  // succession of songs a scrub-drag crosses. 400 ms is long enough that a
+  // drag across a minute of music issues ONE lookup, and short enough that a
+  // deliberate seek still feels immediate. The cover appears a fraction of a
+  // second after the playhead settles, which is the same shape as the live
+  // path (poll -> fetch -> paint) and cannot be made synchronous without
+  // blocking the UI on a network call.
+  const SEEK_ARTWORK_DEBOUNCE_MS = 400;
+  // Timer handle, module scope, so a second song change can cancel the first
+  // and a channel switch can clear a pending lookup (see stopNowPlayingPoll).
+  // Same pattern as nowPlayingTimer and audioEl._srUpd.
+  let seekArtworkTimer = null;
+  // The song the current `nowPlaying.artwork` cover was fetched FOR. WS24: the
+  // seek path needs this to know whether the cover on screen belongs to the
+  // song now being resolved. It is written ONLY by the seek path below and is
+  // read only there, so the live path's behaviour is untouched by it.
+  let seekArtworkSongKey = null;
   let nowPlayingTimer = null;
   let nowPlayingSeq = 0; // stale-response guard on channel switches
   let artworkSeq = 0; // invalidates stale artwork lookups on every source change
@@ -1008,6 +1027,15 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
 
   function stopNowPlayingPoll() {
     if (nowPlayingTimer) { clearTimeout(nowPlayingTimer); nowPlayingTimer = null; }
+    // WS24: a pending seek-artwork lookup belongs to the channel being left.
+    // Clearing it here means a channel switch cannot have the OLD channel's
+    // cover land in the new channel's panel. Same reason artworkSeq is bumped
+    // below, applied to the timer rather than to a response.
+    if (seekArtworkTimer) { clearTimeout(seekArtworkTimer); seekArtworkTimer = null; }
+    // WS24: the song->cover association is per channel, so it must not survive
+    // one. Otherwise the first song resolved on the new channel would compare
+    // equal to the old channel's last song and skip the clear.
+    seekArtworkSongKey = null;
     nowPlayingSeq += 1; // invalidate in-flight responses
     artworkSeq += 1; // an old live artwork response must not outlive the channel
     nowPlaying.song = null;
@@ -1420,6 +1448,75 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       nowPlaying._srPaintedTitle = title || null;
       nowPlaying._srPaintedArtist = artist || null;
       paintNowPlaying();
+      // ---- WS24: fetch the COVER for a song resolved by a seek ----
+      // The title and artist above resolve correctly for a historical song, but
+      // the cover did not: `nowPlaying.artwork` is only ever written by
+      // refreshNowPlayingArtwork(), and that function has exactly two call
+      // sites — fetchNowPlaying() (the 45 s live poll) and
+      // updateEpisodeTrack() (episodes). The seek path called neither, so a
+      // seek-resolved song inherited whatever the LAST POLLED song's cover was.
+      //
+      // Measured before this change, by simulating the panel's own expression
+      // (`const songArtwork = isEpisode ? ... : nowPlaying.artwork`):
+      //   at the live edge, song A on air  -> title A, cover A   (correct)
+      //   scrub back into song B          -> title B, cover A   (MISMATCHED)
+      // The owner reported "a correct song and artist, no cover" — the same
+      // defect in the case where the on-air song had no resolved cover, i.e.
+      // `nowPlaying.artwork === null`, which shows the ♪ placeholder instead.
+      // So the symptom is one bug with two faces: a missing cover when the
+      // previous song had none, and a WRONG cover when it had one. The second
+      // is worse, and it is why the fix must never leave the old cover in place.
+      //
+      // ONE implementation, ONE cache: the same refreshNowPlayingArtwork() and
+      // the same artworkCache the live path uses. The `target === nowPlaying`
+      // guard inside it keeps the live/episode fields apart, so this cannot
+      // write into `episodeArtwork` and an episode's cover cannot appear here.
+      //
+      // BOUNDED, and deliberately: refreshNowPlayingArtwork() is already a
+      // network request per DISTINCT song, deduped by `artworkCache` for the
+      // session. But a user dragging the scrubber across an hour of history
+      // would cross many songs in a second, so an undebounced call would fire
+      // one request per boundary crossed. `seekArtworkTimer` collapses that
+      // into a single lookup for wherever the playhead finally settles, and the
+      // artworkSeq guard inside the function discards any response that a
+      // later song has already superseded. The timer is cleared by
+      // stopNowPlayingPoll(), so a channel switch cannot leave it pending.
+      //
+      // NOT added to any timeupdate handler: those run several times a second.
+      if (hit && hit.title && hit.artist) {
+        if (seekArtworkTimer) clearTimeout(seekArtworkTimer);
+        const key = `${hit.artist}|${hit.title}`.toLowerCase();
+        // The cover currently on screen belongs to whatever the last POLL
+        // resolved, which is a DIFFERENT song from this one. Showing it here
+        // would pair song B's title with song A's cover — the exact symptom,
+        // just narrower than before. So the moment the song CHANGES, the stale
+        // cover is cleared and the panel repaints through the same
+        // refreshNowPlayingArtwork() used for the live path (its no-song branch
+        // is the existing, tested way to clear this field).
+        //
+        // Clearing is safe at any time: the timer below re-fetches, and
+        // refreshNowPlayingArtwork() is a no-op on failure that leaves the
+        // field null. The worst case is the ♪ placeholder for the ~400 ms
+        // before the cover arrives, which is the correct, honest intermediate
+        // state. A wrong cover is never shown.
+        //
+        // Guarded on the key, so a re-resolve of the SAME song (a second seek
+        // landing inside it) does not clear a cover that is already correct —
+        // that is the common case when scrubbing inside one long song, and
+        // blanking it there would be a visible regression of its own.
+        if (seekArtworkSongKey !== key) {
+          seekArtworkSongKey = key;
+          if (nowPlaying.artwork) refreshNowPlayingArtwork(null, nowPlaying);
+        }
+        seekArtworkTimer = setTimeout(() => {
+          seekArtworkTimer = null;
+          // Re-check at fire time: the playhead may have moved on, and the
+          // song resolved then may be a different one (or none).
+          const now = pickByPosition(nowPlaying.timeline, playheadWallMs());
+          if (!now || !now.title || !now.artist) return;
+          refreshNowPlayingArtwork(now, nowPlaying);
+        }, SEEK_ARTWORK_DEBOUNCE_MS);
+      }
     }
   }
 

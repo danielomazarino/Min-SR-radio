@@ -23,6 +23,21 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const APP_JS = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
 const STYLES_CSS = fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8');
 
+// Comment-stripped app.js, at MODULE scope so every test can use it.
+//
+// WHY THIS EXISTS, and why it is defined once here rather than inside the test
+// that first needed it: app.js is heavily commented, and several of those
+// comments legitimately NAME identifiers an assertion is trying to prove the
+// CODE does not use. A raw-text scan therefore trips over its own
+// documentation. This is the "a pattern containing a comment can never match a
+// stripComments()ed slice" trap, in reverse, and it is now the fourth distinct
+// instance in this repo (see the region() note in metadata-diag.test.mjs).
+//
+// It is deliberately a SIMPLE strip: a comment naming a pattern must not
+// satisfy a negative match. It is not string-aware, which is safe here only
+// because the assertions below target identifiers, not URL substrings.
+const CODE = APP_JS.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+
 // ---- BUG A: mode pill shows minus-time ----
 
 function dvrOffsetLabel(secondsBehind) {
@@ -209,20 +224,87 @@ test('episode expanded artwork never borrows a live channel song artwork', () =>
   // Comments are stripped first: the WS12 comment NAMES
   // refreshNowPlayingArtwork() while explaining why it is unreachable, and a
   // raw-text scan would trip over its own documentation.
-  const code = APP_JS.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  // WS24: the comment-stripped source is now the module-scope CODE, defined
+  // once at the top of this file so the WS24 tests below can share it.
+  const code = CODE;
   // WS13 Part B: TWO call sites plus the definition -- the live poll and the
   // episode track-change path. Both must be real, or the feature is dead code.
   // The single-mechanism rule still holds: the same function, the same
   // artworkCache, the same artworkSeq guard, no second lookup implementation.
+  //
+  // ---- WS24: TWO further call sites were added, and the count moved 3 -> 5 ----
+  // The seek path (resolveMetadataForPosition) now asks for the cover of a
+  // song resolved by scrubbing back. Before WS24 the seek path called neither,
+  // so a historical song inherited the last POLLED song's cover -- measured:
+  // title B with cover A, or no cover at all when the previous song had none.
+  //
+  // It calls TWICE, and both are deliberate:
+  //   - `refreshNowPlayingArtwork(null, nowPlaying)` to CLEAR the previous
+  //     song's cover the moment the song changes, so a wrong cover is never
+  //     shown next to a new title. This is the function's own existing
+  //     no-song branch, not a new mechanism.
+  //   - `refreshNowPlayingArtwork(now, nowPlaying)` inside the debounce, to
+  //     fetch the cover for wherever the playhead settled.
+  //
+  // The count is restated rather than loosened. What this test actually
+  // protects is the SINGLE-MECHANISM rule -- one implementation, one cache,
+  // one seq guard -- and every one of those assertions is unchanged and still
+  // exact. Four callers of ONE shared function is not four mechanisms; a
+  // second implementation, cache or guard would be, and each is still
+  // counted at exactly 1.
+  //
+  // The sites are additionally asserted BY NAME, because a count alone cannot
+  // say whether a new caller is the seek path or somewhere unsafe.
   const calls = code.split('refreshNowPlayingArtwork(').length - 1;
-  assert.equal(calls, 3, 'two call sites (live + episode) plus the definition');
+  assert.equal(calls, 5,
+    'four call sites (live, episode, seek-clear, seek-fetch) plus the definition');
   assert.equal((code.match(/async function refreshNowPlayingArtwork/g) || []).length, 1,
-    'exactly ONE implementation -- the episode path must reuse it, not clone it');
-  // Only ONE cache and ONE seq guard, or the two paths could disagree.
+    'exactly ONE implementation -- every path must reuse it, not clone it');
+  // Only ONE cache and ONE seq guard, or the paths could disagree.
   assert.equal((code.match(/const artworkCache = new Map/g) || []).length, 1,
     'exactly one artwork cache');
   assert.equal((code.match(/const seq = \+\+artworkSeq/g) || []).length, 1,
     'exactly one artworkSeq guard, inside the shared function');
+
+  // ---- WS24: the third caller is the seek path, and it is BOUNDED ----
+  // A network request per distinct song is already deduped by artworkCache,
+  // but a scrub-drag across an hour would cross many songs in a second. So
+  // the seek caller must be debounced, and the timer must be cancellable.
+  const RESOLVE = (() => {
+    const a = code.indexOf('function resolveMetadataForPosition(');
+    assert.notEqual(a, -1, 'resolveMetadataForPosition must exist');
+    return code.slice(a, code.indexOf('async function resolveProgramTitle(', a));
+  })();
+  assert.ok(/refreshNowPlayingArtwork\(/.test(RESOLVE),
+    'the seek path must request artwork for the song it resolved');
+  assert.ok(/setTimeout\(/.test(RESOLVE),
+    'the seek artwork lookup must be debounced, or a scrub-drag fires one request per boundary');
+  assert.ok(/clearTimeout\(seekArtworkTimer\)/.test(RESOLVE),
+    'a newer song must cancel the pending lookup, or responses arrive out of order');
+  assert.ok(/SEEK_ARTWORK_DEBOUNCE_MS/.test(RESOLVE),
+    'the debounce interval must be the named constant, not a magic number');
+  // The debounce must NOT live in a timeupdate handler: those run several
+  // times a second, and a network request there would be a defect.
+  const TIMEUPDATE = (() => {
+    const a = code.indexOf("audioEl.addEventListener('timeupdate'");
+    assert.notEqual(a, -1, 'the timeupdate registration must exist');
+    return code.slice(a, code.indexOf('window.__srSeekable', a));
+  })();
+  assert.ok(!/refreshNowPlayingArtwork/.test(TIMEUPDATE),
+    'no artwork lookup may be added to a timeupdate handler');
+  assert.ok(!/seekArtworkTimer/.test(TIMEUPDATE),
+    'the seek artwork timer must not be driven from timeupdate');
+  // And a channel switch must clear the pending lookup, or the OLD channel's
+  // cover can land in the NEW channel's panel.
+  const STOP = (() => {
+    const a = code.indexOf('function stopNowPlayingPoll(');
+    assert.notEqual(a, -1, 'stopNowPlayingPoll must exist');
+    return code.slice(a, code.indexOf('async function fetchNowPlaying(', a));
+  })();
+  assert.ok(/clearTimeout\(seekArtworkTimer\)/.test(STOP),
+    'a channel switch must clear the pending seek-artwork lookup');
+  assert.ok(/seekArtworkSongKey = null/.test(STOP),
+    'the song->cover association is per channel and must not survive a switch');
   // The episode call site must pass a real song and the shared target, and must
   // be guarded on having an artist -- an empty artist is a garbage query.
   assert.ok(/refreshNowPlayingArtwork\(next, nowPlaying\)/.test(code),
@@ -358,4 +440,205 @@ test('BUG 2: links use the www host (non-www 403s, verified)', () => {
   const item = { title: 'Jordens gränser överskrids alltmer' };
   assert.ok(articleLinkFor(item).startsWith('https://www.sverigesradio.se/'),
     'must use www.sverigesradio.se (non-www is Akamai-403)');
+});
+
+// ===================================================================
+// WS24 — artwork for a song found by scrubbing back.
+//
+// The defect: the title and artist for a historical song resolved correctly,
+// but the cover did not. `nowPlaying.artwork` is written only by
+// refreshNowPlayingArtwork(), whose callers were the live poll and the episode
+// path. The seek path called neither, so a seek-resolved song inherited
+// whatever the LAST POLLED song's cover was.
+//
+// Measured against the panel's own expression before the change:
+//   live edge, song A on air -> title A, cover A   (correct)
+//   scrub back into song B   -> title B, cover A   (MISMATCHED)
+// and with no cover resolved for song A, the ♪ placeholder instead — which is
+// exactly what the owner reported.
+//
+// One symptom, two faces: a MISSING cover, and a WRONG cover. The second is
+// worse, and it is why the fix must never leave the old cover in place.
+// ===================================================================
+
+test('WS24: the seek path requests artwork for the song it resolved', () => {
+  const RESOLVE = (() => {
+    const a = CODE.indexOf('function resolveMetadataForPosition(');
+    assert.notEqual(a, -1, 'resolveMetadataForPosition must exist');
+    return CODE.slice(a, CODE.indexOf('async function resolveProgramTitle(', a));
+  })();
+  assert.ok(/refreshNowPlayingArtwork\(/.test(RESOLVE),
+    'the seek path must request artwork, or a historical song never gets a cover');
+  // It must pass `nowPlaying` as the target, which is how the shared function
+  // decides the LIVE field rather than the episode field. Getting this wrong
+  // would write a radio cover into the episode's slot.
+  const calls = RESOLVE.match(/refreshNowPlayingArtwork\([^)]*\)/g) || [];
+  assert.ok(calls.length >= 1, 'the seek path must call the shared lookup');
+  calls.forEach((c) => {
+    assert.ok(/nowPlaying\s*\)?\s*$/.test(c) || /, nowPlaying\)/.test(c),
+      `every seek-path call must target nowPlaying (the live field): ${c}`);
+  });
+  // And the song it looks up must be re-resolved at fire time, not captured
+  // from an earlier frame: the playhead may have moved on while the debounce
+  // was pending, and a stale capture would fetch the wrong song's cover.
+  assert.ok(/pickByPosition\(nowPlaying\.timeline, playheadWallMs\(\)\)/.test(RESOLVE),
+    'the debounced lookup must re-resolve the song at fire time');
+  assert.ok(/if \(!now \|\| !now\.title \|\| !now\.artist\) return;/.test(RESOLVE),
+    'the debounced lookup must bail if the playhead is no longer inside a song');
+});
+
+test('WS24: a stale cover is CLEARED when the song changes, never left behind', () => {
+  // This is the half that prevents the WORSE symptom. Between the seek and the
+  // cover arriving, the panel would otherwise pair song B's title with song A's
+  // cover. The clear uses the shared function's own no-song branch, so it is
+  // not a second mechanism.
+  const RESOLVE = (() => {
+    const a = CODE.indexOf('function resolveMetadataForPosition(');
+    return CODE.slice(a, CODE.indexOf('async function resolveProgramTitle(', a));
+  })();
+  assert.ok(/refreshNowPlayingArtwork\(null, nowPlaying\)/.test(RESOLVE),
+    'the previous song\'s cover must be cleared through the shared function');
+  // Guarded on the song key, so scrubbing WITHIN one long song does not blank
+  // a cover that is already correct. Unguarded, this would be a visible
+  // regression of its own on every re-resolve.
+  assert.ok(/seekArtworkSongKey\s*!==\s*key/.test(RESOLVE),
+    'the clear must be guarded on the song having actually changed');
+  assert.ok(/seekArtworkSongKey\s*=\s*key/.test(RESOLVE),
+    'the current song key must be recorded when the clear happens');
+  // Guarded on there being something to clear: calling the function when the
+  // field is already null is a wasted repaint on every re-resolve.
+  assert.ok(/if \(nowPlaying\.artwork\)/.test(RESOLVE),
+    'the clear must only run when a cover is actually present');
+});
+
+test('WS24: the seek artwork lookup is BOUNDED', () => {
+  // artworkCache already dedupes by song, so this is not a throttle on the
+  // request itself — it collapses the many songs a scrub-drag crosses into one
+  // lookup for wherever the playhead settles.
+  const RESOLVE = (() => {
+    const a = CODE.indexOf('function resolveMetadataForPosition(');
+    return CODE.slice(a, CODE.indexOf('async function resolveProgramTitle(', a));
+  })();
+  assert.ok(/setTimeout\(/.test(RESOLVE), 'the lookup must be debounced');
+  assert.ok(/clearTimeout\(seekArtworkTimer\)/.test(RESOLVE),
+    'a newer song must cancel the pending lookup');
+  assert.ok(/SEEK_ARTWORK_DEBOUNCE_MS/.test(RESOLVE),
+    'the interval must be the named constant');
+  // The constant must be a real, finite, positive number and the timer handle
+  // must exist beside the other module-scope timer handles.
+  const m = /const SEEK_ARTWORK_DEBOUNCE_MS = (\d+);/.exec(APP_JS);
+  assert.ok(m, 'SEEK_ARTWORK_DEBOUNCE_MS must be a plain integer literal');
+  assert.ok(Number(m[1]) >= 100, 'the debounce must be long enough to collapse a drag');
+  assert.ok(Number(m[1]) <= 2000, 'and short enough that a deliberate seek still feels immediate');
+  assert.ok(/let seekArtworkTimer = null;/.test(APP_JS),
+    'the timer handle must be module scope, like nowPlayingTimer');
+  // The constant must be USED, not merely declared. M12 added a second literal
+  // holding the same number and left the call site untouched, and the suite
+  // stayed GREEN — pinning the declaration proves nothing about the behaviour.
+  // What matters is that the setTimeout in the seek path takes the constant,
+  // so retuning the debounce is a one-line change and cannot be done by
+  // editing a number at the call site.
+  //
+  // Counting is done by OCCURRENCE, not by matching balanced parentheses: a
+  // regex like /setTimeout\([^)]*\)/ stops at the first `)` inside the arrow
+  // body, so it saw 0 timers where there is 1. (My own first attempt failed
+  // for that reason — a test that cannot count the thing it guards.)
+  const timerCount = (RESOLVE.match(/setTimeout\(/g) || []).length;
+  assert.ok(timerCount >= 1, 'the seek path must have a debounced timer');
+  const constUses = (RESOLVE.match(/SEEK_ARTWORK_DEBOUNCE_MS/g) || []).length;
+  assert.equal(constUses, timerCount,
+    'EVERY setTimeout in the seek path must be bounded by SEEK_ARTWORK_DEBOUNCE_MS, '
+    + 'not a literal — a magic number at the call site cannot be retuned safely');
+  assert.ok(/setTimeout\([\s\S]*?,\s*SEEK_ARTWORK_DEBOUNCE_MS\s*\)/.test(RESOLVE),
+    'the debounce interval must be passed as the trailing constant argument');
+
+  // A channel switch must clear it AND the song->cover association. Without
+  // the second, the first song resolved on the new channel would compare equal
+  // to the old channel's last song and skip the clear, landing a foreign cover
+  // in the new channel's panel.
+  const STOP = (() => {
+    const a = CODE.indexOf('function stopNowPlayingPoll(');
+    return CODE.slice(a, CODE.indexOf('async function fetchNowPlaying(', a));
+  })();
+  assert.ok(/clearTimeout\(seekArtworkTimer\)/.test(STOP),
+    'a channel switch must clear the pending lookup');
+  assert.ok(/seekArtworkSongKey = null/.test(STOP),
+    'the song->cover association is per channel and must not survive a switch');
+});
+
+test('WS24: the LIVE path behaviour is UNCHANGED', () => {
+  // The owner is about to test the live path against a known-good build, so any
+  // difference there reads as a regression from this deploy. These assert the
+  // live path's own code, not merely that "something still works".
+  const FETCH = (() => {
+    const a = CODE.indexOf('async function fetchNowPlaying(');
+    assert.notEqual(a, -1, 'fetchNowPlaying must exist');
+    return CODE.slice(a, CODE.indexOf('function scheduleNowPlayingPoll(', a));
+  })();
+  // The live poll still calls the shared lookup with the on-air song, and
+  // nothing in it was rewired.
+  assert.ok(/refreshNowPlayingArtwork\(nowPlaying\.song, nowPlaying\)/.test(FETCH),
+    'the live poll must still request artwork for the ON-AIR song');
+  // It must still be unconditional within the poll, i.e. not gated on a
+  // position or a debounce of WS24's making.
+  assert.ok(!/SEEK_ARTWORK_DEBOUNCE_MS|seekArtworkSongKey|seekArtworkTimer/.test(FETCH),
+    'the live poll must not be gated on any WS24 seek state');
+  // The poll interval is untouched — a debounce here would change how often
+  // live metadata refreshes.
+  assert.ok(APP_JS.includes('const NOW_PLAYING_INTERVAL_MS = 45000;'),
+    'the live poll interval must be byte-identical');
+  // The panel's live arm still reads the live field, and the episode arm still
+  // must not. (The existing episode test covers the arms; this pins that WS24
+  // did not move them.)
+  const EXPAND = APP_JS.slice(APP_JS.indexOf('const renderSongView = () => {'));
+  const decl = /const songArtwork = isEpisode[\s\S]*?;/.exec(EXPAND);
+  assert.ok(decl, 'songArtwork must be a single readable declaration');
+  const arms = /isEpisode\s*\?\s*\(([^)]*)\)\s*:\s*([\s\S]*?);/.exec(decl[0]);
+  assert.ok(arms, 'songArtwork must be a readable isEpisode ternary');
+  assert.ok(!/nowPlaying\.artwork/.test(arms[1]),
+    "the episode arm must still NOT read the live channel's artwork field");
+  assert.ok(/nowPlaying\.artwork/.test(arms[2]),
+    'the live arm must still read nowPlaying.artwork');
+  // The live/episode field split inside the shared function is unchanged: the
+  // guard is what stops the seek path writing into the episode slot.
+  const FN = (() => {
+    const a = CODE.indexOf('async function refreshNowPlayingArtwork(');
+    return CODE.slice(a, CODE.indexOf('function paintNowPlaying(', a));
+  })();
+  assert.ok(/const isLive = target === nowPlaying;/.test(FN),
+    'the live/episode guard must be unchanged');
+  assert.ok(/if \(isLive\) \{ nowPlaying\.artwork = big; paintNowPlaying\(\); \}/.test(FN),
+    'the live write path must be byte-identical');
+  assert.ok(/else nowPlaying\.episodeArtwork = big;/.test(FN),
+    'the episode write path must be byte-identical');
+  // The cache is still keyed by artist|title, so a cover fetched on the seek
+  // path is REUSED by the live path instead of being a second request.
+  assert.ok(/const key = `\$\{song\.artist\}\|\$\{song\.title\}`\.toLowerCase\(\);/.test(FN),
+    'the cache key must be unchanged, so seek and live share one cache');
+});
+
+test('WS24: nothing new was added to a timeupdate handler, and the recorder stays read-only', () => {
+  // timeupdate runs several times a second; a network request there is a defect.
+  const TIMEUPDATE = (() => {
+    const a = CODE.indexOf("audioEl.addEventListener('timeupdate'");
+    assert.notEqual(a, -1, 'the timeupdate registration must exist');
+    return CODE.slice(a, CODE.indexOf('window.__srSeekable', a));
+  })();
+  assert.ok(!/refreshNowPlayingArtwork/.test(TIMEUPDATE),
+    'no artwork lookup may be added to timeupdate');
+  assert.ok(!/seekArtwork/.test(TIMEUPDATE),
+    'no WS24 seek-artwork state may be driven from timeupdate');
+  // Read-only with respect to state.current: the seek path may READ the track
+  // and may write module-scope metadata, but must not assign the track object.
+  const RESOLVE = (() => {
+    const a = CODE.indexOf('function resolveMetadataForPosition(');
+    return CODE.slice(a, CODE.indexOf('async function resolveProgramTitle(', a));
+  })();
+  assert.ok(!/state\.current\s*=/.test(RESOLVE),
+    'the seek path must not assign state.current');
+  assert.ok(!/state\.current\.\w+\s*=(?!=)/.test(RESOLVE),
+    'the seek path must not write any property of state.current');
+  // The WS23 read-only contract test must still be satisfied by the new state.
+  assert.ok(!/nowPlaying\.artwork\s*=/.test(RESOLVE),
+    'the seek path must not assign artwork directly; only the shared function may');
 });
