@@ -59,9 +59,13 @@ Three, all called correctly by the owner, all in WS19:
   No owner requirement exists either way. See the open-questions section.
 - **Global podcast search** — see the investigation-only brief below. Not
   started.
-- **P3 Soul's second-to-last episode** has never been played; SR's
-  episode-listing endpoints returned 500 throughout, so only the latest
-  episode was reachable.
+- **Tunnel/buffer stopping the stream (E1b)** — promoted out of E1 to its own
+  top-level entry on 2026-09-28 after the owner asked where it was. Still
+  entirely uninstrumented.
+
+**P3 Soul's second-to-last episode is RESOLVED** (2026-09-28) — the earlier
+claim in this file that its endpoints "returned 500 throughout" is STALE and was
+wrong: the 500s are gone, 10 episodes load, and the second-to-last plays.
 
 ### Every undone task in the log, ≤50 words each
 
@@ -88,6 +92,82 @@ attributed an instruction to the owner.
    approach is proven to work in this static PWA.
 4. **Lock-screen button opens the wrong PWA** (regression, 2026-09-24). Never
    root-caused. Identify which installed app owns the active MediaSession.
+4c. **Earlier played songs not showing on live radio (2026-09-28) — owner
+   reports a REGRESSION.** Owner: *"only music played live on radio channels
+   show, no music played earlier is showing up. likely a regression bug as we
+   have fixed the before."* **Investigated, NOT confirmed as a regression — see
+   the finding below. No code changed.**
+
+### Finding 4c — why earlier songs can go missing (investigated 2026-09-28)
+
+**The code path is intact and did NOT regress.** Verified by reading the
+current source and by diffing against WS9 (`6fa2255`, the commit that introduced
+the timeline):
+
+- `keep(pl.previoussong)` / `keep(pl.song)` / `keep(pl.nextsong)` are all still
+  present (app.js:1028) and are asserted by tests. The timeline accumulates and
+  is deduped by start time, capped at `NOW_PLAYING_TIMELINE_MAX = 60`.
+- The timeline is only cleared by `stopNowPlayingPoll()` — on a channel switch
+  or on closing the player. Measured live: length stayed at 3 across six polls
+  and at 2 on another channel, i.e. it is accumulating correctly, not resetting.
+- The `seeked` handler still triggers a re-poll (`app.js:2336`), so seeking is
+  supposed to refresh the ends of the range.
+
+**The real constraint is the DATA SOURCE, and it is structural — not a bug we
+introduced.** Per the discovery rule I enumerated candidate endpoints rather
+than accepting the first 404/500:
+
+| endpoint | result |
+|---|---|
+| `playlists/rightnow?channelid=163` | **200** — has `previoussong`/`song`/`nextsong` |
+| `playlists/rightnow/previoussongs` | 500 |
+| `playlists/history` | 500 |
+| `channels/163/playlist` | 500 |
+| `playlists?channelid=163` | 500 |
+| `songhistory` | 500 |
+
+So `rightnow` is the only working shape, and critically:
+
+1. **`previoussong` is a SINGLE object, not an array** (measured
+   `Array.isArray === false`). SR exposes exactly one song behind the current
+   one. A deeper history is not available from this endpoint.
+2. **`rightnow` is TIME-AGNOSTIC.** It always describes *now*. There is no
+   time parameter, so a seek-back re-poll cannot ask "what played at 21:40" —
+   it re-fetches the window around the present and merges it. This is why the
+   re-poll does not reliably fill in older songs on a long seek.
+
+**Consequence:** the timeline can only ever hold songs that were *observed
+during this listening session*, plus at most one song behind whatever is on air
+now. Songs that finished before the app was opened, or before a long seek
+target, are genuinely not retrievable from this API. `NOW_PLAYING_TIMELINE_MAX`
+(60) is a cap, not the limiting factor — a session of a few minutes realistically
+yields only a handful of entries.
+
+**This is therefore NOT the regression the owner remembers.** Before WS9 the
+app used `nowPlaying.song` (whatever is on air) and NEVER showed earlier songs
+at all; WS9 strictly *added* timeline-based history. The behaviour the owner
+remembers — earlier songs showing — matches WS9-era behaviour, and that
+mechanism is still in place and still accumulating.
+
+**What I could NOT verify, and why:** this needs a live DVR seek, and Chromium
+cannot play SR's DVR-capable HLS here (P2 fell back to `mp3 96`,
+`dvrAvailable: null`, `transportKind: "direct"`). So I could not reproduce the
+owner's exact scenario. **If the owner can reproduce it on the iPhone**, the
+diagnostic to read is the `songTimelineLength` field in `?diag=metadata` at the
+moment the song is missing: if it is ≥2 but the line is empty, the selector is
+at fault; if it is 1 or 0, the timeline genuinely has no entry for that
+position. That single reading separates the two causes.
+
+**Also corrected:** the diagnostics `note` field still claimed *"previoussong/
+nextsong are captured in rawRightNow only; the app parses playlist.song
+exclusively and nothing else reads them."* That has been **false since WS9** —
+`keep(pl.previoussong)` reads them. Left unchanged here because the field is
+diagnostic-only and cosmetic, but it should not be trusted as documentation.
+
+4b. **Stream stops in a tunnel / buffer too small (E1b).** A colleague's report:
+   the stream halted before the train cleared a long tunnel while SR's own iOS
+   app kept playing. Second-hand, never instrumented, cannot be reproduced in
+   this session. Do not change buffer thresholds on the comparison alone.
 5. ~~**P1→P2 channel-name mismatch and P2 metadata/artwork.**~~ **RESOLVED
    (owner, 2026-09-28).** Verified in the browser: P1 header `Plånboken` → P2
    header `Notturno`, the programme following the channel with no stale P1 data,
@@ -501,14 +581,35 @@ för aktuell plattform faktiskt innehåller AAC 320, och om bandbreddsanpassning
 med ett nät där FLAC fungerar. Förvänta inte att en aktiv FLAC-ström automatiskt
 byter kandidat förrän beteendet är verifierat och en explicit policy beslutats.
 
-**Ny rapport om buffert/robusthet (2026-09-24):** en kollega som reste med
-tåg genom en lång tunnel upplevde att Min Radio-strömmen stannade innan tåget
-kommit igenom tunneln, medan Sveriges Radios officiella iOS-app fortsatte spela
-i samma tunnel. Observationen är andrahandsrapporterad och jämförelsen är ännu
-inte instrumenterad. Utred separat från formatfallbacken: vilken kanal/codec/
-transport och nät som användes; om ljudet stannade eller bara tystnade tillfälligt;
-vad `currentTime`, `readyState`, `buffered`, `waiting`/`stalled`/`playing` och
-`error` gjorde; samt om SR-appen hade en större buffert eller annan transport.
+#### E1b — Buffert/robusthet: strömmen stannar i tunnel (ÖPPEN — ej undersökt, prioriterad 2026-09-28)
+
+> **Detta är en SEPARAT, EGEN bugg — inte en del av formatfallbacken ovan.**
+> Ärendet var tidigare begravt som ett stycke inuti E1 och riskerade därför att
+> försvinna ur lägesbilden. Ägaren lyfte det igen 2026-09-28 med frågan "var
+> hittar jag problemet med att tappa kopplingen i tunneln". Det är ett av de
+> få problemen i den här loggen som är **helt oinstrumenterat och helt
+> overifierat**.
+
+**Rapporterat (2026-09-24, andrahandsrapporterat):** en kollega som reste med
+tåg genom en lång tunnel upplevde att Min Radio-strömmen **stannade innan tåget
+kommit igenom tunneln**, medan Sveriges Radios officiella iOS-app fortsatte
+spela i samma tunnel. Jämförelsen är inte instrumenterad.
+
+**Varför detta inte kan avgöras från koden:** det är en nätverks-/buffertfråga
+under ett specikt förhållande. Chromium i den här sessionen kan inte
+reproducera en tunnel, och asfälten är inte instrumenterbart här. Att ändra
+buffertrösklar "för att det känns rätt" vore ett antagande, inte en fix.
+
+**Att utreda (kräver mätning på plats, inte i den här sessionen):**
+- vilken kanal/codec/transport och vilket nät som användes;
+- om ljudet **stannade** eller bara tystnade tillfälligt;
+- vad `currentTime`, `readyState`, `buffered`, `waiting`/`stalled`/`playing` och
+  `error` gjorde under händelsen;
+- samt om SR-appen hade en större buffert eller annan transport.
+
+**Beslutregel:** ändra INTE buffertrösklar på grundval av jämförelsen ensam.
+Bedöm först om lösningen är större förbuffring, återanslutning,
+HLS-/transportval eller kvalitetsfallback.
 Reproducera gärna samma sträcka med båda apparna, samma kanal/enhet och nät,
 notera stopptid och återhämtning. Bedöm först därefter om lösningen är större
 förbuffring, återanslutning, HLS-/transportval eller kvalitetsfallback. Ändra
