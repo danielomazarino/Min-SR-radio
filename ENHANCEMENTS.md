@@ -11,6 +11,15 @@ tests**. Live: `app.ac2dc64a.js` / `styles.f420a62b.css` / SW `minradio-53351f32
 build id `72efbb0`. **No source code changed today after WS21** — everything
 since was investigation and documentation, so the live bundle is unchanged.
 
+> **SUPERSEDED BY THE DAY SESSION (later on 2026-09-28):** `main` is now
+> `acceadd` and the newest entry is **"2026-09-28 (day session) — tester
+> feedback triaged, tunnel report DEFERRED, two new code-level candidates
+> found"** at the **bottom** of this file. It adds two new owner-reported
+> defects (earbud pause cannot resume; tablå card scroll lock) and a proposed
+> priority order, and it **defers** the tunnel report (E1b / item 4b) because
+> the tester had no buffering issue on 2026-09-28 morning. **No code changed in
+> the day session**; 201/201 tests re-verified at its start.
+
 **The three cheapest decisive checks, all needing the owner's iPhone** (each one
 reading settles a question that has been open for a workstream):
 
@@ -3578,3 +3587,179 @@ The other candidates remain open for whatever is still wrong after this:
 `schedule.gate.fetchedDays`. If it says `['today','yesterday']` and the title
 still does not change when scrubbing back, the cause is the `seeked` event, not
 the data.
+
+---
+
+## 2026-09-28 (day session) — tester feedback triaged, tunnel report DEFERRED, two new code-level candidates found
+
+**Session start:** `main` = `acceadd`, clean tree, pushed, **201/201 tests** (verified by
+running `npm test` at session start, not read from the log). No source changed yet.
+Manifest `id` = `https://danielomazarino.github.io/Min-SR-radio/` — stable, so the
+wrong-PWA item (4) is **not** a manifest-id drift issue.
+
+### The tunnel/buffer report (E1b, item 4b) is DEFERRED at the owner's instruction
+
+Owner, 2026-09-28 morning: **the tester had no tunnel buffering issue this morning.**
+⇒ E1b is **not reproducible on demand** and has no live evidence. It stays open as a
+second-hand report but is **dropped from the working queue.** Nothing is lost: the
+E1b section already says *"do not change buffer thresholds on the comparison alone"*
+and lists what to capture if it ever recurs. Re-open only if it is reported again
+**with** the timestamps.
+
+**Do NOT re-add it to the priority list on the strength of the old second-hand note.**
+E1b's own decision rule already anticipated this: an uninstrumented, unreproduced
+network report is not an engineering task yet.
+
+### Tester feedback 2026-09-28 — what is a new defect vs. a usage question
+
+Two of the tester's four points are **new owner-reported defects**. Two are
+**questions we can answer from the code right now.**
+
+| # | Report | Status | Evidence |
+|---|---|---|---|
+| A | scrolling inside an app's scrollable area can lock the table | **NEW, code-level candidate found** | `enableSwipeToClose` + `.card-body` — see below |
+| B | pausing via the earbuds cannot resume without restarting the app | **NEW, code-level candidate found** | MediaSession handlers, see below |
+| C | what did you mean by "web browsers in MD Studio"? | **answerable now** | MD Studio is a third-party podcast app; SR Play/Appen has no browser |
+| D | the weather data would have been fun | **answerable now** | no weather feature exists in the repo at all |
+| 4b | stream stops in a tunnel | **DEFERRED** | not reproducible 2026-09-28 morning |
+
+#### A — "scrolling in an app's scrollable area can lock the table" (NEW, unfixed)
+
+**This is the exact same defect class as ROADMAP BUG 1, and the tablå card is the
+one surface that regressed it.** The fix for BUG 1 scoped swipe-to-close to
+`.sheet-grab-zone` because *"never swipe-logic on a scrollable surface."* That
+scoping was applied to `openSheet` (line 4789) — but **`openContextCard` (line
+4252) was never given the same treatment and still binds the whole sheet**:
+
+```js
+// openContextCard — app.js:4252
+enableSwipeToClose(overlay, sheet, close, { axis: 'y' });
+
+// openSheet — app.js:4789, the BUG 1 fix
+const swipeSurface = sheet.querySelector('.sheet-grab-zone');
+enableSwipeToClose(overlay, swipeSurface, () => { closeSheet(); onDone?.(); }, { axis: 'y' });
+```
+
+`openContextCard` builds the **tablå card** (the `Tablå — igår + idag` long-press
+card on every channel) and the **podcast episode card**. The tablå body is a long
+scrollable `.card-list` (yesterday + today). Scrolling it runs the drag logic,
+which sets `transform` on the sheet mid-scroll — the BUG 1 mechanism, on the one
+surface BUG 1's own fix was written for and never reached.
+
+**Aggravating factor, found while reading it:** `enableSwipeToClose` sets
+`panel.style.transition = 'none'` on `touchstart` and only reassigns it in
+`finish()` on `touchend`/`touchcancel`. If the browser claims the gesture as a
+native scroll, `touchmove` streams many events and the intent test
+(`Math.abs(ady) > Math.abs(adx)`) resolves to `'y'`, so the transform is written
+and `touchend` never restores it cleanly. `.card-body` has **no** `touch-action`
+and **no** `overscroll-behavior` (verified: `styles.css` sets those only on
+`.sheet` and `.sheet-grab-zone`). Two of the three properties that make BUG 1's
+fix work are simply absent on this surface.
+
+**NOT YET CONFIRMED.** This is a strong code-level reading, not a device
+observation — the same distinction the log has insisted on for a week. It needs
+an iPhone check: long-press P1 → tablå card → scroll the programme list. If it
+scrolls, the candidate is wrong and this is a usage question, not a defect.
+
+**Fix shape, if confirmed (one line, mirrors BUG 1's own fix):** scope the swipe
+surface to `sheet.querySelector('.sheet-grab-zone')` in `openContextCard`. The
+grab zone already exists and already has `touch-action: none`. Do not touch the
+four other `enableSwipeToClose` call sites — reader (3887), about (4189), and
+player (2701) bind surfaces that are not scrollable lists.
+
+#### B — "pausing via the earbuds cannot resume without restarting the app" (NEW, unfixed)
+
+**Answer from the code: the resume path is not wired.** All five MediaSession
+handlers (`app.js:1692-1696`) are registered **once**, at startup, against the
+`audioEl` singleton:
+
+```js
+mediaSession.setActionHandler('play', () => audioEl.play().catch(() => {}));
+mediaSession.setActionHandler('pause', () => audioEl.pause());
+mediaSession.setActionHandler('stop', () => stopAndClosePlayer());
+```
+
+- **Pause works** — it calls `audioEl.pause()` on the singleton directly.
+- **Resume is where it dies.** The handler is `audioEl.play().catch(() => {})`:
+  the rejection is **swallowed with an empty catch**. If the play attempt fails
+  (a cold or stale HLS live edge after a pause, which is the normal case for a
+  paused live radio stream), the promise rejects, the empty catch eats it, and
+  **nothing else happens**: no toast, no retry, no `renderPlayer()`, no
+  `updateMediaSession()`. The app is left showing whatever the last `renderPlayer`
+  painted — paused — with no path back. The user restarts the app.
+- **Contrast every other play site in the file**, all of which surface the
+  failure: `1405`, `1417`, `1421` and `1478`/`1484` all do
+  `.catch(() => showToast('Kunde inte starta uppspelning. Försök igen.'))`, and
+  `3029` toasts on the play/pause button. **The MediaSession `play` handler is
+  the one play site in the whole file with no user-visible failure path.**
+
+**The fix is the one-line consistency fix:** the `play` handler should surface
+the failure the way the other eight call sites do — toast, and re-render. Whether
+it additionally needs a *reconnect* (re-attach HLS / `advanceCandidate`) is a
+separate, larger question that this evidence does **not** settle; a stale live
+edge genuinely needs re-attaching, not just a toast. **Do not assume the toast
+alone fixes it.** The decisive question is what the rejection actually is, and
+that needs the device.
+
+**Cheap decisive check for the owner:** pause via the earbuds, then press play on
+the earbuds, then open `?diag=metadata` and read `playback` and `environment`.
+If `paused` is true and nothing is moving, the handler ran and the play failed
+silently. That distinguishes it from the handler never firing at all.
+
+**This is plausibly the same root cause as the E1b tunnel report** — a paused or
+interrupted live HLS edge that never recovers. E1b is deferred, but note the
+link: if the resume fix makes the stream recover, it may also address part of
+what was reported from the train. **Do not merge the two tickets** — one is
+reproduced, one is not.
+
+#### C — "what did you mean by 'web browsers' in MD Studio?"
+
+Answerable now: **MD Studio is a third-party Swedish podcast app, not a
+Sveriges Radio product.** The phrase in the log means *"other podcast apps may
+offer a web player / browser-based playback that Min Radio does not."* The
+relevant question is whether other apps embed an HTML5 `<audio>` element in a web
+view rather than a native player. Neither Sveriges Radio's own app (SR Play) nor
+Appen has a web player; that is the gap being described. No code change.
+
+#### D — "the weather data would have been fun"
+
+**There is no weather feature in this repository.** Verified by search across all
+`.js`/`.html`/`.css`/`.md`/`.mjs` for `vader|weather|forecast` — **zero hits**.
+So this is a new feature idea, not a bug and not a request to change existing
+behaviour. It is out of scope for a defect-fix session and is **recorded, not
+scheduled.** SR does publish weather via a "Vader" radio service on some
+channels, which is probably what prompted the remark; if the owner wants it, it
+belongs as a new enhancement entry with its own scoping.
+
+### Priority order proposed for this session (owner to confirm)
+
+Ordered by **(decisiveness per unit of work) × (owner-reported, reproducible)**,
+not by severity. The log's standing rule is that an unreproduced, uninstrumented
+report does not get code.
+
+| Prio | Item | Why here | Needs owner/device? |
+|---|---|---|---|
+| **P1** | **B — earbud pause cannot resume** (new) | Reproducible, owner-reported, a **silent failure with no user-visible path** — the worst failure shape in the app. The code evidence is concrete and the contrast with the other eight play sites is unambiguous. Highest value per line changed. | Yes — one pause/resume + `?diag=metadata` reading |
+| **P2** | **A — tablå card scroll lock** (new) | Reproducible-looking, owner-reported, and the **fix is one line** mirroring BUG 1's own precedent. Same defect class the project already paid for once. | Yes — confirm it reproduces on the iPhone before changing code |
+| **P3** | **Item 1 — pre-midnight programme title** | The WS21 gate fix is shipped and proven to *request* yesterday's schedule; only the `seeked`-event question is open. One diagnostic reading settles it. **Now cheaper than it was, because P1 and P2 will already have the app open on the device.** | Yes — `schedule.gate.fetchedDays` |
+| **P4** | **Item 3 — global podcast search** | The only substantial feature on the board, brief fully logged, **not started**. It is a real owner request and the largest remaining piece of value. Deliberately last: it is a feature, not a defect, and it should not be started while two reproducible defects are open. | No — buildable and testable locally |
+| **P5** | **Item 2 — `Vaken`/`Vaken` lock-screen duplication** | One-line code cause (`metaArtist` falls back to `programme \|\| channel`). **Not an owner requirement in either direction** — the log's own audit found a previous version of this entry wrongly claimed the owner had said not to change it. Cheap, but needs the owner's explicit go-ahead first, not my assumption. | Yes — owner decision, then iPhone |
+| **P6** | **E1 — audio quality investigation** | Highest priority among the *enhancements*, and unchanged. Documentation-first by its own rule: *"do not change the working playback path without verification."* Big and slow; correctly not a defect-fix session. | No |
+| **P7** | **Item 6 — Android untested** | A known blind spot, not a task. No Android device is available to me. **Cannot be closed by me at all** — saying otherwise would repeat the false attribution the log already corrected. | Owner only |
+| **—** | **4b tunnel/E1b — DEFERRED** | Not reproducible 2026-09-28 morning. Out of the queue until it recurs with timestamps. | Only if it recurs |
+
+**Deliberately not prioritised:** item 12 (episode track repaint retest) needs a
+real audio boundary and a device; item 10 (About rewrite) is cosmetic; the older
+Swedish E1–E4 items were last reconciled 2026-09-23 and are **possibly stale** —
+verify before relying on them, do not queue them blind.
+
+### What I did NOT do, and why
+
+- **No code changed.** Both new findings are *candidates read from source*, and
+  this project's hardest lesson is that a plausible code reading is not a device
+  observation. Writing the fix before the device confirms the symptom is the
+  exact failure that produced WS2/WS4/WS6/WS7.
+- **Did not merge B into E1b.** B is reproduced by a user; E1b is not. Same
+  plausible mechanism, different evidence, and merging them would let an
+  unreproduced report borrow credibility.
+- **Did not queue the weather remark.** It is a new feature, not a defect.
