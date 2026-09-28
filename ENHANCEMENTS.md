@@ -2,6 +2,48 @@
 
 Running notes on improvements to pick up later.
 
+---
+
+## START HERE (written 2026-09-28 late, for the next session)
+
+**State at close of day:** `main` = `ed95719`, clean tree, pushed, **201/201
+tests**. Live: `app.ac2dc64a.js` / `styles.f420a62b.css` / SW `minradio-53351f32`,
+build id `72efbb0`. **No source code changed today after WS21** — everything
+since was investigation and documentation, so the live bundle is unchanged.
+
+**The three cheapest decisive checks, all needing the owner's iPhone** (each one
+reading settles a question that has been open for a workstream):
+
+| Question | How to check | What each result means |
+|---|---|---|
+| Pre-midnight programme title (item 1) | `?diag=metadata` → `schedule.gate.fetchedDays` | `['today','yesterday']` + title still not changing ⇒ the **`seeked` event** is the cause, not the data. `['today']` ⇒ the gate broke again. |
+| Earlier played songs missing (item 4c) | `?diag=metadata` → `songTimelineLength` at the moment a song is missing | **≥2 and the line is empty** ⇒ my selector is at fault, a real bug. **1 or 0** ⇒ the timeline genuinely has no entry; it is a data ceiling, not a regression. |
+| Song history "works tomorrow" | just open the app | Owner's expectation; if it works, the cause was transient upstream. **Do not treat a self-heal as a fix** — record it as a data incident, not a code fix. |
+
+**If the owner restarts the app and the song history is fine**, item 4c stays
+open as an observation with a plausible upstream cause, and no code should be
+written for it on the strength of a single working run.
+
+**What I got wrong today, so it is not repeated:** I twice wrote a claim about
+the owner that they had not made. The rule that caught both is in the log:
+*"the owner instructed X" is a claim about a person and must be verified like
+any other claim — a memory note is not a source.* Also: I could not verify
+items 5, 6 or 7 from the log's own words; I had to go and check, and item 6
+(Android) turned out to be unverifiable *by me at all*.
+
+**Three hard environment limits — these are not app defects and not fixable
+from this session:** Chromium cannot load SR's DVR-capable HLS (every DVR path
+is device-only); there is no Android device; there is no tunnel. Any claim about
+those three must be marked unverified, not inferred.
+
+**Read next:** the undone-task list below (owner-reported items are numbered
+1–7 and marked as mine where applicable), then `## Session index — 2026-09-28`
+for what was actually shipped and the regressions I introduced. Older Swedish
+sections (E1–E4) were last reconciled 2026-09-23 and are **possibly stale** —
+verify before relying on them.
+
+---
+
 **Ordering:** the 2026-09-28 entries (WS17–WS21) are grouped together in
 chronological order at the end of the file rather than newest-first at the top.
 They were appended as each workstream landed, which is the dated record of how
