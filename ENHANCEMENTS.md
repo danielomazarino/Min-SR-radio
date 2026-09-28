@@ -4780,3 +4780,480 @@ checks prove the right code is being *served*; they say nothing about how it
 *behaves*. In particular the artwork fix, the 1 s "Till Direkt" margin, the
 stream-edge readings and the earbud resume are all **code-proven and
 device-unproven** until the owner reports back.
+
+---
+
+## 2026-09-29 (WS25) — INVESTIGATION ONLY. Zero source changes. The "data ceiling" claim is REFUTED.
+
+**Constraints honoured, verified at close.** `app.js` md5
+`a28914f1b49ce901bde04095e49a1ed3` — **unchanged**. `npm test` **214/214**.
+`git status` shows only the three untracked `WS2x-PROMPT.md` files. This
+workstream produced **this report and nothing else**.
+
+**The headline.** Three sessions of notes recorded that missing historical song
+titles were "a data ceiling, not a regression" — an SR limitation. **That is
+wrong.** Per-song metadata for past live positions **does exist at SR** and is
+retrievable today from the public API with no key and no authentication. The
+ceiling is **ours**: a 60-entry cap plus a 45-second poll. Details in §7.
+
+Classification key, used inline throughout:
+**[MEASURED]** observed on a live origin · **[DEVICE]** owner's iPhone ·
+**[FIXTURE]** real extracted code, no network · **[CODE-READING]** read, not run.
+
+---
+
+### 1. Summary of findings
+
+| # | Finding | Class | Does it need the owner's phone? |
+|---|---|---|---|
+| 1 | WS24 artwork fix is **undone ~45 s later by the live poll** | FIXTURE | Yes, to see it |
+| 2 | Title and cover are **not** the same bug — the compact line is right, the header is wrong | CODE-READING | No |
+| 3 | `_srPaintedTitle` / `_srPaintedArtist` are **dead fields** — written, never read | CODE-READING | No |
+| 4 | R5 pre-midnight titles: **NOT a WS23/WS24 regression.** Gate is byte-identical since WS21 | MEASURED | No |
+| 5 | R5 real cause: gate opens **hour 0 only**, but the 3 h window reaches yesterday until **03:00** | FIXTURE | No |
+| 6 | R6 "Spelas just nu" is a **static string** in the header, position-blind | CODE-READING | No |
+| 7 | Per-song historical metadata **exists at SR** — Hypothesis B **refuted** | MEASURED | No |
+| 8 | Our real coverage ceiling is **60 entries × 45 s ≈ 45 min** | CODE-READING | No |
+
+**The one thing I would do first** is not on this list, because it is the
+owner's call: fix #1 is a two-line ownership rule (§3). Everything else is
+either already-known-but-mislabelled (#7) or cosmetic (#6).
+
+---
+
+### 2. Part 0a — the WS24 artwork regression is REPRODUCED
+
+Harness: `/tmp/ws25/extract.mjs` extracts real functions from `app.js` by brace
+matching on comment-stripped source. Self-test **6/6** — including the check
+that caught a bug where the extractor silently dropped the `async` keyword
+(`refreshNowPlayingArtwork` was being extracted as a sync function and threw).
+Canary: the extracted `resolveMetadataForPosition` incremented a counter
+**3 times** during the run, proving the code under test is the code that ran.
+
+Scenario: playhead 150 s into the DVR window, two different songs.
+
+```
+STEP 1  owner scrubs back (seek path runs)
+  song at the playhead   : "The World We Live In" / Alcazar
+  nowPlaying.artwork     : .../alcazar|the worl...     CORRECT? YES
+
+STEP 2  45 s later, the live POLL fires (fetchNowPlaying)
+  nowPlaying.artwork     : .../camille|si tu so...     *** NO - REPRODUCED ***
+```
+
+**[FIXTURE]** — no network was touched. `fakeFetch` is instrumented; the two
+iTunes URLs are synthetic, and the fake returns a URL containing the lookup key
+so the assertion is on the key, not on iTunes behaviour.
+
+**The mechanism.** `nowPlaying.artwork` is dual-written:
+
+| writer | site | what it passes |
+|---|---|---|
+| `refreshNowPlayingArtwork` | app.js:1147, 1153, 1166 | depends on caller |
+| `fetchNowPlaying` (poll) | app.js:1051 → calls it | **the on-air song, unconditionally** |
+
+The poll does not know the playhead exists. It does not check where the user is.
+It writes the on-air cover, and last writer wins. **Nothing recovers it** — the
+next poll writes it again, and `paintNowPlaying()` contains no artwork logic at
+all, so a repaint does not correct it.
+
+**Ownership rule (described, not implemented — as instructed).** One field, two
+intents. `nowPlaying.artwork` is asked to mean *"the cover for what the user is
+looking at"* by the seek path and *"the cover for what is on air"* by the poll.
+A rule that resolves this without ambiguity: **the poll may write
+`nowPlaying.artwork` only while the playhead is at the live edge** (reuse the
+existing `atLiveEdge`, 10 s); otherwise it writes a separate
+`nowPlaying.onAirArtwork` that nothing but the header's live state reads. One
+field, one writer, one meaning. I have not written this — it is a design
+proposal and the brief forbids code.
+
+**Owner device check** (this is the one item where the device is the only
+witness):
+
+1. Start P3, let it settle at the live edge.
+2. Scrub back ~2 minutes. Note the cover — it should be **correct** for the song
+   at that point.
+3. **Wait 45 seconds without touching anything.**
+4. The cover will change to the **on-air** song's cover. It is now wrong.
+
+**Read step 4 carefully: this is easy to misread.** If you check at step 2 and
+again at step 4, the natural summary is "still broken". It is not — it is
+*newly* broken, at a known time, by a known path. The step-2 state is the WS24
+fix working correctly.
+
+**Not verified by any test:** the expand-panel **mini-bar** artwork. I found no
+test referencing it and no separate code path — it is not covered by the
+reproduction above. Treat its behaviour as unknown.
+
+---
+
+### 3. Part 0a step 2 — the title is a DIFFERENT bug. Do not fix them together.
+
+The brief said: *report if the poll also fights the title/artist; do not assume
+it is the same.* **It is not the same.** **[CODE-READING]**
+
+| surface | source | position-aware? | after a seek |
+|---|---|---|---|
+| compact line, row 4 | `pickByPosition(nowPlaying.timeline, playheadWallMs())` | **yes** | **CORRECT** |
+| expand-panel header | `nowPlaying.song` / `nowPlaying.artwork` | **no** | **WRONG** |
+
+`paintNowPlaying()` (app.js) and the header (`buildExpandPanel`, app.js:3005,
+3013) read **different fields**. The header has no `pickByPosition` and no
+`playheadWallMs` anywhere in its body — verified by extracting the function and
+testing its source for those identifiers.
+
+**So R4 is not broken, and must not be "fixed".** The compact line has been
+position-aware since WS9 (`paintNowPlaying`'s own comment says so). The visible
+symptom — *title wrong, but the small line right* — is the **signature of this
+split**, and it is the reason a single-cause story kept failing. Anyone who
+"fixes" the header by copying the compact line's approach must leave the compact
+line alone.
+
+**Dead fields found (finding #3).** `_srPaintedTitle` and `_srPaintedArtist`
+are written at exactly **one** site (app.js:1448–1449, inside `advanceCandidate`)
+and read at **zero** sites anywhere in `app.js`. They are a change-detection
+cache for `paintNowPlaying()` that nothing consumes — `paintNowPlaying()`
+re-derives from `pickByPosition` instead. **[CODE-READING]**
+
+Why this matters beyond tidiness: these fields are the *only* place the seek
+path records which song it resolved. Because they are never read, a seek leaves
+**no** trace on the header — the header's song comes solely from the poll. The
+WS24 comment at app.js:1450 says "the title and artist above resolve correctly
+for a historical song" — that is true of the **compact line only**, and the
+comment reads as though it were true of the panel. I am not asserting the author
+was wrong; I am recording that the comment overstates its own scope, and that
+is likely where the "title is fine" belief came from.
+
+**Not the same bug, therefore not one fix.** The artwork race is a
+last-writer-wins problem. The header is a missing position-derivation. Fixing
+the ownership rule alone leaves the header showing the on-air *title* with a
+correctly-resolved *cover* — arguably a worse-looking mismatch than now.
+
+---
+
+### 4. Part 0b — R1–R6, answered individually
+
+| R | Question | Answer | Class |
+|---|---|---|---|
+| R1 | expand-panel title | Reads `nowPlaying.song` = on-air. Not position-aware. | CODE-READING |
+| R2 | expand-panel cover | Reads `nowPlaying.artwork`. Races the poll (§2). | FIXTURE |
+| R3 | song line when scrubbed | **Two answers — see below.** | both |
+| R4 | compact line when scrubbed | **ALREADY CORRECT since WS9.** Do not touch. | CODE-READING |
+| R5 | programme name pre-midnight | **Not a regression.** Real cause found, §5. | FIXTURE |
+| R6 | "Spelas just nu" | A **hardcoded string**, app.js:3012 and 3053. | CODE-READING |
+
+**R3 is the one to be careful with**, because "the song line" is ambiguous
+between surfaces. The **compact** line (R4) is correct. The **panel's** song
+line (R1) is wrong. Reporting R3 as a single item would have hidden that the
+half the owner can see in one glance is already right — which is very likely
+why this was re-investigated several times.
+
+**R6, and the label question.** `Spelas just nu` is a literal string passed to
+`el()`. There is no conditional and no position input. So when the user is ten
+minutes behind, the panel confidently announces that what they are looking at is
+playing *right now* — and it will say so identically at the live edge and at
+the back of the DVR window. I am **reporting** this, not redesigning it: the
+fix is a product decision (show the offset? show nothing? say "Spelas inte
+nu"?), and it belongs to the owner. Note it is the **cheapest** of R1–R6 to
+change and the only one needing no new data at all.
+
+---
+
+### 5. R5 / the pre-midnight programme title — NOT a regression
+
+The owner reported this as "back again" in build `cbc092a`, fixed in WS21. I
+tested that directly and **it does not hold up**.
+
+**[MEASURED]** The gate expression, extracted from `app.js` at four commits:
+
+```
+72efbb0 (WS21)   const pastMidnight = new Date().getHours() < 1
+807846d (WS23)   const pastMidnight = new Date().getHours() < 1
+cbc092a (WS24)   const pastMidnight = new Date().getHours() < 1
+HEAD             const pastMidnight = new Date().getHours() < 1
+```
+
+`git diff 72efbb0 HEAD -- app.js` is +440/−6 lines, and **0** of those changed
+lines touch `fetchSchedule`, `fetchScheduleDay`, `localDateStr` or
+`pastMidnight`. **Neither WS23 nor WS24 touched this code path.** Calling it a
+regression would be wrong, and would send the next session looking for a
+revert that does not exist.
+
+**The real cause is a defect that WS21 shipped and never covered. [FIXTURE]**
+The gate is `getHours() < 1` — it opens for **hour 0 only**. The DVR window is
+3 h, so the playhead can still reach into yesterday until **03:00**:
+
+```
+hour   window reaches yesterday   gate opens   outcome
+ 00:00  true                      true         titles shown
+ 01:00  true                      false        *** NO TITLES ***
+ 02:00  true                      false        *** NO TITLES ***
+ 03:00  false                     false        (nothing to show)
+```
+
+The two windows **disagree for 01:00–02:59**. The gate is asking *"is it just
+after midnight?"* when the question it needs to ask is *"does the DVR window
+reach before local midnight?"*. Those agree for one hour a day.
+
+This is consistent with the owner's screenshots at **01:19–01:22** — inside the
+gap, and **outside** the gate. **[DEVICE]** for the timestamps, **[FIXTURE]**
+for the gate arithmetic; I am not claiming to know the device's local time
+beyond what the screenshot shows.
+
+**Refutation conditions, stated before running:** the hypothesis would be
+refuted if the gate were open at 01:19–01:22, or if the gate code differed
+between `72efbb0` and `cbc092a`, or if a 3 h window did not reach yesterday at
+01:22. All three were tested; all three failed to refute. The experiment
+**could** have produced a refutation and did not, which is the only reason to
+believe it.
+
+**Second-order finding.** `fetchSchedule` caches per `${channelId}:${dateStr}`
+for **10 minutes**, and it is only called from `resolveProgramTitle` (via
+`playTrack`) and `renderPlayer`. A **seek does not re-run it** — the `seeked`
+listener calls `resolveMetadataForPosition` and then `scheduleNowPlayingPoll`,
+and the comment there explicitly says it "does not re-fetch the schedule". So
+a session that started before 01:00 and crossed into 01:00 **keeps** its
+yesterday data until the cache expires, while a session that *starts* at 01:19
+never gets it at all. **The symptom is time-of-day dependent AND
+session-start dependent** — which is exactly the shape that makes a bug look
+intermittent and get attributed to a deploy. Re-run the check at 00:50 and at
+01:10 and the two will disagree.
+
+**Fix direction (not implemented):** derive the trigger from the window, not
+the clock — `localHour * 3600 < windowSeconds`, which at 3 h covers hours 0, 1
+and 2 and self-adjusts if the window ever changes. The existing
+`windowMs > 60*60*1000` second trigger is dead in practice, because
+`seekableStart` is `null` at `playTrack` time — the exact WS21 finding, still
+true.
+
+---
+
+### 6. Part 2 — API discovery. The `getplaylistbychannelid` lead is resolved.
+
+**[MEASURED]** All probes `curl --compressed` (without it, gzip prints as binary
+garbage — noted because it has burned me before).
+
+**The lead was a misattribution.** `getplaylistbychannelid` returned **500
+Server Error** on every parameter shape tried:
+
+```
+?id=3240          HTTP 500      ?channelid=164   HTTP 500
+?channelid=3240   HTTP 500      no params        HTTP 500
+from=&to=         HTTP 500
+```
+
+Note the shift from the **400** recorded earlier in this workstream to **500**
+now — the same URL, later in the day. A route that changes status class
+unprompted is not a parameter problem; it is a **dead route**. All four 500s
+are the same 36-byte HTML error. `getplaylistbychannelid` is not a usable lead
+and should be struck from the notes.
+
+**The "The id field is required" 400 was never this endpoint.** It came from
+`web-api.sr.se/v1/player/ondemand`, whose validator wants capitalised
+`Id` and `Type`, and whose `type` is a **closed enum**:
+
+```
+type=live      400  "`live` is not a valid type."
+type=channel   400  "`channel` is not a valid type."
+type=episode   200  17 tracks
+```
+
+I enumerated 11 candidate values; **`episode` is the only valid one**. There is
+no live-channel variant. This matters: it means historical song data is not
+reachable by pointing `ondemand` at a channel.
+
+**A false negative I have to record.** My first `scheduledepisodes` sweep read
+the response key as `scheduledepisodes` and reported **0 entries for every date
+including today** — a clean-looking sweep that would have supported any
+conclusion. The real key is **`schedule`**. Re-run correctly:
+
+```
+  0d ago  entries=61  withEpisodeId=42
+  1d ago  entries=61  withEpisodeId=42
+  7d ago  entries=61  withEpisodeId=42
+ 30d ago  entries=51  withEpisodeId=36
+```
+
+I nearly reported "SR keeps no per-day history" on the strength of a typo in
+my own parser. **A sweep that returns zero for *today* is a broken sweep** — if
+the most recent date is empty, stop and fix the probe before believing any row
+of it.
+
+---
+
+### 7. Part 7 — the decisive experiment. Hypothesis B is REFUTED.
+
+**Hypothesis B:** song metadata for a past live position does not exist at SR;
+the ceiling is inherent. This is what the notes have claimed for several
+sessions, and it is the reason no code was ever written.
+
+**Stated in advance, what would refute it:** if `ondemand` returns **per-song
+tracks for a recent P3 broadcast episode**, then per-song historical metadata
+exists server-side, and our sparse timeline is an app limit. **Could the
+experiment fail?** Yes — if no episode existed for the target date, or if
+`tracks` came back empty. It did not.
+
+**[MEASURED]** `scheduledepisodes` gave episode ids; feeding one to `ondemand`:
+
+```
+episode 2864965  "Vaken med P3 & P4"   publishDate "Idag kl 22:02"
+  TRACKS: 17
+    00:00:27  Rein Me In                Sam Fender & Olivia Dean
+    00:10:14  Back To Life              Soul II Soul
+    00:20:29  I've Got You Under My Skin Neneh Cherry
+    00:25:11  G&T                       The Refreshments
+    00:32:51  Maneater                  Nelly Furtado
+    00:37:31  Tänk Om                   Victor Leksell & Molly S
+    00:45:24  Save My Love              Kygo, Khalid & Gryffin
+    00:53:25  Hello Love                Jessie Ware
+    ... span 00:00:27 .. 01:45:16
+```
+
+**Seventeen songs with per-song boundaries, for a broadcast that finished
+yesterday.** Plus a 2012 control (episode 1, P4 Skaraborg) returning tracks
+correctly — so this is not a new-feature artifact and not a fluke.
+
+**CORS verified as a browser would see it** (not just a GET):
+
+```
+OPTIONS  HTTP/2 200
+access-control-allow-origin: https://danielomazarino.github.io
+access-control-allow-methods: GET, HEAD
+```
+
+`--compressed` was sent, and an `Origin` header was included. It is reachable
+from the deployed GitHub Pages origin today, with **no key**.
+
+**Alignment is plausible, not proven.** The episode's schedule start is
+`2026-09-28T22:02:00 UTC`; tracks are **relative to the start of the episode
+audio**, and the app already uses exactly this mapping for archived episodes
+(`relativeStartTime` → `audioEl.currentTime`, app.js:953+). So the arithmetic
+exists and is already tested in production for episodes. **What I have not
+done** is verify that a *live* channel's DVR `currentTime` maps to the same
+episode-relative axis — that needs the device, because on desktop Chromium SR's
+HLS does not load and the DVR window cannot be observed at all. **[DEVICE]**
+
+**The two known limits, both real and both ours, not SR's:**
+- `duration: 0` and `audio.src: []` in the response — metadata only, no audio.
+  We would use it for the timeline, not for playback. Fine.
+- Talk programmes return `tracks: []` with HTTP 200 (verified: episode 2864966,
+  "Ekot senasta nytt", 0 tracks). So coverage is **music segments only**.
+  Roughly: of 61 daily schedule entries, 42 carry an episode id, and of those
+  only the music shows carry tracks. Sparse by nature — which is fine, because
+  the symptom is *missing titles where there is music*, and that is exactly
+  where tracks exist.
+
+**What this does not prove.** It does not prove the fix is small, that the axis
+maps cleanly for live, that a 3 h window's worth of lookups are cheap, or that
+SR will not rate-limit a scrub that requests many episodes. It proves the
+**data is there**. That is the claim that was wrong.
+
+---
+
+### 8. Part 6 — our own path, end to end, and the real ceiling
+
+Traced from the network call to the pixel. **[CODE-READING]**
+
+```
+playlists/rightnow?channelid=164     every 45 s (NOW_PLAYING_INTERVAL_MS)
+   └─ keep(previoussong); keep(song); keep(nextsong)      app.js:1079-1083
+        └─ dedupe by startMs
+        └─ push { title, artist, startMs, stopMs }
+        └─ sort by startMs
+        └─ if (length > 60) splice(0, length - 60)        app.js:1090
+   └─ paintNowPlaying()  → compact line, position-aware  ✅
+   └─ buildExpandPanel() → header, on-air fields          ❌
+```
+
+**The ceiling is ours. [CODE-READING]** `NOW_PLAYING_TIMELINE_MAX = 60`
+(app.js:929). One poll adds **at most 3** entries but realistically **1–2**
+(one song boundary per 45 s, deduped). So 60 entries ≈ **45–90 minutes** of
+history, from a session that started empty. The owner's DVR window is 3 h.
+
+**The owner believed this was a server-side retention limit. It is not.** It is
+a constant in our own file, and the comment above it is candid that it is
+deliberate: *"so a long listening session cannot grow it without bound"*. The
+cap was chosen to bound memory, and it bounds **coverage** as a side effect.
+Those are different goals; nothing in the comment says coverage was intended.
+
+**The design consequence worth stating plainly:** the timeline is
+**session-scoped and observation-scoped**. It only knows songs that were seen
+by a poll **while the app was open**. It is not a query against history — it is
+a cache of what happened to be looked at. That is why the coverage is not even
+45 minutes in practice but *"however long you listened, up to 45 minutes of
+songs"* — a user who opens the app mid-window starts with a timeline that
+begins at the live edge, so the **back of the window is empty immediately**,
+before the cap is ever reached.
+
+**Two independent ceilings, and only one is the cap:**
+
+| ceiling | size | nature |
+|---|---|---|
+| `NOW_PLAYING_TIMELINE_MAX` | 60 entries | ours, a constant |
+| timeline starts empty at app open | 0–90 min | ours, a design property |
+| per-song data at SR | exists, 30+ days | **not a limit** (§7) |
+
+A fix that only raises the constant would help the *middle* of a long session
+and **not at all** the back of the window after a fresh open. Worth knowing
+before anyone treats "raise 60 to 500" as the fix.
+
+---
+
+### 9. What this workstream did NOT establish
+
+Stated plainly, per the standing rule that unverified ≠ working.
+
+- **Nothing was observed on the owner's iPhone.** Every device-behaviour claim
+  above is marked `[DEVICE]` and is the owner's to confirm. The artwork race is
+  `[FIXTURE]`: real code, no network, no Safari, no real HLS.
+- **The expand-panel mini-bar artwork is untested and untraced.** No test
+  references it; I did not find a separate code path for it.
+- **The live↔episode-relative time-axis mapping is unverified.** It is the load-
+  bearing assumption behind any §7-based fix, and it needs a real DVR window.
+  Desktop Chromium cannot load SR's HLS, so I could not test it at all.
+- **Request cost is unmeasured.** A scrub across 3 h could touch many episode
+  ids. I have no rate-limit data and did not probe for one.
+- **"Programme titles missing pre-midnight"** — I established the gate defect
+  and showed it is not a regression. I did **not** confirm that fixing the gate
+  makes the titles appear; that needs the device, and there may be a second
+  cause behind it.
+- **I did not verify the tunnel report** — deferred by the owner, and correctly
+  so: the tester had no buffering issue.
+- **`getplaylistbychannelid` 500 is unexplained.** Dead route is my reading of
+  the evidence, not a confirmed fact from SR.
+
+**Harness errors I made this session, so they are not mistaken for findings:**
+`extractFn` silently dropped `async` (self-test now covers it); I read
+`scheduledepisodes` instead of `schedule` and produced a false all-zero sweep;
+my first extractor self-test passed 0/5 because the test function was never
+*called*; `buildExpandPanel` is an arrow const, not a declaration, so the
+brace-matching extractor cannot see it. Four, all caught, all in the harness.
+
+---
+
+### 10. State, and what I would do next
+
+**Verified at close:** `app.js` md5 `a28914f1b49ce901bde04095e49a1ed3`
+**unchanged**; `npm test` **214/214**; no source file touched. `main` clean
+apart from the three untracked `WS2x-PROMPT.md` files.
+
+**Ranked by cost-to-answer, not by severity:**
+
+1. **Owner, ~2 min** — the §2 artwork check (scrub, wait 45 s, watch it break).
+   Settles the only finding that needs a device, and it distinguishes
+   *newly* broken from *still* broken.
+2. **Owner, ~1 min** — open `?diag=metadata` (with `localStorage['sr-meta-diag']
+   = 'on'`; the URL flag alone is deliberately insufficient) between **00:50 and
+   01:10** and read `schedule.gate.fetchedDays`. `['today']` at 01:05 confirms
+   §5 on the device.
+3. **Free, no device** — the §7 refutation stands on its own. It is already
+   enough to stop calling this a data ceiling.
+4. **Not started, and it should stay unstarted until 1–3 land** — any code. The
+   brief for this workstream forbids it, and the ordering above means the first
+   two answers would change what the code should be.
+
+**A caution for whoever writes it.** The two visible defects have *different*
+causes (§3) and the metadata problem has *two* ceilings (§8). A single "fix the
+song display" change would plausibly appear to work while leaving the header
+mismatched and the back of the window empty. That is the failure mode of the
+last three sessions, and it is worth more than any of the fixes themselves.
