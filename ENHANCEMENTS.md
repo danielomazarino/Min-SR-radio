@@ -5603,3 +5603,102 @@ not "poll and timeline disagree".**
 `1b4287b` (source + tests) -> `8f183ce` (artifacts), pushed. 217/217. All four
 deploy checks PASS against the live site. **The live-edge mismatch is OPEN and
 is the next thing to fix.** Nothing else from WS26 is known-broken on the device.
+
+---
+
+## 2026-09-29 (WS27) — the two halves now share ONE song rule, including at the live edge. DEPLOYED.
+
+**Build id to look for: `c016cdb`** (the small line under NYHETER). Bundle
+`app.45289cda.js`, SW cache `minradio-b024e76c`, `styles.f420a62b.css` unchanged.
+
+### R6 is addressed — the mechanism is now measured, not assumed
+
+The WS26 log entry said the card preferred the on-air poll at the live edge
+while row 4 read the timeline, and that this "explains" the mismatch. **That
+was not sufficient**, because the mechanism that made the two differ was still
+unmeasured. The agent established it by driving the real functions:
+
+`pickByPosition()` returns the **first** containing entry in a `startMs`-sorted
+array. A **shadowing** entry — an earlier-starting entry that still spans now, be
+it an overrunning polled `previoussong` or a Part-3 merged track anchored at an
+episode start — **shadows** the polled song at the live edge. That is the
+divergence. The comment asserting *"the timeline entry is the same song by
+construction"* was simply false, and is now removed.
+
+### The change
+
+One rule, both surfaces, the edge included:
+
+```js
+const song = hit || (atLiveEdge ? (nowPlaying.song || null) : null);
+```
+
+No edge branch for the song at all. The timeline wins whenever it has an entry;
+the on-air poll survives **only** as the empty-timeline fallback, so the card
+can never blank. The cover is now chosen by asking **which song won**
+(`winnerIsOnAir`) rather than which side of the edge we are on — because a
+position test can disagree with a song test, which is how a real title ended up
+under a stranger's cover.
+
+**Row 4 behind live is unchanged** — that is R4, it works, and changing it would
+be the regression rather than the fix.
+
+### A genuinely wrong test fixture, found and fixed
+
+The old "at the live edge" case set `atLiveEdge: true` while the playhead sat
+**150 s behind** the edge — two facts that contradict each other, since the app
+derives `atLiveEdge` from `distanceFromLiveEdge <= 10 s`. It only passed because
+the resolver trusted the poll unconditionally at the edge. **It asserted the
+right answer from a world that cannot exist**, and could not tell a correct
+resolver from one that always trusts the poll. The edge cases now use a playhead
+genuinely on the edge.
+
+### Tests: 217 → 223, and red was proven
+
+6 new **driven** tests (real functions extracted from `app.js` by brace matching
+and executed; nothing re-typed into a script). Verified red by restoring the
+pre-change `app.js`: **3 fail / 220 pass**, then restored by checksum
+(`d6476b74…` before and after). 6 mutations, all red; one mutation was reported
+**NO-OP** and replaced, which is the correct handling.
+
+**Two WS26 tests were restated under §7b**, with the reason recorded: they pinned
+the *old shape* by source text, and that shape is exactly what the owner's device
+falsified. They were restated **more strongly** — the property asserted is now
+"one timeline read, no poll-first preference", not a literal expression.
+
+### Deploy record
+
+`c016cdb` (source + tests) → `534e289` (artifacts) → pushed. **223/223.**
+
+| # | check | result |
+|---|---|---|
+| 1 | live `index.html` references the new bundle | **PASS** |
+| 2 | the bundle fetched from the live URL contains the fix | **PASS** |
+| 3 | served bundle byte-identical to the local build | **PASS** |
+| 4 | live service worker names the new cache | **PASS** |
+
+Check 1 **FAILED on the first run** and showed the old bundle — the WS26 lesson
+applied again: the commit was confirmed on the remote (`git ls-remote`) and
+`raw.githubusercontent.com` served the new bundle with HTTP 200, so it was edge
+propagation, not a failed deploy. It propagated on the next poll.
+
+**The defect itself is fixture-proven and NOT device-verified.** The owner's
+strings reproduce, and the fix makes the halves agree on that world — but whether
+A was the *physical* cause at 02:50 is only settled by the phone.
+
+### NOT DONE
+- **No device verification.** Nothing here was observed on the iPhone.
+- R5 (pre-midnight programme title) untouched; still unreachable on first paint.
+- `Spelas just nu` untouched — the owner's decision, option A.
+- `api.sr.se` returns HTTP 500 from the build machine on every path while the
+  owner's phone reaches it normally. **Not an SR outage; cause not established.**
+  It was not used as evidence for anything.
+
+### Device checks, in order
+
+1. **Build id must read `c016cdb`.** Otherwise you are testing old code.
+2. **The live edge.** On any music channel at the pill reading `LIVE`, compare
+   the card with row 4. They must name the same song. This is the fix.
+3. **Wait 60 s** at the edge — nothing may change.
+4. **Scrub back**, then wait 60 s — the cover must stay on the scrubbed-to song.
+5. **Talk radio (P1)** — the song line may empty; the programme name must stay.
