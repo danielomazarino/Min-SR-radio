@@ -60,26 +60,65 @@ are what makes the browser genuinely usable for state questions.
 
 ### Then, and only then, the measurement
 
-Once the switch exists and the owner can see the value, the reading to take is:
 
-> Open the app. Play a channel that has **hourly news** (so the programme
-> boundaries are obvious to the ear). Tap the **programme-skip** button once.
-> Open **Om** and turn diagnostics on. Read the line showing `edgeMinusNowS`.
+### NEW, measured by the tech lead on 2026-09-30: the stream's own clock is
+readable in a desktop browser. `https://ljud1-cdn.sr.se/lc/<ch>/<ch>_128.pls`
+serves `access-control-allow-origin: *` and carries `#EXT-X-PROGRAM-DATE-TIME`
+at playlist head, with 1700 x `#EXTINF:6.4` = a **3.02 h** window.
 
-**Then interpret it** — and write the interpretation into `SESSION-STATUS.md`
-before touching any code:
+**This does NOT mean the app can play the stream in Chromium. It cannot.**
+Measured: hls.js 1.7.3 parses the manifest and all 1700 fragments -- each with
+its own `programDateTime` -- but `play()` is rejected ("no supported source was
+found"), two **fatal** errors follow, and `video.seekable` stays **empty**. So
+there is no DVR window and no seek in a browser. **Every DVR *playback* question
+still needs the owner's iPhone.**
 
-| `edgeMinusNowS` | what it means | what to do next |
+**But WS28 is a question about *timing*, not playback -- and timing is now
+measurable in a browser. Do that before asking the owner for anything.**
+
+#### In the browser
+
+1. Fetch the channel's media playlist. Read the head PDT, sum the `EXTINF`
+   durations: `trueEdge = headPdt + totalDuration`.
+2. Read the app's belief -- `window.__srSeekable()`, or `?diag=metadata` ->
+   `streamEdge.edgeMinusNowS`.
+3. **The offset is the difference, and it has a sign:**
+
+```
+offset = (app's edge belief) - (PDT-derived true edge)
+```
+
+**Write both numbers, the subtraction, the channel and the timestamp into
+`SESSION-STATUS.md`.** Report the reading even if it contradicts an expectation
+-- **especially then.** A reading that disagrees with a theory is the most
+valuable thing you can produce, and bending it to fit is how a wrong fix ships.
+
+| reading | meaning | next |
 |---|---|---|
-| **≈ 0** | the app's edge belief is **accurate**. The ~25 s is NOT here, so it lives in the schedule's own times or where SR places the boundary. | investigate §3.2 — the schedule path, and whether the browser clamped the seek |
-| **≈ +25 s** | the app's edge is ~25 s **behind** reality, and **one cause explains both owner readings**. | investigate §3.1 — but do NOT add a correction constant |
-| **inconsistent between presses** | the edge is being re-registered around the seek. | `before` vs `after` will show the movement; a sliding window that re-registers is a real mechanism |
+| app belief ~= PDT edge | the app's edge is **accurate**; the offset is in the **schedule's own times** or SR's boundary placement | 3.2 |
+| app belief ahead of PDT by about the reported amount | **this is the cause** | 3.1 -- and still no constant |
+| app belief **behind** the PDT edge | **the sign contradicts the owner's "early" report.** Report it. Do **not** reconcile it by adjusting a number | re-examine the assumption; do not force it |
 
-**`clampedByS` is the second number and it is equally decisive.** If it is not
-~0, **the browser clamped the seek** and the offset is not in the app's
-arithmetic at all. That is invisible from outside the app and would look exactly
-like a wrong offset.
+**A caution the tech lead measured:** the PDT-derived window end read **+30.8 s**
+ahead of the local clock, and **+28.6 s** thirteen minutes earlier -- so it
+**drifts ~2 s in 13 min and is not a constant.** Never treat it as one.
 
+**The honest limit, and it is the one WS23 named:** both figures are compared
+against *this machine's* wall clock, so neither can detect a device clock that is
+itself wrong. **The owner's ear against a known broadcast start remains the only
+truly independent reference.** The browser narrows the hypothesis space so that
+one phone reading settles it; it does not replace it.
+
+**Also record `clampedByS`.** If it is not ~0, **the browser clamped the seek**
+and the offset is not in the app's arithmetic at all -- invisible from outside,
+and it looks exactly like a wrong offset.
+
+#### Then the owner's reading, in user terms
+
+Ask the owner to: open the app, play a channel with **hourly news**, tap the
+**programme-skip** button once, open **Om**, switch diagnostics on, and read the
+`edgeMinusNowS` line. **They need to read one number and report it -- nothing
+else, and no understanding of any of the above is required.**
 ---
 
 ## 0b. Before anything else

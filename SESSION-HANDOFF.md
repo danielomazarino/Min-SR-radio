@@ -123,3 +123,43 @@ bundle; `app.js` is only the build input.
 > På telefonen: avregistrera service workern eller hard-reload. En gammal service
 > worker fortsätter att servera den gamla layouten och låter en bra deploy se ut
 > som trasig.
+
+---
+
+## CORRECTION (2026-09-30) — the "never modify" list above is STALE, and one comment is wrong
+
+**Do not trust the byte-identical claim in the section above.** It was true when
+written and is no longer. Measured by the tech lead on 2026-09-30, comparing
+each function against `git show 745493c:app.js`:
+
+| item | claimed | measured |
+|---|---|---|
+| `seekToLive` | byte-identical | **DIFFERS** — WS23 changed the target to `SEEK_LIVE_MARGIN_S` |
+| `seekToProgramTime` | byte-identical | **DIFFERS** — WS23 added `recordStreamEdge()` sampling |
+| `resolveMetadataForPosition` | byte-identical | **DIFFERS** — 30 -> 106 lines (WS26) |
+| `seekBy`, `playheadWallMs`, `pickByPosition`, `posMs` | byte-identical | still identical |
+
+**The claim is stale, not false** — but `seekToProgramTime` is the exact function
+WS28 concerns, and an agent computing a baseline from that list would be misled.
+
+**A second, worse case: the comment at `app.js:3337`.** It states that HLS
+playlists carry no `EXT-X-DATERANGE` metadata. **Measured 2026-09-30 against
+SR's real playlists:** non-PDT `DATERANGE` count is indeed **0**, so the comment
+is *literally* true — but **`#EXT-X-PROGRAM-DATE-TIME` IS present**, at playlist
+head, on p1/p2/p3, with 1700 x `#EXTINF:6.4` = a 3.02 h window, served
+`access-control-allow-origin: *`.**
+
+**PDT is the tag that carries the playlist-to-wall-clock mapping.** The comment's
+conclusion — that the app has no independent time reference — is therefore
+**wrong**, and that conclusion has shaped several workstreams' assumptions.
+
+**This comment is corrected in code by the coding agent, not by the tech lead**
+(see `AGENTS.md` 13a). Do not "fix" it as a drive-by; it belongs to WS28.
+
+**And the scope limit is now narrower than this file claims, in a way that
+matters:** desktop Chromium still **cannot PLAY** SR's HLS (measured:
+`play()` rejected, 2 fatal `mediaSourceRequiresReset`/`bufferAppendingError`,
+`video.seekable` empty — no DVR window, no seek). But it **can READ the
+playlist**, including per-fragment `programDateTime` via hls.js. **So timing
+questions are browser-testable; DVR playback questions are not.** WS28 is a
+timing question, and that is now measurable without the phone.
