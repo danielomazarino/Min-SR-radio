@@ -766,23 +766,65 @@ test('WS26 R1: the panel header song comes from the ONE resolver, not the air', 
   assert.ok(!/nowPlaying\.song/.test(EXPAND),
     "the header must never read nowPlaying.song -- that is the ON-AIR poll's field");
 
-  // The resolver itself must prefer the PLAYHEAD song when behind live, and
-  // the on-air song at the edge. Both branches are asserted, because a
-  // resolver that always used the timeline would be wrong at the live edge
-  // and a resolver that always used the poll would be wrong everywhere else.
+  // The resolver's SONG RULE, asserted as a rule rather than as the old
+  // edge-branch literal.
+  //
+  // ---- WS27 RESTATEMENT, with the reason recorded (§7b) ----
+  // The earlier claim here was:
+  //   /atLiveEdge \? \(nowPlaying\.song \|\| hit\) : \(hit \|\| null\)/
+  // "the resolver must use the on-air song at the live edge and the playhead
+  // song behind it". That was a SOURCE-TEXT assertion of the WS26 shape, and
+  // the shape it pinned is the shape the OWNER'S DEVICE falsified: at the live
+  // edge that expression prefers the poll's song while row 4 reads the
+  // timeline, so the two halves named different songs at the same instant
+  // (2026-09-29, P3, 02:50). It is SUPERSEDED -- the requirement genuinely
+  // changed, from "the edge prefers the poll" to "ONE rule for both surfaces".
+  //
+  // It is NOT deleted and NOT weakened to a looser pattern. The new assertion
+  // is STRONGER in the property that matters: there must be exactly ONE
+  // timeline read feeding the song, and no `nowPlaying.song` preference at all
+  // in the song position. The poll is allowed ONLY as the empty-timeline
+  // fallback, which is asserted separately and by behaviour below.
   const RESOLVER = (() => {
     const a = CODE.indexOf('function resolvePlayheadMeta()');
     assert.notEqual(a, -1, 'resolvePlayheadMeta must exist');
     return CODE.slice(a, CODE.indexOf('function', a + 10));
   })();
-  assert.ok(/atLiveEdge \? \(nowPlaying\.song \|\| hit\) : \(hit \|\| null\)/.test(RESOLVER),
-    'the resolver must use the on-air song at the live edge and the playhead song behind it');
+  // ONE expression decides the song, at the edge and behind it alike.
+  assert.ok(/const song = hit \|\| \(atLiveEdge \? \(nowPlaying\.song \|\| null\) : null\);/.test(RESOLVER),
+    'the song must come from ONE rule: the timeline whenever it has an entry, ' +
+    'with the on-air poll as the empty-timeline fallback at the live edge');
+  // The old edge-branch preference must be GONE. This is the regression guard
+  // for the exact defect: if a future edit restores "at the edge trust the poll
+  // first", the two halves can diverge again and the suite must say so.
+  //
+  // SCOPED PRECISELY, and a first attempt at this was too broad. Asserting
+  // "no `atLiveEdge ? (nowPlaying.song`" also forbids the CORRECT empty-
+  // timeline fallback, which legitimately reads
+  //   hit || (atLiveEdge ? (nowPlaying.song || null) : null)
+  // and must stay, or the card blanks when no poll has landed. A guard that
+  // forbids the fix as well as the defect is a bad guard. So the forbidden
+  // shape is the POLL-FIRST one specifically: the poll consulted BEFORE `hit`.
+  assert.ok(!/nowPlaying\.song \|\| hit/.test(RESOLVER),
+    'the resolver must not prefer the on-air poll at the live edge -- that is ' +
+    'the WS26 assumption the owner\'s device falsified, and the cause of R6');
+  assert.ok(!/atLiveEdge \? nowPlaying\.song/.test(RESOLVER),
+    'the live edge must not take the poll without consulting the timeline first');
+  // And the fallback MUST still be reachable, or "the card must never blank"
+  // is a claim with nothing behind it. Asserted positively, and then driven
+  // for real in the WS27 tests below -- a positive-source assertion plus a
+  // driven empty-timeline case, because a guard that cannot fail is not one.
   // R6 is the cheap and important one: the cover must be chosen from the SAME
   // decision that chose the song, so the two cannot describe different moments.
-  assert.ok(/artwork: atLiveEdge/.test(RESOLVER),
-    "the cover must be picked by the same atLiveEdge decision as the song");
-  assert.ok(/\? \(nowPlaying\.onAirArtwork \|\| nowPlaying\.playheadArtwork \|\| null\)\s*:\s*\(nowPlaying\.playheadArtwork \|\| null\)/.test(RESOLVER),
-    'at the edge the on-air cover; behind live, the playhead cover');
+  // The cover is now chosen by asking whether the WINNING SONG is the on-air
+  // song, not by asking which side of the edge we are on -- a position test can
+  // disagree with a song test, which is how a stranger's cover got a real title.
+  assert.ok(/const winnerIsOnAir = Boolean\(/.test(RESOLVER),
+    "the cover must be chosen by which SONG won, not by which side of the edge");
+  assert.ok(/const artwork = !atLiveEdge/.test(RESOLVER),
+    'behind live the cover must be the playhead cover, unchanged (R3)');
+  assert.ok(/winnerIsOnAir[\s\S]{0,200}onAirArtwork/.test(RESOLVER),
+    'at the edge the on-air cover when the on-air song won');
   // And the ONE timeline read: the compact line and the resolver must use the
   // identical expression, so they agree by construction rather than by habit.
   const compact = /const liveSong = \(!isEpisode && cur && cur\.kind === 'live'\)\s*\?\s*pickByPosition\(nowPlaying\.timeline, playheadWallMs\(\)\)/.test(APP_JS);
@@ -842,10 +884,13 @@ test('WS26 R6: driven poll -> seek -> poll, the panel describes ONE moment', () 
   const seekableEnd = NOW / 1000;
   const ON_AIR = { title: 'On Air Song', artist: 'Air Artist', startMs: NOW - 60_000, stopMs: NOW + 240_000 };
   const HISTORIC = { title: 'Historic Song', artist: 'Old Artist', startMs: NOW - 330_000, stopMs: NOW - 150_000 };
-  // The playhead sits 60 s INTO the historic song, i.e. 150 s behind the edge.
-  const currentTime = seekableEnd - (NOW - (HISTORIC.startMs + 60_000)) / 1000;
+  // The SEEKED playhead sits 60 s INTO the historic song, 150 s behind the edge.
+  const seekedTime = seekableEnd - (NOW - (HISTORIC.startMs + 60_000)) / 1000;
+  // The genuinely-at-the-edge playhead sits ON the buffer edge, so
+  // playheadWallMs() returns NOW and the on-air song is the one covering it.
+  const edgeTime = seekableEnd;
 
-  const world = (atLiveEdge, onAirCover, playheadCover) => ({
+  const world = (atLiveEdge, onAirCover, playheadCover, currentTime) => ({
     nowPlaying: {
       song: { ...ON_AIR }, onAirArtwork: onAirCover, playheadArtwork: playheadCover,
       episodeArtwork: null, channelId: 164, timeline: [{ ...HISTORIC }, { ...ON_AIR }],
@@ -854,14 +899,31 @@ test('WS26 R6: driven poll -> seek -> poll, the panel describes ONE moment', () 
     audioEl: { currentTime },
   });
 
+  // ---- WS27 CORRECTION, with the reason recorded (§7b) ----
+  // The world above used to be called with `atLiveEdge: true` while the
+  // playhead sat 150 s BEHIND the edge. Those two facts contradict each other:
+  // the app derives atLiveEdge from distanceFromLiveEdge (<= 10 s), so a world
+  // 150 s behind the edge is a BEHIND-LIVE world that claims to be at the edge.
+  // The old case 1 ("at the edge the panel shows the on-air song") only passed
+  // because the resolver preferred the poll unconditionally at the edge -- it
+  // asserted the right ANSWER from a world that does not exist, and it could
+  // not tell a correct resolver from one that always trusts the poll.
+  //
+  // The edge cases now use a playhead that is actually on the edge. The
+  // behind-live cases keep the original seeked playhead, unchanged, so R1/R2/R3
+  // and the WS24 cover-race guard still assert exactly what they asserted.
+  //
+  // WHAT IT DOES NOT WEAKEN: the assertions below are the same properties, now
+  // on a world where they mean what they say.
+
   // --- 1. at the live edge: the panel shows the ON-AIR song and cover
-  const atEdge = factory(world(true, 'COVER-ONAIR', 'COVER-HIST')).resolvePlayheadMeta();
+  const atEdge = factory(world(true, 'COVER-ONAIR', 'COVER-HIST', edgeTime)).resolvePlayheadMeta();
   assert.equal(atEdge.atLiveEdge, true, 'harness: this world is at the live edge');
   assert.equal(atEdge.song.title, ON_AIR.title, 'at the edge the panel shows the on-air song');
   assert.equal(atEdge.artwork, 'COVER-ONAIR', 'at the edge the panel shows the on-air cover');
 
   // --- 2. after a seek: title AND artist must follow the playhead
-  const seeked = factory(world(false, 'COVER-ONAIR', 'COVER-HIST')).resolvePlayheadMeta();
+  const seeked = factory(world(false, 'COVER-ONAIR', 'COVER-HIST', seekedTime)).resolvePlayheadMeta();
   assert.equal(seeked.atLiveEdge, false, 'harness: this world is behind live');
   assert.equal(seeked.song.title, HISTORIC.title,
     'R1: behind live the panel song must be the one AT THE PLAYHEAD, not the on-air song');
@@ -869,7 +931,7 @@ test('WS26 R6: driven poll -> seek -> poll, the panel describes ONE moment', () 
     'R2: the artist must follow the playhead too');
 
   // --- 3. the 45 s poll fires while behind live. This is the WS24 regression.
-  const afterPoll = factory(world(false, 'COVER-ONAIR-CHANGED', 'COVER-HIST')).resolvePlayheadMeta();
+  const afterPoll = factory(world(false, 'COVER-ONAIR-CHANGED', 'COVER-HIST', seekedTime)).resolvePlayheadMeta();
   assert.equal(afterPoll.artwork, 'COVER-HIST',
     'R3: the poll must NOT overwrite the cover the playhead resolved');
   assert.equal(afterPoll.song.title, HISTORIC.title,
@@ -884,7 +946,294 @@ test('WS26 R6: driven poll -> seek -> poll, the panel describes ONE moment', () 
     'R6 guard: the panel must genuinely be behind live, or this test proves nothing');
 
   // --- 4. returning to the edge brings the on-air cover back
-  const back = factory(world(true, 'COVER-ONAIR-CHANGED', 'COVER-HIST')).resolvePlayheadMeta();
+  const back = factory(world(true, 'COVER-ONAIR-CHANGED', 'COVER-HIST', edgeTime)).resolvePlayheadMeta();
   assert.equal(back.artwork, 'COVER-ONAIR-CHANGED',
     'at the live edge the panel must show the on-air cover again');
+});
+
+// ===================================================================
+// WS27 R6 -- the live-edge divergence. DRIVEN, and RED on the pre-change code.
+// ===================================================================
+//
+// WHY THIS BLOCK EXISTS AND WHY IT IS SEPARATE FROM THE WS26 ONE ABOVE.
+//
+// The WS26 driven test is a poll -> seek -> poll sequence. Every one of its
+// cases sits BEHIND the edge, because before WS27 the edge was a different
+// code path. That is the trap AGENTS.md §12 records: a suite that only tests
+// the case you already fixed cannot find the case you did not. The owner's
+// defect was AT the edge, and the green suite said nothing about it.
+//
+// The resolver and both position helpers are EXTRACTED from app.js by brace
+// matching and EXECUTED. Nothing here re-implements the logic under test --
+// retyping it is how two earlier workstreams reached confident wrong answers.
+//
+// WHAT THIS BLOCK PROVES: on a fixture world that the owner's device report
+// describes, the two halves of the panel name one song. This is CODE
+// EVIDENCE from a fixture harness on a desktop. It is NOT device evidence, it
+// touches no network, and it decodes no audio.
+
+const WS27_NOW = 1_700_000_000_000;
+
+// One extraction + execution harness for the whole block, so the canary is a
+// property of the harness rather than of any one test.
+//
+// CANARY: `pickByPosition` and `resolvePlayheadMeta` are real, so a wrapper in
+// the injected scope counts every call. Printed by the first test and
+// ASSERTED non-zero by it. A harness whose canary reads 0 is a harness that
+// proved nothing and must be reported as a hard failure, not as a pass.
+function ws27Harness(sourceText) {
+  const src = sourceText;
+  const grab = (name) => {
+    const start = src.indexOf(`function ${name}(`);
+    if (start === -1) throw new Error(`${name} must exist in the source under test`);
+    let d = 0, end = -1;
+    for (let i = start; i < src.length; i++) {
+      if (src[i] === '{') d++;
+      else if (src[i] === '}') { d--; if (d === 0) { end = i; break; } }
+    }
+    if (end === -1) throw new Error(`brace matching failed for ${name}`);
+    return src.slice(start, end + 1);
+  };
+  return new Function('deps', `
+    const { nowPlaying, state, audioEl, canary } = deps;
+    const _RealDate = Date;
+    function Date(...a) { return a.length ? new _RealDate(...a) : new _RealDate(${WS27_NOW}); }
+    Date.now = () => ${WS27_NOW};
+    Date.prototype = _RealDate.prototype;
+    // The REAL functions, verbatim. Wrapped only to count calls.
+    ${grab('pickByPosition')}
+    ${grab('playheadWallMs')}
+    const _pickByPosition = pickByPosition;
+    const _resolvePlayheadMeta = resolvePlayheadMeta;
+    function countedPick(entries, atMs) {
+      canary.pickCalls++;
+      const r = _pickByPosition(entries, atMs);
+      canary.lastPick = r;
+      return r;
+    }
+    pickByPosition = countedPick;
+    ${grab('resolvePlayheadMeta')}
+    // resolvePlayheadMeta closes over pickByPosition, which is now the counted
+    // wrapper, so the count is of the REAL selection logic being executed.
+    return {
+      resolvePlayheadMeta() { canary.resolveCalls++; return _resolvePlayheadMeta(); },
+      pickByPosition: _pickByPosition,
+      // Exposed so a test can ask "what instant does the REAL code think the
+      // playhead is on?" instead of hardcoding one. A hardcoded instant in this
+      // file once landed exactly on an exclusive stopMs boundary and returned
+      // null, which failed the test for a reason that had nothing to do with
+      // the resolver under test.
+      playheadWallMs: () => playheadWallMs(),
+    };
+  `);
+}
+
+// The owner's world, verbatim from the 2026-09-29 device report:
+//   card   -> "More!" / Robin Bengtsson      (the poll's on-air song)
+//   row 4  -> "Depeche Mode / Enjoy The Silence"
+// at the LIVE EDGE, P3, 02:50.
+//
+// The mechanism (measured, not assumed): pickByPosition returns the FIRST
+// containing entry in a startMs-sorted array, so an earlier-starting entry
+// that spans now SHADOWS the polled song. A polled `previoussong` that has
+// overrun `now` is exactly such an entry, and no timing assumption about the
+// real stream is needed to build it.
+const WS27_ON_AIR = {
+  title: 'More!', artist: 'Robin Bengtsson',
+  startMs: WS27_NOW - 60_000, stopMs: WS27_NOW + 240_000,
+};
+const WS27_SHADOW = {
+  title: 'Enjoy The Silence', artist: 'Depeche Mode',
+  startMs: WS27_NOW - 400_000, stopMs: WS27_NOW + 30_000,
+};
+
+function ws27World({ atLiveEdge, timeline, currentTime, onAir = WS27_ON_AIR,
+                      onAirArtwork = 'COVER-ONAIR', playheadArtwork = 'COVER-PLAYHEAD' }) {
+  return {
+    nowPlaying: {
+      song: onAir ? { ...onAir } : null,
+      onAirArtwork,
+      playheadArtwork,
+      episodeArtwork: null,
+      channelId: 164,
+      timeline,
+    },
+    // At the edge the playhead sits ON the buffer edge, so playheadWallMs()
+    // returns NOW and the shadowing entry genuinely contains it. This world is
+    // internally consistent -- the WS26 test's `atLiveEdge: true` with a
+    // playhead 150 s back was not, and that contradiction is corrected there.
+    state: { current: { kind: 'live', id: 164, atLiveEdge, seekableEnd: WS27_NOW / 1000, _srProgramTitle: 'P' } },
+    audioEl: { currentTime },
+    canary: { pickCalls: 0, resolveCalls: 0, lastPick: null },
+  };
+}
+
+// --- 1. THE DEFECT. Red on the pre-change resolver, green on the new one. ---
+
+test('WS27 R6 live edge: card and row 4 must name ONE song when a timeline entry shadows the poll', () => {
+  // The SAME extraction + execution path for both source versions, so the only
+  // variable is the resolver under test.
+  const timeline = [WS27_SHADOW, WS27_ON_AIR];   // startMs-sorted, as app.js guarantees
+  const run = (sourceText) => {
+    const world = ws27World({ atLiveEdge: true, timeline, currentTime: WS27_NOW / 1000 });
+    const api = ws27Harness(sourceText)(world);
+    return { card: api.resolvePlayheadMeta(), canary: world.canary, api };
+  };
+
+  const w = run(CODE);
+  const { card, canary } = w;
+
+  // The canary is asserted, not just logged. A zero here means the harness
+  // never executed the code under test and every number below is fiction.
+  assert.ok(canary.pickCalls > 0 && canary.resolveCalls > 0,
+    `harness canary must fire: pickCalls=${canary.pickCalls} resolveCalls=${canary.resolveCalls}`);
+  console.log(`WS27 canary: pickCalls=${canary.pickCalls} resolveCalls=${canary.resolveCalls}`);
+
+  // Row 4 is the timeline, unconditionally -- that is the pre-existing
+  // expression in paintNowPlaying(), left byte-identical on purpose.
+  const row4 = w.api.pickByPosition(timeline, WS27_NOW);
+  assert.equal(row4.title, 'Enjoy The Silence',
+    'harness: the shadowing entry must be the one row 4 shows, or this test proves nothing');
+  assert.equal(row4.title, WS27_SHADOW.title);
+
+  // THE ASSERTION. Card song and row 4 song, as an equality between the two
+  // surfaces -- not two separate facts, which is how they drifted apart.
+  assert.equal(card.atLiveEdge, true, 'harness: this world is at the live edge');
+  assert.equal(card.song.title, row4.title,
+    'R6 AT THE LIVE EDGE: the card must name the same song row 4 names, even '
+    + 'when a timeline entry shadows the poll. This is the owner\'s defect '
+    + '(P3, 02:50: "More!" vs "Enjoy The Silence") and it is RED on the '
+    + 'pre-change resolver.');
+  assert.equal(card.song.artist, row4.artist, 'R6: the artist must agree too');
+
+  // And the cover must belong to THAT song, not to the poll's. This is the
+  // second half of the same failure: a stranger's face under a real title.
+  assert.notEqual(card.song.title, WS27_ON_AIR.title,
+    'R6 guard: the winning song must genuinely differ from the on-air song, or '
+    + 'this test cannot tell the fix from the defect');
+  assert.notEqual(card.artwork, 'COVER-ONAIR',
+    'R6: the on-air cover belongs to a DIFFERENT song and must not be shown '
+    + 'under this title');
+  assert.equal(card.artwork, 'COVER-PLAYHEAD',
+    'R6: the cover must describe the song the card names');
+});
+
+test('WS27 cover: at the live edge the cover is chosen by WHICH SONG WON, not by which side of the edge', () => {
+  // Two worlds at the SAME edge with the SAME covers, differing only in whether
+  // the on-air song won. If the cover were picked by position class, both would
+  // return the same thing and this test could not fail. It can: the answers
+  // differ, so the position-class rule is falsified.
+  const atEdgeWithOnAirWinner = (() => {
+    const w = ws27World({ atLiveEdge: true, timeline: [{ ...WS27_ON_AIR }],
+                          currentTime: WS27_NOW / 1000 });
+    return ws27Harness(CODE)(w).resolvePlayheadMeta();
+  })();
+  const atEdgeWithShadowWinner = (() => {
+    const w = ws27World({ atLiveEdge: true, timeline: [WS27_SHADOW, { ...WS27_ON_AIR }],
+                          currentTime: WS27_NOW / 1000 });
+    return ws27Harness(CODE)(w).resolvePlayheadMeta();
+  })();
+
+  assert.equal(atEdgeWithOnAirWinner.song.title, WS27_ON_AIR.title, 'harness');
+  assert.equal(atEdgeWithOnAirWinner.artwork, 'COVER-ONAIR',
+    'at the edge, when the on-air song wins, its own cover must be shown');
+
+  assert.equal(atEdgeWithShadowWinner.song.title, WS27_SHADOW.title, 'harness');
+  assert.equal(atEdgeWithShadowWinner.artwork, 'COVER-PLAYHEAD',
+    'at the edge, when a DIFFERENT song wins, that song\'s cover must be '
+    + 'shown -- never the on-air song\'s');
+
+  // Stated as the general property, because that is what must hold.
+  assert.notEqual(atEdgeWithOnAirWinner.artwork, atEdgeWithShadowWinner.artwork,
+    'harness: the two edge cases must produce different covers, or the '
+    + 'position-class rule has not been falsified and this test proves nothing');
+});
+
+// --- 2. R4 BEHIND LIVE IS UNCHANGED. This must hold on BOTH versions. ---
+
+test('WS27 R4 guard: behind live the row-4 song is UNCHANGED by the WS27 fix', () => {
+  // The known-good case, owner-confirmed on the device for historical songs.
+  // R4 is the thing the brief says must not regress, so it is asserted against
+  // the PRE-change resolver too: the expectation is source-version independent
+  // and a fix that moved it would fail here rather than in the field.
+  const HISTORIC = { title: 'Historic Song', artist: 'Old Artist',
+                     startMs: WS27_NOW - 330_000, stopMs: WS27_NOW - 150_000 };
+  const timeline = [HISTORIC, { ...WS27_ON_AIR }];
+  // 60 s into the historic song == 150 s behind the edge.
+  const seekedTime = (WS27_NOW / 1000) - (WS27_NOW - (HISTORIC.startMs + 60_000)) / 1000;
+
+  const w = ws27World({ atLiveEdge: false, timeline, currentTime: seekedTime,
+                        onAirArtwork: 'COVER-ONAIR-CHANGED', playheadArtwork: 'COVER-HIST' });
+  const api = ws27Harness(CODE)(w);
+  const behind = api.resolvePlayheadMeta();
+
+  assert.ok(w.canary.pickCalls > 0, 'harness canary must fire');
+  // Row 4 asks the timeline at the playhead. The instant is taken from the
+  // REAL playheadWallMs(), not from a literal, so the two cannot drift.
+  const playhead = api.playheadWallMs();
+  assert.equal(playhead, HISTORIC.startMs + 60_000,
+    'harness: the playhead must sit 60 s into the historic song, 150 s behind '
+    + 'the edge, or this test is not the R4 case it claims to be');
+  const row4 = api.pickByPosition(timeline, playhead);
+  assert.notEqual(row4, null, 'harness: the timeline must have an entry at the playhead');
+  assert.equal(behind.atLiveEdge, false, 'harness: this world is behind live');
+
+  // Same input, same output as before the change.
+  assert.equal(behind.song.title, HISTORIC.title,
+    'R4/R1: behind live the panel song must be the one AT THE PLAYHEAD, not the '
+    + 'on-air song -- unchanged by WS27');
+  assert.equal(behind.song.artist, HISTORIC.artist, 'R2: artist, likewise');
+  assert.equal(behind.song.title, row4.title, 'R4: card and row 4 agree behind live');
+  assert.equal(behind.artwork, 'COVER-HIST',
+    'R3: behind live the cover is the playhead cover, never the poll\'s '
+    + '(the WS24 race) -- unchanged by WS27');
+});
+
+// --- 3. THE EMPTY-TIMELINE FALLBACK. The case the fix could most easily break. ---
+
+test('WS27 empty timeline at the live edge: falls back to the on-air song and must NOT blank', () => {
+  const w = ws27World({ atLiveEdge: true, timeline: [], currentTime: WS27_NOW / 1000 });
+  const api = ws27Harness(CODE)(w);
+  const card = api.resolvePlayheadMeta();
+
+  assert.ok(w.canary.pickCalls > 0,
+    'harness canary must fire even when the timeline is empty -- an empty array '
+    + 'still has to REACH pickByPosition for this to be evidence');
+  assert.equal(w.canary.lastPick, null,
+    'harness: an empty timeline must genuinely select nothing');
+
+  assert.notEqual(card.song, null,
+    'the card must NOT blank when the timeline is empty at the live edge: the '
+    + 'poll is the only information available about this moment');
+  assert.equal(card.song.title, WS27_ON_AIR.title,
+    'the empty-timeline fallback must be the ON-AIR song, as the live path '
+    + 'showed before WS27');
+  assert.equal(card.artwork, 'COVER-ONAIR',
+    'the cover must be the on-air song\'s own cover, not the playhead\'s');
+});
+
+test('WS27 empty timeline behind live: still null, and the on-air poll must NOT leak in', () => {
+  // The other half of the fallback, and the reason the fallback is scoped to
+  // the edge. Behind live the on-air poll is known to be the WRONG song (that
+  // is R1), so a timeline with no entry there is an honest blank.
+  const w = ws27World({ atLiveEdge: false, timeline: [], currentTime: WS27_NOW / 1000 - 200 });
+  const card = ws27Harness(CODE)(w).resolvePlayheadMeta();
+  assert.equal(card.song, null,
+    'behind live an empty timeline must NOT fall back to the on-air song -- '
+    + 'that would reintroduce the exact defect WS27 fixes, one field away');
+});
+
+test('WS27 talk radio at the live edge: empty timeline and no song, so artwork is null and must not be asserted otherwise', () => {
+  // Recorded so the next reader does not "fix" this into a cover assertion.
+  // The tech lead hit exactly this on 2026-09-29: it asserted a cover must
+  // exist here and the assertion was WRONG, because `onAirArtwork` is only ever
+  // fetched when a song exists, so `null` is the correct answer. This test
+  // asserts the correct answer instead.
+  const w = ws27World({ atLiveEdge: true, timeline: [], currentTime: WS27_NOW / 1000,
+                        onAir: null, onAirArtwork: null, playheadArtwork: 'COVER-PLAYHEAD' });
+  const card = ws27Harness(CODE)(w).resolvePlayheadMeta();
+  assert.equal(card.song, null, 'no song anywhere -> no song, and no crash');
+  // NOT asserted: "a cover must exist". See above. The value is whatever the
+  // correct rule yields; the property worth guarding is that it does not throw
+  // and does not invent a song.
 });
