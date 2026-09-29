@@ -4313,3 +4313,285 @@ test('WS26 Part 3: a failed episode lookup leaves the POLLED timeline intact', a
   assert.ok(/episodeTracksById\.clear\(\)/.test(APP_CODE),
     'the per-episode cache must be cleared on a channel switch');
 });
+
+// ===================================================================
+// WS29 — the visible timing readout in the Info sheet.
+//
+// WHY THIS BLOCK EXISTS. `edgeMinusNowS` has been measured on a desktop and
+// NEVER on a device, and the owner's programme-skip offset (~10 s, then ~30 s,
+// then ~25 s) has never been explained. WS29 ships the instrument: a Swedish
+// switch and a signed, on-screen number in the existing Info sheet.
+//
+// THE DEFECT THIS BLOCK GUARDS. The readout's read path deliberately does NOT
+// go through `metaDiagGateOpen()` — the owner chose that on 2026-09-30, because
+// a query string cannot be produced by an action inside the app and the owner
+// was being asked to open `?diag=metadata` by hand. The consequence is that a
+// change to the gate, to the flag, or to the panel's read path can silently
+// make the readout report "no data" forever — a panel that always reads
+// "Starta en radiokanal först" looks EXACTLY like a correct panel on a channel
+// that is not playing.
+//
+// So the two halves are asserted SEPARATELY and BOTH are asserted directly:
+//
+//   1. the panel reads the snapshot body with NO query string (the fix), and
+//   2. the gate still refuses all four of its original cases (the protection).
+//
+// A test that only asserted (2) would pass on the unbuilt panel. A test that
+// only asserted (1) would pass if the gate had been deleted. Neither alone is
+// worth writing; together they pin the divergence down.
+//
+// `metaDiagReadoutLines()` is EXTRACTED from app.js by brace matching and
+// EXECUTED, with a positive canary it increments itself — retyping the logic
+// under test is how two earlier workstreams reached confident wrong answers
+// (AGENTS.md §7).
+const WS29_FLAG = 'sr-meta-diag';
+
+// The three states the readout can be in. `null` is the important one: it is
+// what a live radio channel looks like before playback has produced a
+// seekable range, and rendering it as 0 is the specific failure this workstream
+// exists to prevent.
+function ws29Harness(sourceText, edgeMinusNowS, extra) {
+  const src = sourceText;
+  const grab = (name) => {
+    const start = src.indexOf(`function ${name}(`);
+    if (start === -1) throw new Error(`${name} must exist in the source under test`);
+    let d = 0, end = -1;
+    for (let i = start; i < src.length; i += 1) {
+      if (src[i] === '{') d += 1;
+      else if (src[i] === '}') { d -= 1; if (d === 0) { end = i; break; } }
+    }
+    if (end === -1) throw new Error(`brace matching failed for ${name}`);
+    return src.slice(start, end + 1);
+  };
+  return new Function('deps', `
+    const { edge, canary } = deps;
+    // A stand-in for the real snapshot body. It is NOT a re-implementation of
+    // anything under test: metaDiagReadoutLines reads ONE field from ONE
+    // object, and the field is injected so the no-data and has-data worlds can
+    // both be driven.
+    function metaDiagBuildSnapshot() {
+      canary.buildCalls += 1;
+      return { dvr: { streamEdge: edge, seek: { clampedByS: null } } };
+    }
+    ${grab('metaDiagReadoutLines')}
+    return { readout: () => { canary.readoutCalls += 1; return metaDiagReadoutLines(); } };
+  `);
+}
+
+const ws29Edge = (v) => ({ edgeMinusNowS: v });
+
+test('WS29 the readout shows a SIGNED whole-second number, and the canary proves the code ran', () => {
+  const canary = { buildCalls: 0, readoutCalls: 0 };
+  const h = ws29Harness(APP_JS, ws29Edge(27.4), null)({ edge: ws29Edge(27.4), canary });
+  const r = h.readout();
+  // CANARY: the extracted function itself increments these. A zero means the
+  // harness never executed the code under test, which must be a hard failure
+  // and never a pass (AGENTS.md §7).
+  assert.ok(canary.readoutCalls > 0, 'canary: metaDiagReadoutLines was never called');
+  assert.ok(canary.buildCalls > 0, 'canary: the snapshot body was never called');
+  assert.equal(r.ok, true);
+  assert.match(r.primary, /\+27 s/,
+    'a positive reading must be shown with an explicit + and whole seconds');
+});
+
+test('WS29 a NEGATIVE reading keeps its minus sign, so the sign of the report is checkable', () => {
+  const canary = { buildCalls: 0, readoutCalls: 0 };
+  const h = ws29Harness(APP_JS, ws29Edge(-4.2), null)({ edge: ws29Edge(-4.2), canary });
+  const r = h.readout();
+  assert.ok(canary.readoutCalls > 0, 'canary');
+  assert.equal(r.ok, true);
+  assert.equal(r.seconds, -4);
+  assert.ok(!/\+/.test(r.primary),
+    `a negative reading must never render a + sign: ${r.primary}`);
+  assert.match(r.primary, /4 s/);
+});
+
+test('WS29 NO DATA says so in Swedish and never renders 0, null or undefined', () => {
+  // This is the test that matters most. A panel showing "0 s" when it means "no
+  // data" would send the next session chasing a zero offset that does not exist
+  // -- the exact failure the brief calls out.
+  for (const [label, edge] of [
+    ['edgeMinusNowS null', ws29Edge(null)],
+    ['edgeMinusNowS undefined', { edgeMinusNowS: undefined }],
+    ['streamEdge absent entirely', null],
+  ]) {
+    const canary = { buildCalls: 0, readoutCalls: 0 };
+    const h = ws29Harness(APP_JS, edge, null)({ edge, canary });
+    const r = h.readout();
+    assert.ok(canary.readoutCalls > 0, `canary (${label})`);
+    assert.equal(r.ok, false, `${label} must not report a reading`);
+    const text = `${r.primary} ${r.secondary || ''}`;
+    for (const bad of ['null', 'undefined', 'NaN', '0 s', '0s']) {
+      assert.ok(!text.includes(bad),
+        `${label}: the readout must not contain "${bad}" — it would be read as a zero offset (got: ${text})`);
+    }
+    assert.match(r.primary, /Starta en radiokanal/,
+      `${label}: the no-data case must be explained in plain Swedish`);
+  }
+});
+
+test('WS29 the readout is READ-ONLY: it adds a reader, never a writer', () => {
+  // AGENTS.md §3. The panel must not write any of the fields the playback paths
+  // own, or the next session inherits a two-writer race.
+  const panelRegion = region('function openAbout(', 'about.appendChild(body);', APP_CODE);
+  const writes = ['state.current =', 'audioEl.currentTime =', 'audioEl.src =',
+    'seekableEnd =', 'nowPlaying.timeline =', '.play()', '.pause()', 'hlsDetach('];
+  for (const w of writes) {
+    assert.ok(!panelRegion.includes(w),
+      `the Info-sheet panel must not contain "${w}" — it is a read-only display`);
+  }
+});
+
+test('WS29 the panel reads the snapshot body WITHOUT the ?diag=metadata query', () => {
+  // The regression test for the defect that made this brief unbuildable: with
+  // the owner's switch on and NO query string, the panel must still produce a
+  // reading. If someone "simplifies" the panel back through the gate, this is
+  // the test that goes red.
+  const panelRegion = region('function openAbout(', 'about.appendChild(body);', APP_CODE);
+  assert.ok(panelRegion.includes('metaDiagReadoutLines('),
+    'the panel must call the real readout helper');
+  assert.ok(!panelRegion.includes('metaDiagGateOpen('),
+    'the panel must NOT go through metaDiagGateOpen() — the owner chose the '
+    + 'deliberate in-app switch instead, and a URL query cannot be produced by it');
+});
+
+test('WS29 the gate is INTACT: all four original cases behave exactly as before', () => {
+  // The protection half. Case D is the one the gate exists for: a shared
+  // ?diag=metadata link with no flag must still yield nothing.
+  const gate = region('function metaDiagGateOpen()', "return flag === 'on';", APP_CODE);
+  assert.ok(gate.includes('META_DIAG_QUERY'),
+    'the gate must still require the query string');
+  assert.ok(gate.includes('localStorage.getItem(META_DIAG_FLAG)'),
+    'the gate must still require the stored flag');
+
+  // Driven, all four cases, against the real function.
+  const grabGate = () => {
+    const start = APP_JS.indexOf('function metaDiagGateOpen()');
+    let d = 0, end = -1;
+    for (let i = start; i < APP_JS.length; i += 1) {
+      if (APP_JS[i] === '{') d += 1;
+      else if (APP_JS[i] === '}') { d -= 1; if (d === 0) { end = i; break; } }
+    }
+    return APP_JS.slice(start, end + 1);
+  };
+  // Build a runner per case so the stored flag is genuinely in localStorage.
+  const runCase = (q, flagValue) => new Function('q', `
+    const META_DIAG_QUERY = 'diag=metadata';
+    const META_DIAG_FLAG = ${JSON.stringify(WS29_FLAG)};
+    const location = { search: q };
+    const localStorage = { getItem: (k) => (k === META_DIAG_FLAG ? ${JSON.stringify(flagValue)} : null) };
+    ${grabGate()}
+    return metaDiagGateOpen();
+  `)(q);
+  assert.equal(runCase('', 'on'), false,
+    'case A: the flag alone must NOT open the gate (a query string is required)');
+  assert.equal(runCase('?diag=metadata', 'on'), true,
+    'case B: both keys must open the gate');
+  assert.equal(runCase('?diag=metadata', 'off'), false,
+    'case C: flag "off" must keep the gate shut');
+  assert.equal(runCase('?diag=metadata', null), false,
+    'case D: a shared link with NO flag must yield nothing — this is the case '
+    + 'the gate exists to stop');
+});
+
+test('WS29 the owner decision is recorded NEXT TO the gate, so it is not "fixed" away', () => {
+  // A divergence with no explanation is indistinguishable from a bug, and the
+  // next session would rationally delete the flag to "fix" it.
+  // APP_JS, not APP_CODE: this asserts that a COMMENT exists, and APP_CODE has
+  // had its comments stripped. Reading it from the stripped source would make
+  // the assertion pass on an empty string -- a check that cannot fail.
+  const near = APP_JS.slice(
+    APP_JS.indexOf('function metaDiagGateOpen()') - 2600,
+    APP_JS.indexOf('function metaDiagGateOpen()'));
+  assert.ok(/OWNER DECISION/i.test(near),
+    'the owner decision must be written in a comment beside metaDiagGateOpen()');
+  assert.ok(/deliberate divergence/i.test(near),
+    'the comment must say the divergence is deliberate, or a later session '
+    + 'will treat it as an oversight');
+});
+
+test('WS29 the readout timer is cleared when the sheet closes, and never polls when off', () => {
+  // A hidden panel that keeps polling is a battery bug; an interval that
+  // outlives its sheet is the same defect wearing a different hat.
+  const openRegion = region('function openAbout(', 'about.appendChild(body);', APP_CODE);
+  assert.ok(/let readoutTimer = null;/.test(openRegion),
+    'the interval handle must be declared where close() can reach it');
+  // region() searches forward from the FIRST match, and `const close = () => {`
+  // occurs in an earlier, unrelated function. Anchor on openAbout's own body so
+  // this cannot silently read someone else's close handler -- the drifted-anchor
+  // trap that has produced three wrong conclusions in this repo.
+  const closeRegion = region(
+    "aria-label': 'Om appen'", 'document.body.style.overflow', APP_CODE);
+  assert.ok(/clearInterval\(readoutTimer\)/.test(closeRegion),
+    'close() must clear the interval — otherwise it outlives the sheet');
+  // The one declaration only. A second `let readoutTimer` further down would
+  // shadow the first and close() would clear nothing at all.
+  const declarations = openRegion.match(/let readoutTimer = null;/g) || [];
+  assert.equal(declarations.length, 1,
+    `exactly one readoutTimer declaration expected, found ${declarations.length} `
+    + '— a second one shadows the first and the close handler becomes a no-op');
+  // Off means no polling at all: the paint function must bail on a null timer.
+  assert.ok(/if \(readoutTimer === null\) return;/.test(openRegion),
+    'the paint function must return early when the panel is switched off, so '
+    + 'an interval can never outlive the switch being turned off');
+});
+
+test('WS29 the switch reflects STORED state on open, and absent means OFF', () => {
+  // Not "the click sets it" — "the panel tells the truth about what is stored".
+  const openRegion = region('function openAbout(', 'about.appendChild(body);', APP_CODE);
+  assert.ok(/localStorage\.getItem\(META_DIAG_FLAG\)/.test(openRegion),
+    'the switch must read the stored flag, not assume a default');
+  assert.ok(/syncSwitch\(\);/.test(openRegion),
+    'the switch must be synced on open');
+  assert.ok(/diagFlagRead\(\) === 'on'\) startReadout\(\); else stopReadout\(\);/.test(openRegion),
+    'an absent flag must read as OFF: diagnostics must never be on for someone '
+    + 'who never asked for it');
+});
+
+test('WS29 the section becomes VISIBLE when the switch is turned on', () => {
+  // REGRESSION TEST for a bug the browser found and the suite could not.
+  // `is-off` was applied only once, on open, so after switching on the section
+  // kept `display:none` — the readout rendered correct text that the owner
+  // could never see. Every text assertion passed while the element was
+  // invisible. This asserts the CLASS FOLLOWS THE SWITCH, which is the
+  // property that was actually missing.
+  const openRegion = region('function openAbout(', 'about.appendChild(body);', APP_CODE);
+  assert.ok(/diagSection\.classList\.toggle\('is-off', next !== 'on'\)/.test(openRegion),
+    'the click handler must toggle `is-off` with the switch — applying it only '
+    + 'on open leaves the panel invisible after the owner switches it on');
+  // And it must be applied on open too, so the panel starts inert.
+  assert.ok(/if \(diagFlagRead\(\) !== 'on'\) diagSection\.classList\.add\('is-off'\);/.test(openRegion),
+    'an absent flag must start the section hidden');
+});
+
+test('WS29 the first paint happens AFTER the interval exists', () => {
+  // REGRESSION TEST for the second browser-found bug. paintReadout() returns
+  // early when readoutTimer is null, so calling it before setInterval left the
+  // readout blank on open. Order is the whole property, so it is asserted as
+  // order -- a setInterval that merely EXISTS would pass a weaker test.
+  const openRegion = region('function openAbout(', 'about.appendChild(body);', APP_CODE);
+  const start = openRegion.indexOf('const startReadout = () => {');
+  assert.notEqual(start, -1, 'startReadout must exist');
+  const body = openRegion.slice(start, openRegion.indexOf('};', start));
+  const iInterval = body.indexOf('setInterval(');
+  const iPaint = body.indexOf('paintReadout()');
+  assert.ok(iInterval !== -1, 'startReadout must create the interval');
+  assert.ok(iPaint !== -1, 'startReadout must paint once immediately');
+  assert.ok(iInterval < iPaint,
+    'setInterval must come BEFORE the first paintReadout() call: paintReadout '
+    + 'returns early when readoutTimer is null, so painting first leaves the '
+    + 'readout blank on open. Found by driving the real DOM.');
+});
+
+test('WS29 diagSection is declared BEFORE the click handler that mutates it', () => {
+  // A temporal-dead-zone trap: the handler references diagSection, so a later
+  // `const` would throw on the first click. Asserted as order for that reason.
+  const openRegion = region('function openAbout(', 'about.appendChild(body);', APP_CODE);
+  const iDecl = openRegion.indexOf('const diagSection = el(');
+  const iHandler = openRegion.indexOf("diagSwitch.addEventListener('click'");
+  assert.ok(iDecl !== -1, 'diagSection must be declared');
+  assert.ok(iHandler !== -1, 'the click handler must exist');
+  assert.ok(iDecl < iHandler,
+    'diagSection must be declared before the handler that toggles its class, or '
+    + 'the first click throws a temporal-dead-zone ReferenceError');
+});
