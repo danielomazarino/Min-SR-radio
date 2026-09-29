@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '1b4287b';
+  const APP_BUILD = 'c016cdb';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -1028,6 +1028,58 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // construction, not by discipline: they are the same expression on the
     // same array with the same playhead.
     const hit = pickByPosition(nowPlaying.timeline, playheadWallMs());
+    // ONE rule for both surfaces, the edge included. WS27 measured why the
+    // edge used to be special: the card preferred the poll's on-air song while
+    // row 4 used the timeline, and the two disagreed the moment those sources
+    // differed. So there is no longer an edge branch for the SONG at all --
+    // there is one expression, and the edge only decides what happens when the
+    // timeline is empty.
+    //
+    // WHY THE TIMELINE WINS AT THE EDGE. It is the only source keyed to the
+    // PLAYHEAD, and row 4 has always read it there; R4 works and the owner
+    // confirmed it on the device. If the edge read the poll instead, then row
+    // 4 would have to change too, and that is the change most likely to
+    // regress the case that is known good.
+    //
+    // WHICH SONG WINS WHEN BOTH EXIST. The timeline, in both cases. Measured
+    // on the owner device (2026-09-29, P3, 02:50, pill LIVE): the card read
+    // "More!" / Robin Bengtsson while row 4 read "Depeche Mode - Enjoy The
+    // Silence". Reproduced here from a fixture, with no timing assumption:
+    // `pickByPosition` returns the FIRST containing entry in a startMs-sorted
+    // array, so an earlier-starting entry that spans now -- a polled
+    // previoussong that overruns, or a WS26 Part-3 merged track anchored at an
+    // episode start -- SHADOWS the polled song. That is the divergence, and
+    // preferring the timeline removes it at the source.
+    //
+    // THE EMPTY CASE IS THE EDGE CASE, and it falls back to the poll -- never
+    // to a blank. A timeline with no entry covering the playhead (no poll has
+    // landed yet, or talk radio, where SR sends no per-song times at all)
+    // carries no information about this moment, so the on-air poll is the best
+    // available answer and is what the live path showed before WS27.
+    // MEASURED: with an empty timeline row 4 renders BLANK, which is not what
+    // the owner saw, so the empty case was not their cause -- but the
+    // fallback is still the correct degradation and is kept.
+    const song = hit || (atLiveEdge ? (nowPlaying.song || null) : null);
+    // The cover follows the SONG, not the position -- and now not the position
+    // class either. Two cover fields belong to two different songs, so which
+    // one is shown must be decided by WHICH SONG WON above. Behind live that
+    // is unchanged: the playhead cover, always (R3, and the WS24 race).
+    //
+    // At the edge the winner is usually the on-air song (the poll writes it
+    // into the timeline), so the on-air cover is correct and is preferred. But
+    // in the shadowing case above the winner is a DIFFERENT song, and showing
+    // the on-air cover under it would be R6 in a new place: the right title
+    // under a stranger's face. So the cover is chosen by asking whether the
+    // winning song IS the on-air song, and not by asking which side of the
+    // edge we are on.
+    const onAir = nowPlaying.song;
+    const winnerIsOnAir = Boolean(
+      song && onAir && song.title === onAir.title && song.artist === onAir.artist);
+    const artwork = !atLiveEdge
+      ? (nowPlaying.playheadArtwork || null)
+      : (winnerIsOnAir
+        ? (nowPlaying.onAirArtwork || nowPlaying.playheadArtwork || null)
+        : (nowPlaying.playheadArtwork || null));
     // The programme at the playhead. For a live channel `_srProgramTitle` is
     // set by resolveMetadataForPosition() from _srSchedule, position-aware
     // already; at the live edge it is the programme on air, which is the same
@@ -1035,20 +1087,8 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     const programme = cur._srProgramTitle || null;
     return {
       atLiveEdge,
-      // Behind live the playhead song is the ONLY truth. At the live edge the
-      // poll's on-air song is authoritative and the timeline entry is the same
-      // song by construction -- but preferring the poll there keeps the panel
-      // identical to the pre-WS26 live path, so nothing about the live case
-      // changes. (Preferring the timeline everywhere would be equivalent at
-      // the edge and strictly worse if the poll and timeline ever disagreed.)
-      song: atLiveEdge ? (nowPlaying.song || hit) : (hit || null),
-      // The cover follows the SONG, not the position. The two cover fields
-      // belong to two different songs, so which one is shown is decided by
-      // which song won above -- not by a separate "is behind live" test that
-      // could disagree with it. This is what makes R6 structural.
-      artwork: atLiveEdge
-        ? (nowPlaying.onAirArtwork || nowPlaying.playheadArtwork || null)
-        : (nowPlaying.playheadArtwork || null),
+      song,
+      artwork,
       programme,
     };
   }
