@@ -5482,3 +5482,40 @@ revisiting and I have no way to find that out without you.
 full 3 h window actually costs (it is debounced and cached per episode, but I
 have no rate-limit data and did not go looking), and how long SR keeps the
 per-song data for a given episode.
+
+### Deploy record — 2026-09-29
+
+Commit `1b4287b` (source + tests), `8f183ce` (build artifacts). Pushed to
+`main`. **Expected build id: `1b4287b`** — it is the small line under NYHETER.
+If the owner does not see that id, they are testing old code.
+
+Artifacts: `app.e0ee24e9.js`, SW cache `minradio-85ed3a53`,
+`styles.f420a62b.css` (unchanged).
+
+**The four deploy checks, run individually against the live site:**
+
+| # | check | result |
+|---|---|---|
+| 1 | live `index.html` references the new bundle | **PASS** |
+| 2 | the bundle *fetched from the live URL* contains the fix | **PASS** |
+| 3 | served bundle byte-identical to the local build | **PASS** |
+| 4 | live service worker names the new cache | **PASS** |
+
+**They all FAILED on the first run, and that is worth recording.** The live
+site served `app.cef0a7f2.js` — the WS24 build — and the new bundle returned
+**404**, which is the signature of a real failed deploy, not a cache hit.
+
+The distinction that mattered: `git rev-parse origin/main` was `8f183ce`, and
+`raw.githubusercontent.com` served `app.e0ee24e9.js` with HTTP 200, so the
+push had landed. The Pages API then reported `status: "built"` for commit
+`8f183ce` — **the exact commit just pushed** — 45 s after the push. So the
+deployment had succeeded and the edge was still propagating. A `?cb=` cache
+buster did not help, which is the observation that ruled out "my own request
+was cached".
+
+**Had I trusted the first FAIL, I would have reported a broken deploy that did
+not happen. Had I trusted the first PASS of a *different* check, I would have
+missed it.** The rule this earns: a 404 on a freshly pushed asset means
+"propagating", not "failed", **only after** confirming the commit is on the
+remote and the Pages build reports `built` for it. Both were confirmed before
+the re-run.
