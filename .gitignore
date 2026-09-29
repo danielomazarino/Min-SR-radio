@@ -10,3 +10,9 @@ app.*.js
 styles.*.css
 !app.*.js
 !styles.*.css
+
+# Local prompt briefs (not part of the build)
+WS2*.md
+
+# Per-workstream status report, rewritten each workstream (AGENTS.md 13)
+SESSION-STATUS.md
