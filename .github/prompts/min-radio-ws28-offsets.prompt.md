@@ -31,8 +31,14 @@ read a console you cannot see." **Build a way to see it.**
 
 - **A small switch in the existing "Om" (About) sheet** — the sheet that already
   explains in Swedish how the app is built. That is where a non-technical owner
-  will look. Label it plainly, in Swedish.
-- **The number must appear as TEXT ON SCREEN**, so the owner can read it and
+  will look. Label it plainly, in Swedish.  - **It exists, and here is exactly how to reach it** (verified 2026-09-30, so
+    you do not have to go looking): `openAbout()` at `app.js:4886`,
+    `aria-label: 'Om appen'`. Reached from the favourites sheet via a button
+    labelled **`Info`** (`app.js:5362`, `onclick: openAbout`) — behind the ⚙️ cog
+    (`index.html:29`, `edit-btn`) and after the "Kom igång" onboarding.
+  - **Tell the owner it says `Info`, not `Om`.** "Om" is the sheet's aria-label
+    only and is **never rendered on screen**, so an owner told to "open Om" will
+    be looking for a word that is not there.- **The number must appear as TEXT ON SCREEN**, so the owner can read it and
   photograph it. That is the entire point.
 - **One short line the owner can copy or dictate**, not 4 000 characters of JSON.
   The number they need is `edgeMinusNowS` in seconds, plus `clampedByS`.
@@ -68,57 +74,78 @@ at playlist head, with 1700 x `#EXTINF:6.4` = a **3.02 h** window.
 
 **This does NOT mean the app can play the stream in Chromium. It cannot.**
 Measured: hls.js 1.7.3 parses the manifest and all 1700 fragments -- each with
-its own `programDateTime` -- but `play()` is rejected ("no supported source was
-found"), two **fatal** errors follow, and `video.seekable` stays **empty**. So
-there is no DVR window and no seek in a browser. **Every DVR *playback* question
-still needs the owner's iPhone.**
+its own `programDateTime` -- but there is no DVR window and no seek in a
+browser. **Every DVR *playback* question still needs the owner's iPhone.**
 
-**But WS28 is a question about *timing*, not playback -- and timing is now
-measurable in a browser. Do that before asking the owner for anything.**
+> **The specific error signature quoted above did NOT reproduce when the tech
+> lead re-ran it 2026-09-30, and you should not copy it as an observation.**
+> Measured: `MANIFEST_PARSED` **never fired** (15 s timeout), so `play()` was
+> neither resolved nor rejected; **0 fatal errors**, and 6 **non-fatal** ones
+> (`internalException`, `mediaSourceRequiresReset` ×3,
+> `bufferAppendingError` ×2). `video.readyState 0`, `video.seekable.length 0`.
+> **The conclusion is unchanged** -- no playback, no seek, phone required -- but
+> if you report errors, report the ones **you** observe, not these.
 
-#### In the browser
+**BUT THE SUBTRACTION BELOW CANNOT BE DONE IN A BROWSER. It is stated here so
+nobody wastes time rediscovering it.**
 
-1. Fetch the channel's media playlist. Read the head PDT, sum the `EXTINF`
-   durations: `trueEdge = headPdt + totalDuration`.
-2. Read the app's belief -- `window.__srSeekable()`, or `?diag=metadata` ->
-   `streamEdge.edgeMinusNowS`.
-3. **The offset is the difference, and it has a sign:**
+The app-side term (`edgeMinusNowS`) is derived from `seekableEnd`, and
+`seekableEnd` only exists once the app is actually playing. **Measured by the
+coding agent, 2026-09-30, and independently confirmed by the tech lead: in
+desktop Chromium the app never starts playback at all** -- `audioEl.src` stays
+`null`, `networkState 0`, `readyState 0`, so there is no seekable range, and
+`edgeMinusNowS` is `null`/`ABSENT` with `calls: 0`.
 
-```
-offset = (app's edge belief) - (PDT-derived true edge)
-```
+That is consistent with the long-standing finding that desktop Chromium cannot
+play SR's HLS (the app's own `app.js:3337` area and the 2026-09-21 stream work).
+**So the earlier wording in this brief -- "timing is now measurable in a browser,
+do that before asking the owner" -- was WRONG and is withdrawn.** The PDT side is
+browser-readable; **the app side is not.**
 
-**Write both numbers, the subtraction, the channel and the timestamp into
-`SESSION-STATUS.md`.** Report the reading even if it contradicts an expectation
--- **especially then.** A reading that disagrees with a theory is the most
-valuable thing you can produce, and bending it to fit is how a wrong fix ships.
+**What this leaves, and it is still a real gain:** the *stream* half of the
+comparison can be computed anywhere, at any time, and it is the half that was
+previously unobtainable. Use it to characterise the reference clock:
 
-| reading | meaning | next |
-|---|---|---|
-| app belief ~= PDT edge | the app's edge is **accurate**; the offset is in the **schedule's own times** or SR's boundary placement | 3.2 |
-| app belief ahead of PDT by about the reported amount | **this is the cause** | 3.1 -- and still no constant |
-| app belief **behind** the PDT edge | **the sign contradicts the owner's "early" report.** Report it. Do **not** reconcile it by adjusting a number | re-examine the assumption; do not force it |
+1. Fetch `https://ljud1-cdn.sr.se/lc/<ch>/<ch>_128.pls` (CORS is `*`).
+2. Read the head PDT, sum the `EXTINF` durations: `trueEdge = headPdt + sum`.
+3. Record `trueEdge - now`, the channel, and the timestamp in `SESSION-STATUS.md`.
 
-**A caution the tech lead measured:** the PDT-derived window end read **+30.8 s**
-ahead of the local clock, and **+28.6 s** thirteen minutes earlier -- so it
-**drifts ~2 s in 13 min and is not a constant.** Never treat it as one.
+**Measured values so far, and they DRIFT:** `+30.8 s`, and `+28.6 / +28.4 /
++28.1 s` on p1/p2/p3 thirteen minutes earlier -- about **2 s of drift in 13
+minutes.** **It is not a constant and must never be used as one.** Sample it more
+than once, on more than one channel, and report the spread.
 
-**The honest limit, and it is the one WS23 named:** both figures are compared
-against *this machine's* wall clock, so neither can detect a device clock that is
-itself wrong. **The owner's ear against a known broadcast start remains the only
-truly independent reference.** The browser narrows the hypothesis space so that
-one phone reading settles it; it does not replace it.
+**The decisive reading therefore requires the owner's iPhone**, which is why the
+Info-sheet readout in 0a gates everything. That ordering dependency is real: the
+brief cannot produce its central measurement until that UI exists and is deployed.
 
-**Also record `clampedByS`.** If it is not ~0, **the browser clamped the seek**
-and the offset is not in the app's arithmetic at all -- invisible from outside,
-and it looks exactly like a wrong offset.
+**A caution about comparing the two sides.** The PDT-derived edge is a *playlist*
+end; `seekableEnd` is a *buffered* end, and Safari's buffered range **lags** the
+playlist. **They are not known to be the same quantity**, and treating them as
+interchangeable is the assumption under test. Do not subtract one from the other
+and call the result the offset without saying which two quantities you compared.
+
+**Also record `clampedByS` on the phone.** If it is not ~0, **the browser clamped
+the seek** and the offset is not in the app's arithmetic at all -- invisible from
+outside, and it looks exactly like a wrong offset.
 
 #### Then the owner's reading, in user terms
 
 Ask the owner to: open the app, play a channel with **hourly news**, tap the
-**programme-skip** button once, open **Om**, switch diagnostics on, and read the
-`edgeMinusNowS` line. **They need to read one number and report it -- nothing
-else, and no understanding of any of the above is required.**
+**programme-skip** button once, then open **Info** (⚙️ cog → the sheet →
+**Info**), switch diagnostics on, and read the `edgeMinusNowS` line. **They need
+to read one number and report it -- nothing else, and no understanding of any of
+the above is required.**
+
+> **ORDERING DEPENDENCY — this is the thing to get right.** This reading is
+> **only obtainable on the phone**, and on the phone it is **not currently
+> reachable at all** — there is no in-app way to set `localStorage['sr-meta-diag']`
+> (verified: `META_DIAG_FLAG` is only ever *read*, `app.js:5597`, never written by
+> the app), and the snapshot goes only to `console.log` and `localStorage`, both
+> invisible on an iPhone without a Mac cable and Web Inspector. **The Om/Info
+> switch must be built, committed, built into artifacts and pushed before this
+> reading can be taken at all.** Until that is deployed, do not ask the owner for
+> this number -- you would be asking for something they cannot produce.
 ---
 
 ## 0b. Before anything else
@@ -222,11 +249,27 @@ before the owner measured 30 on another programme.
 
 The correct fix is to make the edge belief **true**: obtain the real mapping
 between playlist time and wall-clock time from the stream itself, and use it
-where `playheadWallMs()` and `streamEdgeWallMs()` make the assumption. Note
-`app.js:3337` already references `EXT-X-DATERANGE` metadata — that is where SR
-publishes exactly this mapping, and **that path has never been built.** It is
-the most likely real fix for both offsets. Investigate whether it is reachable
-with the existing hls.js integration before proposing anything else.
+where `playheadWallMs()` and `streamEdgeWallMs()` make the assumption.
+
+> **CORRECTION — the earlier version of this brief said `EXT-X-DATERANGE`, and
+> that was wrong.** MEASURED 2026-09-30 against the real playlists:
+> `DATERANGE` count = **0**; the tag that is actually present is
+> **`#EXT-X-PROGRAM-DATE-TIME`**, at playlist head, on p1/p2/p3. The comment at
+> `app.js:3337` says *"HLS playlists carry no EXT-X-DATERANGE metadata"* —
+> those words are **literally true and the conclusion is wrong**, which is why it
+> misled two sessions. The mapping is carried by **PDT**, not DATERANGE.
+>
+> Two measured facts that make the PDT path **reachable**, not hypothetical:
+> - the CDN serves `access-control-allow-origin: *`, so the playlist **is**
+>   readable from the app's own origin — which matters because **on the iPhone
+>   the app never constructs hls.js** (`CAPS.hlsjs` is false on Safari) and
+>   uses native HLS, so a CDN fetch is the ONLY route on the reference device;
+> - hls.js@1 exposes `this.programDateTime` (27 occurrences in the dist), and I
+>   read a real `firstFragPdt` off its `LEVEL_LOADED` event — that is the
+>   **desktop** path only, and is irrelevant to the iPhone.
+>
+> PDT is self-consistent: over 20 s the head PDT advanced 19.2 s against 20.0 s
+> of wall clock (skew −0.8 s), so it is a usable reference and not a drifting one.
 
 ### 3.2 If the edge belief is correct
 
