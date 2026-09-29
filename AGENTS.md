@@ -386,7 +386,8 @@ says another, that is a defect even when each half is individually correct.
 
 | question | decision |
 |---|---|
-| may the tech lead dispatch the agent, or build and push? | **No, to both.** Write the brief, hand it over, stop. The owner runs the separate chat. |
+| may the tech lead dispatch the agent? | **No.** Write the brief, hand it over, stop. The owner runs the separate chat. |
+| may the tech lead build and push? | **Yes, conditionally** (owner, 2026-09-30). The agent commits and stops; the tech lead reviews, tests, and **deploys if it passes**. A deployment is not a silent consequence of a green suite — it is a reviewed step with a checklist. |
 | the `Spelas just nu` label behind live | **Option A — leave it.** No change. |
 
 ---
@@ -485,3 +486,42 @@ deliberately, so a shared link cannot switch diagnostics on.
 
 **Say what it proved.** "The browser looked right" is not a result. State what
 was driven, what was read back, and what the run did **not** cover.
+
+
+---
+
+## 15. The deploy bar — "if it is not crappy" means these checks, in order
+
+**Owner instruction, 2026-09-30:** *"make sure after testing that it deploys a
+new version if it is not crappy."* That is permission to deploy, **conditional on
+a review, not a substitute for one.**
+
+**Run every check. Report each as PASS or FAIL individually — never as a single
+"deployed successfully".** A green suite is not one of these checks; it is a
+precondition for them.
+
+1. **The suite is green, and the test count went UP.** A fix with no new tests
+   cannot fail on the defect it fixes. This has happened twice.
+2. **Read the whole diff yourself.** Name every file that changed. If anything
+   outside the stated scope moved, stop and ask — an unreviewed drive-by is
+   indistinguishable from a regression.
+3. **Drive it in the built-in browser** and assert on the **rendered DOM**, not on
+   source. A feature that has never been exercised is not reviewed.
+4. **The stated defect is actually fixed**, checked against the *original* report
+   in the owner's words, not against the brief's restatement of it.
+5. **Nothing else moved.** Spot-check the neighbours: a panel added should not have
+   moved a transport, a poll, a schedule, or a timing constant.
+6. **The build produced the artifacts it should**, and the **hashed** bundle
+   really contains the change (`grep` the built file, not the source).
+7. **Then** build → commit artifacts → push → the four deploy checks, with the
+   propagation rule: a 404 or a stale asset on a fresh push means *propagating*,
+   not *failed*, **only after** the commit is confirmed on the remote and the
+   asset serves 200 from the raw host.
+
+**If any check fails: do not deploy.** Report the failing check and what it
+showed. A failed check is information, not an obstacle to be worked around.
+
+**And say plainly what deploying does and does not establish.** The deploy checks
+prove the right code is **served**. They say nothing about how it **behaves**. The
+owner's iPhone is still the only thing that can settle behaviour, and the owner
+must be told which build id to check.

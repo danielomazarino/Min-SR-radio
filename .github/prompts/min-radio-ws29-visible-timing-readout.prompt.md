@@ -332,12 +332,41 @@ repeat that.**
 
 ---
 
-## 7. Commit and STOP
+## 7. Commit and STOP — the deploy is a separate, reviewed step
+
+**Commit, then stop. Do NOT build and do NOT push.**
 
 - **Source and its tests in ONE commit**, plain-English message.
-- **Do not run `npm run build`. Do not push**, to any branch. The owner reviews,
-  and build and push are separate steps.
+- **Do not run `npm run build`** — it rewrites tracked root artifacts, and a
+  `git checkout --` afterwards can destroy uncommitted work.
+- **Do not push**, to any branch.
 - Leave the tree clean. Report the commit id.
+
+**What happens after you stop, so you know it is not an oversight:** the tech lead
+reviews the diff, runs the suite, and checks the panel in the built-in browser.
+**If it passes, the tech lead builds and deploys it** — the owner authorised that
+on 2026-09-30, conditional on that review. **If it fails, it comes back to you
+with the specific finding.** Either way it is a deliberate step, not an omission.
+
+### The bar it must clear to be deployed
+
+These are the checks the tech lead will run. Build to them now rather than being
+sent back.
+
+1. `npm test` green, and the count **higher** than the baseline you recorded.
+2. **The panel works with the switch on and NO query string** — the exact case
+   that made the previous version of this brief unbuildable. Drive it.
+3. **Gate case D still returns nothing** — a shared link with no flag must not
+   enable diagnostics. Drive all four cases if you can.
+4. **No `0 s` shown for "no data"** — a channel with nothing playing must show
+   the plain Swedish message.
+5. **No timer survives the sheet closing**, and none runs when the switch is off.
+6. **The Info sheet still looks and reads normally** for a person who never turns
+   the switch on — the panel is unobtrusive, in Swedish, and does not push the
+   existing content around.
+7. **Nothing outside the panel changed**: no playback, transport, schedule, poll
+   or timing behaviour. `git diff` should show the panel and the snapshot-body
+   split, and nothing else.
 
 ## 8. Final report
 
