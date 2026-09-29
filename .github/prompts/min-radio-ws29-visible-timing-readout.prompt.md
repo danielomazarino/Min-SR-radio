@@ -117,21 +117,28 @@ screen** — it is an `aria-label` for screen readers only. The visible button s
 > asks for; it is the gate asking the wrong question ("are both keys present?")
 > rather than the switch being insufficient.
 >
-> **The owner has NOT yet chosen between these. Do not pick one yourself:**
+> **THE OWNER HAS NOW CHOSEN — option 1, on 2026-09-30. Do not stop and ask
+> again; the decision is made and is recorded. Proceed.**
 >
-> 1. **RECOMMENDED — the panel reads the edge itself**, via its own small,
->    read-only helper, and `metaDiagGateOpen()` is left **completely untouched**.
->    The switch's flag stays as it is; the panel simply does not require the URL
->    half. Weakening of existing gates: **none**.
-> 2. The switch **also navigates** to `?diag=metadata`. Works, but it puts the
->    marker in the URL, which this brief otherwise forbids.
-> 3. Drop the URL half of the gate. **Weakest**, and ruled out by this brief's
->    own reasoning.
+> **Chosen: the panel reads the snapshot body itself**, on its own switch, via a
+> small read-only path — and `metaDiagGateOpen()` is left **completely
+> untouched**. The switch's flag stays as it is; the panel simply does not require
+> the URL half. **Weakening of existing gates: none.**
 >
-> **Whichever is chosen: it is an owner decision, it must be recorded, and the
-> reasoning must be written next to `metaDiagGateOpen()`** so a later session
-> does not "fix" the divergence. If the owner has not answered, **stop and say
-> so in `SESSION-STATUS.md`** — do not implement option 1 and call it decided.
+> Rejected: **option 2**, the switch also navigating to `?diag=metadata` (it
+> would put the marker in the URL, which this brief forbids); **option 3**,
+> dropping the URL half of the gate (weakest, and ruled out by this brief's own
+> reasoning).
+>
+> **The exact required shape is in the section "Where the number comes from",
+> immediately below this one. Read that section — it is the binding one.**
+>
+> **Record it, because it is a deliberate divergence:** the reasoning must be
+> written as a comment **next to `metaDiagGateOpen()`** so a later session does
+> not "fix" it by deleting the flag, and it must be noted in
+> `SESSION-STATUS.md`. **This is an owner decision taken in the owner's absence
+> and it is reversible** — if the owner later prefers option 2 or 3, the change
+> is small, but it must be made deliberately and not by a later reader guessing.
 
 `edgeMinusNowS` is derived from `seekableEnd`, which **only exists while a live
 radio stream is playing.** On a talk channel, before playback starts, and on
