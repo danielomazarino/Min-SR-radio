@@ -5702,3 +5702,87 @@ A was the *physical* cause at 02:50 is only settled by the phone.
 3. **Wait 60 s** at the edge — nothing may change.
 4. **Scrub back**, then wait 60 s — the cover must stay on the scrubbed-to song.
 5. **Talk radio (P1)** — the song line may empty; the programme name must stay.
+
+---
+
+## 2026-09-30 (WS29) — the timing number is now visible on the phone. DEPLOYED.
+
+**Build id to look for: `5d92f76`.** Bundle `app.39e44300.js`,
+`styles.a7560d22.css`, SW `minradio-54ca13fd`. **235/235** (was 223).
+
+### What shipped
+
+A small section at the bottom of the existing **Info** sheet (⚙️ cog → Info),
+containing a switch labelled **"Visa tidsdiagnostik"** and a readout line. It
+shows `edgeMinusNowS` — the app's belief about where the live stream ends,
+compared with the real clock — as **a whole number of seconds, signed**, in
+plain Swedish.
+
+**It is hidden and inert until switched on**, and shows
+*"Starta en radiokanal först"* when no radio channel is playing, rather than
+`null` or a misleading `0`.
+
+### Why this was necessary, and it is a real failure mode
+
+WS23 built the measurement. It was **never read on a device**, for two reasons,
+both now removed:
+
+1. `metaDiagGateOpen()` needs a `localStorage` flag **AND `?diag=metadata` in the
+   URL** — and **nothing in the app ever wrote that flag**. It was read, never set.
+2. The snapshot went to `console.log` and `localStorage` only. **Invisible on a
+   phone.**
+
+**And the near-miss, which is the part worth keeping.** My first brief asked for
+a switch that sets the flag, required the gate to stay intact, and told the owner
+to open the app **normally**. **Those three cannot all hold** — the URL half would
+never be present. The coding agent refused to build it and proved it: with the
+flag on and a normal URL, `gateOpen` is `false` and the snapshot is `null`. So the
+panel would have shown "no data", and that "no data" would have been very easy to
+report as a measurement. **A rig that cannot fail is worse than no rig**, and I had
+written one into a brief.
+
+### The approved resolution, and why the gate survives
+
+**Option 1, an owner decision recorded 2026-09-30:** the panel reads
+`metaDiagBuildSnapshot()` **directly**, on its own switch. `srMetaDiagSnapshot()`
+still calls that body **only after** `metaDiagGateOpen()` returns true, so the
+ordering — not a promise — is the protection.
+
+**Verified on the live site after deployment, all four cases:**
+
+| case | URL | flag | `gateOpen` | snapshot |
+|---|---|---|---|---|
+| A — panel path, **no query** | `/` | `on` | `false` | `null` (panel reads the body regardless) |
+| B — gate path | `?diag=metadata` | `on` | `true` | object |
+| C — flag off | `?diag=metadata` | `off` | `false` | `null` |
+| **D — shared link, no flag** | `?diag=metadata` | absent | **`false`** | **`null`** |
+
+**Case D — the reason the gate exists — still returns nothing.**
+`metaDiagGateOpen()` is byte-identical to WS27. Rejected alternatives: the switch
+navigating to `?diag=metadata` (puts a diagnostics flag in a URL), and dropping
+the URL half of the gate (a shared link could then enable diagnostics).
+
+### No regression — the additive proof
+
+- **`app.js`: 0 removed code lines** (154 insertions). `styles.css`: 0 removed.
+- **Byte-identical:** `metaDiagGateOpen`, `streamEdgeWallMs`,
+  `resolvePlayheadMeta` (WS27's one-song rule), `playheadWallMs`, `pickByPosition`.
+- **No correction constant** — count 0, and the guard test still green.
+- **No protected constant touched.** `Spelas just nu` intact.
+- **Four deploy checks PASS**, all on the first run (no propagation delay, unlike
+  WS26 and WS27).
+
+### NOT FIXED — stated plainly
+
+**This workstream shipped the instrument, not the cure.** The **~25 s programme-skip
+offset and the 10–15 s song-title offset are both still open.** No reading has
+been taken on any device yet. Also untouched: the false `DATERANGE` comment
+(noted, not edited, as briefed), and R5 (not marked fixed — reported working by
+the owner but not attributable to WS27, and possibly service-worker dependent).
+
+### Device check — next session
+
+On the iPhone, **confirm the build line reads `5d92f76`**, then:
+start a channel with **hourly news** → tap **programme-skip once** → ⚙️ cog →
+**Info** → scroll to the bottom → turn on **Visa tidsdiagnostik** → read the
+number, and **report it with the build id**.
