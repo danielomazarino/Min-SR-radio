@@ -640,6 +640,58 @@ a:focus-visible {
 .about-list a { color: var(--accent); }
 .about-para { font-size: 14px; color: var(--text-secondary); margin-bottom: 10px; }
 
+/* ---- WS29: the visible timing readout, in the Info sheet. ----
+   Deliberately plain and in the sheet's own visual language: this is a
+   diagnostic for a non-technical owner, so legibility beats styling. The
+   readout is the one element that must never be ambiguous, so it gets a
+   monospace figure and a real min-height — a number that appears and
+   disappears as the reading comes and goes is unreadable in a photograph. */
+.about-diag { margin-top: 22px; padding-top: 4px; }
+.about-diag .about-heading { margin-top: 0; }
+
+.about-diag-switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: 14px;
+  color: var(--text);
+  cursor: pointer;
+  min-height: 44px; /* iOS tap-target guidance */
+}
+.about-diag-switch .setting-minmax:last-child {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+/* The pressed state is shown by the word AND the attribute, never by colour
+   alone — colour-only state is invisible to a colour-blind owner and
+   unreadable in a screenshot. */
+.about-diag-switch[aria-pressed='true'] { color: var(--accent); }
+.about-diag-switch[aria-pressed='true'] .setting-minmax:last-child {
+  color: var(--accent);
+}
+
+.about-diag-readout {
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  margin: 6px 0 0;
+  min-height: 22px; /* no layout jump when the reading appears */
+}
+.about-diag-note {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin: 4px 0 0;
+  min-height: 18px;
+}
+/* Switched off: the controls are hidden, not removed, so the panel is present
+   but inert. `.is-off` also gates the readout text, which stays empty. */
+.about-diag.is-off .about-diag-readout,
+.about-diag.is-off .about-diag-note { display: none; }
+
 /* ---------- mini player ---------- */
 .player {
   position: fixed;

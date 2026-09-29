@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = 'c016cdb';
+  const APP_BUILD = '5d92f76';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -4887,7 +4887,12 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   function openAbout() {
     const overlay = el('div', { class: 'reader-overlay', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Om appen' });
     const about = el('article', { class: 'reader' });
+    // WS29: the readout's interval is declared here so `close` can clear it.
+    // Declared before `close` is defined because `close` closes over it.
+    let readoutTimer = null;
     const close = () => {
+      // WS29: no timer may outlive the sheet. Verified by a driven test.
+      if (readoutTimer) { clearInterval(readoutTimer); readoutTimer = null; }
       overlay.remove();
       document.body.style.overflow = '';
     };
@@ -4946,6 +4951,87 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       el('li', {}, 'Data från ',
         el('a', { href: 'https://www.sverigesradio.se', target: '_blank', rel: 'noopener', text: 'Sveriges Radio' }),
         '. Appen är oberoende av och inte utgiven av Sveriges Radio.')));
+
+    // ---- WS29: the visible timing readout. ----
+    // Owner decision 2026-09-30: the switch is the deliberate action, so the
+    // panel reads the snapshot body without the ?diag=metadata query half of
+    // the gate. `metaDiagGateOpen()` itself is untouched — see the note beside
+    // it. This block is the ONLY thing that changed about diagnostics access.
+    const diagFlagRead = () => {
+      try { return localStorage.getItem(META_DIAG_FLAG); } catch { return null; }
+    };
+    const diagFlagWrite = (v) => {
+      try { localStorage.setItem(META_DIAG_FLAG, v); } catch { /* ignore */ }
+    };
+
+    // Read the STORED value on open, so the switch tells the truth rather than
+    // assuming a default. Absent is treated as off: diagnostics must never be
+    // on for someone who never asked for it.
+    const diagSwitch = el('button', {
+      class: 'setting-row about-diag-switch', type: 'button',
+      'aria-pressed': 'false',
+    });
+    const diagSwitchLabel = el('span', { class: 'setting-minmax', text: 'Visa tidsdiagnostik' });
+    const diagSwitchState = el('span', { class: 'setting-minmax', text: 'Av' });
+    diagSwitch.append(diagSwitchLabel, diagSwitchState);
+    const syncSwitch = () => {
+      const on = diagFlagRead() === 'on';
+      diagSwitch.setAttribute('aria-pressed', String(on));
+      diagSwitchState.textContent = on ? 'På' : 'Av';
+    };
+
+    const readout = el('p', { class: 'about-diag-readout', text: '' });
+    const readoutNote = el('p', { class: 'about-diag-note', text: '' });
+
+    // Built BEFORE the handlers below are wired, because the click handler
+    // toggles `is-off` on it. Declaring it after the handler would be a
+    // temporal-dead-zone error on the very first click.
+    const diagSection = el('div', { class: 'about-diag' },
+      el('h3', { class: 'about-heading', text: 'Felsökning' }),
+      diagSwitch,
+      readout,
+      readoutNote);
+    // Inert until switched on: hidden, but present in the DOM.
+    if (diagFlagRead() !== 'on') diagSection.classList.add('is-off');
+    body.appendChild(diagSection);
+
+    // A single interval for the whole panel, cleared on close. A hidden panel
+    // that keeps polling is a battery bug, and the interval must not outlive
+    // the sheet that created it. `readoutTimer` is the one declared at the top
+    // of openAbout() so close() can clear it — a second declaration here would
+    // shadow it and the close handler would clear nothing.
+    const stopReadout = () => {
+      if (readoutTimer) { clearInterval(readoutTimer); readoutTimer = null; }
+    };
+    const paintReadout = () => {
+      if (readoutTimer === null) return; // switched off: do not poll at all
+      const r = metaDiagReadoutLines();
+      readout.textContent = r.primary;
+      readoutNote.textContent = r.secondary || '';
+    };
+    const startReadout = () => {
+      stopReadout();
+      // The interval must exist BEFORE the first paint: paintReadout returns
+      // early when there is no timer, so painting first left the readout blank
+      // on open. The suite could not see this — the text assertion passed while
+      // the element was invisible. Found by driving the real DOM.
+      readoutTimer = setInterval(paintReadout, META_DIAG_READOUT_INTERVAL_MS);
+      paintReadout();
+    };
+
+    diagSwitch.addEventListener('click', () => {
+      const next = diagFlagRead() === 'on' ? 'off' : 'on';
+      diagFlagWrite(next);
+      syncSwitch();
+      // WS29: the class must follow the switch. Applying `is-off` only on open
+      // left the section display:none after the switch was turned on — the
+      // readout rendered correct text that the owner could never see. Found by
+      // driving the real DOM, not by the suite.
+      diagSection.classList.toggle('is-off', next !== 'on');
+      if (next === 'on') startReadout(); else stopReadout();
+    });
+    syncSwitch();
+    if (diagFlagRead() === 'on') startReadout(); else stopReadout();
 
     about.appendChild(body);
     overlay.appendChild(about);
@@ -5589,6 +5675,28 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   const META_DIAG_QUERY = 'diag=metadata';
   const META_DIAG_RAW_MAX_CHARS = 4000;
 
+  // WS29 — OWNER DECISION 2026-09-30, and a DELIBERATE divergence. Read this
+  // before "fixing" it.
+  //
+  // The gate below is UNCHANGED and still protects `srMetaDiag()`. WS29 adds a
+  // SECOND, separate read path (`aboutTimingReadout`, below) which calls
+  // `metaDiagBuildSnapshot()` directly, WITHOUT consulting this gate.
+  //
+  // Why that is acceptable: the property this gate protects is that a stray
+  // artefact must never silently enable diagnostics. A query string travels in
+  // links, screenshots, bug reports and history, so it must never be
+  // sufficient on its own. The WS29 switch is a deliberate action INSIDE the
+  // app's own Info sheet — which is exactly the "something a person sets
+  // deliberately" this comment already asks for. The gate asks "are both keys
+  // present?"; the owner has decided that the right question is "was this
+  // deliberate?".
+  //
+  // WHAT MUST NOT CHANGE: `metaDiagGateOpen()` itself, and therefore cases B, C
+  // and D. A shared `?diag=metadata` link with no flag must still return null.
+  // If a future session finds the panel reading without the URL and concludes
+  // the flag is now redundant, that is the wrong conclusion — the flag is what
+  // stops the LINK, and the switch is what stops nothing by accident.
+
   function metaDiagGateOpen() {
     let q = '';
     try { q = String(location.search || ''); } catch { q = ''; }
@@ -5596,6 +5704,52 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     let flag = null;
     try { flag = localStorage.getItem(META_DIAG_FLAG); } catch { flag = null; }
     return flag === 'on';
+  }
+
+  // ---- WS29: the readout the owner can actually see. ----
+  //
+  // ONE number, on screen, in Swedish, readable on an iPhone. This exists
+  // because `edgeMinusNowS` has been measured on a desktop and never on a
+  // device, and the reported programme-skip offset (~25 s, then ~10 s, then
+  // ~30 s) has never been explained.
+  //
+  // READ-ONLY. It reads `metaDiagBuildSnapshot()` and writes NOTHING except its
+  // own text nodes. It never touches audioEl, hls, state.current, timers
+  // outside its own interval, or the network. AGENTS.md §3: this adds a reader,
+  // not a writer.
+  const META_DIAG_READOUT_INTERVAL_MS = 2000;
+
+  // The whole point is that a missing reading must never look like a zero
+  // offset. `edgeMinusNowS` is null until a live stream is playing, so this
+  // returns EXPLICIT text for the no-data case. A panel showing "0 s" when it
+  // means "no data" would send the next session chasing an offset that does not
+  // exist — that is the failure this function exists to prevent.
+  function metaDiagReadoutLines() {
+    let snap = null;
+    try { snap = metaDiagBuildSnapshot(); } catch { snap = null; }
+    const edge = snap && snap.dvr ? snap.dvr.streamEdge : null;
+    const seek = snap && snap.dvr ? snap.dvr.seek : null;
+    const emn = edge ? edge.edgeMinusNowS : null;
+
+    if (!Number.isFinite(emn)) {
+      return {
+        ok: false,
+        primary: 'Starta en radiokanal först',
+        secondary: 'Timningen mäts bara medan en radiokanal spelar.',
+      };
+    }
+    // Whole seconds, sign always shown. A signed value is what makes the sign
+    // of the owner's "lands early" report checkable rather than assumed.
+    const secs = Math.round(emn);
+    const sign = secs > 0 ? '+' : (secs < 0 ? '−' : '±');
+    const lines = [`Appen tror att strömmen slutar ${sign}${Math.abs(secs)} s från klockan nu`];
+    // The two supporting numbers, because a bare number gets misread. A seek the
+    // browser CLAMPED looks identical from outside to a wrong offset.
+    const clamp = seek && Number.isFinite(seek.clampedByS) ? seek.clampedByS : null;
+    if (clamp !== null && Math.abs(clamp) > 0.5) {
+      lines.push(`Sökningen ändrades av webbläsaren med ${clamp.toFixed(1)} s`);
+    }
+    return { ok: true, primary: lines[0], secondary: null, seconds: secs };
   }
 
   // Bound a captured raw API body so a snapshot stays readable in a console.
