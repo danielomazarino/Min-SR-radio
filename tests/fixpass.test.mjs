@@ -126,9 +126,15 @@ test('episode metadata repaint does not depend on the compact live song line', (
   const end = APP_JS.indexOf('\n  // ---- Pågår nu-programmet', start);
   const painter = APP_JS.slice(start, end);
   assert.ok(painter.includes('if (line) {'), 'compact line is optional');
-  assert.ok(painter.includes("const panel = $player.querySelector('.player-expand')"),
-    'expanded panel lookup must run independently of line presence');
-  assert.ok(painter.includes('panel._srRepaint();'), 'open panel repaint must run');
+  // WS26: the inline panel lookup became the named repaintExpandPanel(), so
+  // that three consumers could share one call site. The BEHAVIOUR this test
+  // guards is unchanged: the repaint still runs independently of the compact
+  // line, and it is still not short-circuited by a missing line.
+  assert.ok(painter.includes('repaintExpandPanel();'), 'open panel repaint must run');
+  assert.ok(APP_JS.includes('function repaintExpandPanel() {'),
+    'the panel repaint must be a named function, not three inline copies');
+  assert.ok(/function repaintExpandPanel\(\) \{[\s\S]*?querySelector\('\.player-expand'\)[\s\S]*?_srRepaint\(\)/.test(APP_JS),
+    'repaintExpandPanel must find the open panel and call its repaint hook');
   assert.ok(!/^\s*if \(!line\) return;/m.test(painter),
     'missing compact live line must not short-circuit episode panel repaint');
 });
@@ -161,6 +167,11 @@ test('episode expanded artwork never borrows a live channel song artwork', () =>
   const EXPAND = APP_JS.slice(APP_JS.indexOf('const renderSongView = () => {'));
   assert.ok(/const songArtwork = isEpisode\s*\?/.test(EXPAND),
     'the episode branch of songArtwork must remain explicit and separate');
+  // WS26: the live arm no longer names nowPlaying.artwork -- that field is
+  // gone -- it reads the one resolver. The rule under test is unchanged and is
+  // now stronger: an episode arm cannot reach ANY live cover field.
+  assert.ok(/isEpisode\s*\?\s*\(nowPlaying\.episodeArtwork\s*\|\|\s*live\.artwork\s*\|\|\s*null\)\s*:\s*\(head\s*\?\s*head\.artwork\s*:\s*null\)/.test(EXPAND),
+    "the episode arm must still read only episodeArtwork/live.artwork, and the live arm only the resolver");
   // WS13 Part B supersedes the WS12 conclusion that an episode must use the
   // programme image and nothing else. That conclusion was WRONG: it rested on
   // searches the code never makes (podcast NAMES), whereas this path searches
@@ -185,22 +196,31 @@ test('episode expanded artwork never borrows a live channel song artwork', () =>
   // and would let one kind's cover overwrite the other's. JavaScript accepts a
   // duplicate key silently -- the last one wins -- so this has to be checked by
   // counting, not by presence.
-  const npDecl = /const nowPlaying = \{[\s\S]*?episodeArtwork: null \};/.exec(APP_JS);
+  const npDecl = /const nowPlaying = \{[\s\S]*?playheadArtwork: null \};/.exec(APP_JS);
   assert.ok(npDecl, 'the nowPlaying literal must be readable');
   const npBody = npDecl[0];
-  assert.equal((npBody.match(/artwork:/g) || []).length, 1,
-    'exactly ONE artwork key -- a duplicate would silently shadow the live field');
-  assert.equal((npBody.match(/episodeArtwork:/g) || []).length, 1,
-    'exactly one episodeArtwork key');
-  // And the two must be read from two different fields at the two call sites,
-  // so neither path can inherit the other's cover.
-  assert.ok(/if \(isLive\) \{ nowPlaying\.artwork =/.test(APP_JS),
-    'the live target must write nowPlaying.artwork');
+  // WS26: THREE cover fields now, and the duplicate-key hazard applies to each
+  // one. `artwork:` alone would also match `episodeArtwork:`/`onAirArtwork:`
+  // as a substring, so the count is anchored to the START of a key.
+  for (const key of ['onAirArtwork', 'playheadArtwork', 'episodeArtwork']) {
+    assert.equal((npBody.match(new RegExp(`\\b${key}:`, 'g')) || []).length, 1,
+      `exactly one ${key} key -- a duplicate would silently shadow it`);
+  }
+  // The old single `artwork` key must be GONE, not merely unused: leaving it in
+  // the literal is what would let a future writer resurrect the dual-writer.
+  assert.ok(!/^\s*artwork:/m.test(npBody),
+    'the ambiguous `artwork` field must not exist alongside the three');
+  // And the three must be written from three different fields at three
+  // different call sites, so no two paths can inherit each other's cover.
+  assert.ok(/if \(kind === 'poll'\) \{ nowPlaying\.onAirArtwork =/.test(APP_JS),
+    "the poll writer must write nowPlaying.onAirArtwork");
+  assert.ok(/else if \(kind === 'playhead'\) \{ nowPlaying\.playheadArtwork =/.test(APP_JS),
+    "the playhead writer must write nowPlaying.playheadArtwork");
   assert.ok(/else nowPlaying\.episodeArtwork =/.test(APP_JS),
-    'the episode target must write nowPlaying.episodeArtwork, not artwork');
-  // The live branch must still read nowPlaying.artwork and nothing else.
-  assert.ok(/nowPlaying\.artwork/.test(decl[0]),
-    'a live song must still use the rightnow/iTunes artwork');
+    'the episode writer must write nowPlaying.episodeArtwork, not a live field');
+  // The live arm reads the ONE resolver, which is what makes R6 structural.
+  assert.ok(/head \? head\.artwork : null/.test(decl[0]),
+    'a live song must take its cover from resolvePlayheadMeta(), not a raw field');
   // The episode arm must be the PROGRAMME image and the live arm must be the
   // iTunes/rightnow image -- read them positionally, not just by presence, so
   // swapping the two cannot pass.
@@ -214,8 +234,8 @@ test('episode expanded artwork never borrows a live channel song artwork', () =>
     'and fall back to the programme image');
   assert.ok(!/nowPlaying\.artwork/.test(arms[1]),
     "the episode arm must NOT read the LIVE channel's artwork field");
-  assert.ok(/nowPlaying\.artwork/.test(arms[2]),
-    'the LIVE arm must still read the rightnow/iTunes artwork');
+  assert.ok(/head \? head\.artwork : null/.test(arms[2]),
+    'the LIVE arm must read the resolver\'s cover, which is the rightnow/iTunes artwork at the live edge');
   // Episodes must not trigger an iTunes lookup at all. Comments are stripped
   // first: the WS12 comment NAMES refreshNowPlayingArtwork() while explaining
   // why it is unreachable, and a raw-text scan would trip over its own
@@ -307,13 +327,15 @@ test('episode expanded artwork never borrows a live channel song artwork', () =>
     'the song->cover association is per channel and must not survive a switch');
   // The episode call site must pass a real song and the shared target, and must
   // be guarded on having an artist -- an empty artist is a garbage query.
-  assert.ok(/refreshNowPlayingArtwork\(next, nowPlaying\)/.test(code),
+  assert.ok(/refreshNowPlayingArtwork\(next, 'episode'\)/.test(code),
     'the episode path must call the shared lookup with the resolved track');
-  assert.ok(/if \(next && next\.title && next\.artist\) \{\s*refreshNowPlayingArtwork\(next, nowPlaying\)/.test(code),
+  assert.ok(/if \(next && next\.title && next\.artist\) \{\s*refreshNowPlayingArtwork\(next, 'episode'\)/.test(code),
     "the episode lookup must be guarded on a real title AND artist");
-  // The live call site is unchanged in substance: the live song, live target.
-  assert.ok(/refreshNowPlayingArtwork\(nowPlaying\.song, nowPlaying\)/.test(code),
-    'the live path must still pass the live song and the live target');
+  // The live call site is unchanged in substance: the live song, and it names
+  // the 'poll' writer (WS26 replaced the `nowPlaying` target object with an
+  // explicit writer name, so the two live intents can be told apart).
+  assert.ok(/refreshNowPlayingArtwork\(nowPlaying\.song, 'poll'\)/.test(code),
+    'the live path must still pass the live song and name the poll writer');
   // Sliced by FUNCTION, with the end marker taken from the code itself rather
   // than from neighbouring names: stopNowPlayingPoll is defined BEFORE
   // fetchNowPlaying, so a slice bounded by those two is EMPTY and every
@@ -324,7 +346,7 @@ test('episode expanded artwork never borrows a live channel song artwork', () =>
   const fetchFn = code.slice(code.indexOf('async function fetchNowPlaying'),
     code.indexOf('function pollNowPlaying'));
   assert.ok(fetchFn.length > 0
-    && /refreshNowPlayingArtwork\(nowPlaying\.song, nowPlaying\)/.test(fetchFn),
+    && /refreshNowPlayingArtwork\(nowPlaying\.song, 'poll'\)/.test(fetchFn),
   'the live iTunes lookup must hang off fetchNowPlaying');
   // ...and that function is live-gated, so the LIVE cover is only ever a
   // live channel's.
@@ -336,15 +358,22 @@ test('episode expanded artwork never borrows a live channel song artwork', () =>
   // must still hold is that the episode call is inside updateEpisodeTrack's
   // change-detection block and guarded on a real title AND artist -- a lookup
   // on an empty artist is a garbage query, which is how a wrong cover arrives.
-  const epFn = code.slice(code.indexOf('function updateEpisodeTrack'),
-    code.indexOf('async function fetchNowPlaying'));
-  assert.ok(epFn.length > 0 && /refreshNowPlayingArtwork\(next, nowPlaying\)/.test(epFn),
+  // The slice end is stopNowPlayingPoll, which FOLLOWS updateEpisodeTrack.
+  // It used to be `async function fetchNowPlaying`, which no longer comes
+  // after it -- so this slice silently became empty and the assertion below
+  // could never pass. A boundary that has drifted is a test that stopped
+  // testing, and it failed LOUDLY here rather than passing vacuously.
+  const epStart = code.indexOf('function updateEpisodeTrack');
+  const epEnd = code.indexOf('function stopNowPlayingPoll', epStart);
+  const epFn = code.slice(epStart, epEnd);
+  assert.ok(epFn.length > 0, 'the updateEpisodeTrack slice must not be empty');
+  assert.ok(/refreshNowPlayingArtwork\(next, 'episode'\)/.test(epFn),
     'the episode lookup must live in updateEpisodeTrack, on a track change');
   assert.ok(/if \(next && next\.title && next\.artist\)/.test(epFn),
     "the episode lookup must be guarded on a real title AND artist");
   // And it must be inside the CHANGE detection, never on every timeupdate:
   // a lookup per tick would be four requests a second.
-  assert.ok(/episodeCurrentTrack = next;[\s\S]*?refreshNowPlayingArtwork\(next, nowPlaying\)/.test(epFn),
+  assert.ok(/episodeCurrentTrack = next;[\s\S]*?refreshNowPlayingArtwork\(next, 'episode'\)/.test(epFn),
     'the episode lookup must come after the track is committed, inside the change branch');
 });
 
@@ -469,14 +498,19 @@ test('WS24: the seek path requests artwork for the song it resolved', () => {
   })();
   assert.ok(/refreshNowPlayingArtwork\(/.test(RESOLVE),
     'the seek path must request artwork, or a historical song never gets a cover');
-  // It must pass `nowPlaying` as the target, which is how the shared function
-  // decides the LIVE field rather than the episode field. Getting this wrong
-  // would write a radio cover into the episode's slot.
+  // It must name the WRITER it is, which is how the shared function decides
+  // which field it may write. Getting this wrong would write a radio cover
+  // into the on-air slot -- which is the WS24 regression, in the other
+  // direction. WS26 replaced the `target === nowPlaying` object test with an
+  // explicit writer name, because an object identity test cannot distinguish
+  // two intents that legitimately both mean "live".
   const calls = RESOLVE.match(/refreshNowPlayingArtwork\([^)]*\)/g) || [];
   assert.ok(calls.length >= 1, 'the seek path must call the shared lookup');
   calls.forEach((c) => {
-    assert.ok(/nowPlaying\s*\)?\s*$/.test(c) || /, nowPlaying\)/.test(c),
-      `every seek-path call must target nowPlaying (the live field): ${c}`);
+    assert.ok(/,\s*'playhead'\s*\)/.test(c),
+      `every seek-path call must name the 'playhead' writer: ${c}`);
+    assert.ok(!/,\s*'poll'\s*\)/.test(c),
+      `the seek path must NEVER name the poll writer: ${c}`);
   });
   // And the song it looks up must be re-resolved at fire time, not captured
   // from an earlier frame: the playhead may have moved on while the debounce
@@ -496,7 +530,7 @@ test('WS24: a stale cover is CLEARED when the song changes, never left behind', 
     const a = CODE.indexOf('function resolveMetadataForPosition(');
     return CODE.slice(a, CODE.indexOf('async function resolveProgramTitle(', a));
   })();
-  assert.ok(/refreshNowPlayingArtwork\(null, nowPlaying\)/.test(RESOLVE),
+  assert.ok(/refreshNowPlayingArtwork\(null, 'playhead'\)/.test(RESOLVE),
     'the previous song\'s cover must be cleared through the shared function');
   // Guarded on the song key, so scrubbing WITHIN one long song does not blank
   // a cover that is already correct. Unguarded, this would be a visible
@@ -507,7 +541,7 @@ test('WS24: a stale cover is CLEARED when the song changes, never left behind', 
     'the current song key must be recorded when the clear happens');
   // Guarded on there being something to clear: calling the function when the
   // field is already null is a wasted repaint on every re-resolve.
-  assert.ok(/if \(nowPlaying\.artwork\)/.test(RESOLVE),
+  assert.ok(/if \(nowPlaying\.playheadArtwork\)/.test(RESOLVE),
     'the clear must only run when a cover is actually present');
 });
 
@@ -577,7 +611,7 @@ test('WS24: the LIVE path behaviour is UNCHANGED', () => {
   })();
   // The live poll still calls the shared lookup with the on-air song, and
   // nothing in it was rewired.
-  assert.ok(/refreshNowPlayingArtwork\(nowPlaying\.song, nowPlaying\)/.test(FETCH),
+  assert.ok(/refreshNowPlayingArtwork\(nowPlaying\.song, 'poll'\)/.test(FETCH),
     'the live poll must still request artwork for the ON-AIR song');
   // It must still be unconditional within the poll, i.e. not gated on a
   // position or a debounce of WS24's making.
@@ -595,9 +629,9 @@ test('WS24: the LIVE path behaviour is UNCHANGED', () => {
   assert.ok(decl, 'songArtwork must be a single readable declaration');
   const arms = /isEpisode\s*\?\s*\(([^)]*)\)\s*:\s*([\s\S]*?);/.exec(decl[0]);
   assert.ok(arms, 'songArtwork must be a readable isEpisode ternary');
-  assert.ok(!/nowPlaying\.artwork/.test(arms[1]),
-    "the episode arm must still NOT read the live channel's artwork field");
-  assert.ok(/nowPlaying\.artwork/.test(arms[2]),
+  assert.ok(!/nowPlaying\.onAirArtwork|nowPlaying\.playheadArtwork/.test(arms[1]),
+    "the episode arm must still NOT read a live channel's artwork field");
+  assert.ok(/head \? head\.artwork : null/.test(arms[2]),
     'the live arm must still read nowPlaying.artwork');
   // The live/episode field split inside the shared function is unchanged: the
   // guard is what stops the seek path writing into the episode slot.
@@ -605,10 +639,52 @@ test('WS24: the LIVE path behaviour is UNCHANGED', () => {
     const a = CODE.indexOf('async function refreshNowPlayingArtwork(');
     return CODE.slice(a, CODE.indexOf('function paintNowPlaying(', a));
   })();
-  assert.ok(/const isLive = target === nowPlaying;/.test(FN),
-    'the live/episode guard must be unchanged');
-  assert.ok(/if \(isLive\) \{ nowPlaying\.artwork = big; paintNowPlaying\(\); \}/.test(FN),
-    'the live write path must be byte-identical');
+  // WS26 REPLACED this guard, deliberately. `target === nowPlaying` could not
+  // keep the two LIVE intents apart, because both of them meant "live" and both
+  // passed the same object -- which is exactly the WS24 regression. The
+  // replacement names the writer, so it distinguishes the poll from the
+  // playhead as well as either from the episode.
+  assert.ok(!/const isLive = target === nowPlaying;/.test(FN),
+    'the object-identity guard must be GONE -- it could not separate two live intents');
+  // The field must be resolved from the writer name on EVERY branch, not just
+  // the episode one. Asserting only the episode arm would pass a function that
+  // sent the poll and the playhead to the same field -- which is the WS24 bug.
+  // The three arms are written in three different syntactic forms in the real
+  // code (`if (kind === ...) {`, `else if (kind === ...) {`, and a bare
+  // `else`), so this matches the ASSIGNMENT and reads the field name back from
+  // whichever kind value governs it. A regex that assumed one form would have
+  // silently matched two of three -- and the missing one is the episode writer.
+  const writerArms = [...FN.matchAll(
+    /(?:if|else if)\s*\(kind === '(poll|playhead|episode)'\)\s*\{\s*nowPlaying\.(\w+) =|(?:^|\n)\s*else\s*\{\s*nowPlaying\.episodeArtwork =/g
+  )];
+  const seen = new Map();
+  for (const m of writerArms) {
+    if (m[1]) seen.set(m[1], m[2]);
+    else seen.set('episode', 'episodeArtwork');
+  }
+  assert.ok(writerArms.length >= 3, `every writer name must resolve to its own field (found ${writerArms.length})`);
+  assert.equal(seen.get('poll'), 'onAirArtwork', "the poll writer must own onAirArtwork");
+  assert.equal(seen.get('playhead'), 'playheadArtwork', "the playhead writer must own playheadArtwork");
+  assert.equal(seen.get('episode'), 'episodeArtwork', "the episode writer must own episodeArtwork");
+  assert.equal(new Set(seen.values()).size, 3,
+    'three writers, three DISTINCT fields -- a shared field is the WS24 regression');
+  assert.ok(/if \(kind !== 'poll' && kind !== 'playhead' && kind !== 'episode'\) return;/.test(FN),
+    'an unrecognised writer must write nothing, rather than defaulting to the poll');
+  // The three resolved-write arms, asserted individually. WS26 replaced the
+  // single `if (isLive) { nowPlaying.artwork = big }` with one arm per writer;
+  // the property that survives is that the poll's arm still writes the on-air
+  // field and still repaints, i.e. the live path is not merely present but
+  // unchanged in substance.
+  assert.ok(/if \(kind === 'poll'\) \{ nowPlaying\.onAirArtwork = big; paintNowPlaying\(\); \}/.test(FN),
+    "the poll's resolved-write arm must still write onAirArtwork and repaint");
+  assert.ok(/else if \(kind === 'playhead'\) \{ nowPlaying\.playheadArtwork = big; paintNowPlaying\(\); \}/.test(FN),
+    "the playhead's resolved-write arm must write playheadArtwork and repaint");
+  assert.ok(/else nowPlaying\.episodeArtwork = big;/.test(FN),
+    "the episode's resolved-write arm must write episodeArtwork");
+  // And the CACHE must still be hit on the way in, for all three writers --
+  // the dedupe is what stops a scrub from issuing one request per boundary.
+  assert.ok((FN.match(/artworkCache\.get\(key\)/g) || []).length >= 3,
+    'all three writers must read the shared cache');
   assert.ok(/else nowPlaying\.episodeArtwork = big;/.test(FN),
     'the episode write path must be byte-identical');
   // The cache is still keyed by artist|title, so a cover fetched on the seek
@@ -641,4 +717,174 @@ test('WS24: nothing new was added to a timeupdate handler, and the recorder stay
   // The WS23 read-only contract test must still be satisfied by the new state.
   assert.ok(!/nowPlaying\.artwork\s*=/.test(RESOLVE),
     'the seek path must not assign artwork directly; only the shared function may');
+});
+
+// ===================================================================
+// WS26 -- R1/R2: the panel header must describe THE PLAYHEAD, not the air
+// ===================================================================
+//
+// WS25 established that the compact line and the expand-panel header answered
+// "what is the user looking at?" from two different sources, and disagreed
+// after a seek. WS26 gives both halves ONE source: resolvePlayheadMeta().
+//
+// THE MUTATION THAT PROVED THIS TEST WAS MISSING: reverting the header to
+// `const song = ... : nowPlaying.song` -- the exact pre-WS26 defect -- left the
+// WHOLE SUITE GREEN. Every other assertion in this file covers the artwork
+// field; none covered the header's SONG. So R1 was untested and this test is
+// the reason that is now on the record rather than merely fixed.
+
+test('WS26 R1: the panel header song comes from the ONE resolver, not the air', () => {
+  // The slice is BOUNDED at the end of renderSongView. An unbounded slice to
+  // end-of-file would also contain later, legitimate `nowPlaying.song` reads
+  // (the poll itself, the diagnostics snapshot) and the negative assertion
+  // below would then fail for the wrong reason -- or, if those moved, pass for
+  // the wrong reason. A test that scans past its subject is not a test.
+  const start = APP_JS.indexOf('const renderSongView = () => {');
+  // Use this file's comment-stripped module constant (CODE), not a local
+  // re-strip: one definition, so the two cannot drift.
+  const EXPAND = CODE.slice(CODE.indexOf('const renderSongView = () => {'),
+    CODE.indexOf('panel._srRepaint =', CODE.indexOf('const renderSongView = () => {')));
+  assert.ok(EXPAND.length > 0, 'the renderSongView region must exist');
+
+  // The header must read the resolver, once, and use it for the song.
+  assert.ok(/const head = isEpisode \? null : resolvePlayheadMeta\(\);/.test(EXPAND),
+    'the header must read the one resolver rather than deriving its own');
+  assert.ok(/const song = isEpisode \? episodeCurrentTrack : \(head \? head\.song : null\);/.test(EXPAND),
+    "the header's song must come from the resolver's `head.song`");
+
+  // And it must NOT read the on-air field that WS25 found it reading. This is
+  // the regression guard: a single extra `nowPlaying.song` in the header
+  // brings back R6, no matter what else is correct.
+  //
+  // COMMENTS ARE STRIPPED FIRST, and that is not tidiness. The explanatory
+  // comment above this code contains the literal string `nowPlaying.song`
+  // ("before WS26 this line read nowPlaying.song"), so the raw-source version
+  // of this assertion failed on the COMMENT while the code was correct -- the
+  // exact comment-trap AGENTS.md §2 warns about, and it is how a test ends up
+  // asserting prose. A negative assertion is the most exposed to this: it must
+  // look at code, or it will police a sentence.
+  assert.ok(!/nowPlaying\.song/.test(EXPAND),
+    "the header must never read nowPlaying.song -- that is the ON-AIR poll's field");
+
+  // The resolver itself must prefer the PLAYHEAD song when behind live, and
+  // the on-air song at the edge. Both branches are asserted, because a
+  // resolver that always used the timeline would be wrong at the live edge
+  // and a resolver that always used the poll would be wrong everywhere else.
+  const RESOLVER = (() => {
+    const a = CODE.indexOf('function resolvePlayheadMeta()');
+    assert.notEqual(a, -1, 'resolvePlayheadMeta must exist');
+    return CODE.slice(a, CODE.indexOf('function', a + 10));
+  })();
+  assert.ok(/atLiveEdge \? \(nowPlaying\.song \|\| hit\) : \(hit \|\| null\)/.test(RESOLVER),
+    'the resolver must use the on-air song at the live edge and the playhead song behind it');
+  // R6 is the cheap and important one: the cover must be chosen from the SAME
+  // decision that chose the song, so the two cannot describe different moments.
+  assert.ok(/artwork: atLiveEdge/.test(RESOLVER),
+    "the cover must be picked by the same atLiveEdge decision as the song");
+  assert.ok(/\? \(nowPlaying\.onAirArtwork \|\| nowPlaying\.playheadArtwork \|\| null\)\s*:\s*\(nowPlaying\.playheadArtwork \|\| null\)/.test(RESOLVER),
+    'at the edge the on-air cover; behind live, the playhead cover');
+  // And the ONE timeline read: the compact line and the resolver must use the
+  // identical expression, so they agree by construction rather than by habit.
+  const compact = /const liveSong = \(!isEpisode && cur && cur\.kind === 'live'\)\s*\?\s*pickByPosition\(nowPlaying\.timeline, playheadWallMs\(\)\)/.test(APP_JS);
+  const resolver = /pickByPosition\(nowPlaying\.timeline, playheadWallMs\(\)\)/.test(RESOLVER);
+  assert.ok(compact && resolver,
+    'R4 and the resolver must read the timeline with the IDENTICAL expression');
+});
+
+// ===================================================================
+// WS26 R6 -- DRIVEN, not asserted. The test whose absence let a regression ship.
+// ===================================================================
+//
+// Every other WS26 test checks the SHAPE of the code. This one runs the real
+// poll -> seek -> poll sequence and asks the only question that matters: do
+// the panel's fields describe the same moment? R6 was not a property of the
+// code before WS26 -- it was a wish -- and a wish cannot be asserted.
+//
+// WHAT THIS PROVES: with the real resolver, driven through the real sequence,
+// the panel's song and cover describe the same playhead, and the poll can no
+// longer overwrite the cover.
+// WHAT THIS DOES NOT PROVE: anything about a real iPhone, a real HLS stream, or
+// SR's network. No network is touched, no audio is decoded.
+//
+// The resolver and the two position helpers are EXTRACTED from app.js by brace
+// matching and executed. Nothing here re-implements the logic under test --
+// retyping it is how two earlier workstreams reached confident wrong answers.
+
+test('WS26 R6: driven poll -> seek -> poll, the panel describes ONE moment', () => {
+  const src = CODE;
+  // Brace-matched extraction. `playheadWallMs` calls the real Date.now(), so a
+  // Date shadow must be declared in the SAME scope: `new Date()` is a
+  // CONSTRUCTOR call and resolves to that scope's binding, not to a parameter.
+  const grab = (name) => {
+    const start = src.indexOf(`function ${name}(`);
+    assert.notEqual(start, -1, `${name} must exist in app.js`);
+    let d = 0, end = start;
+    for (let i = start; i < src.length; i++) {
+      if (src[i] === '{') d++;
+      else if (src[i] === '}') { d--; if (d === 0) { end = i; break; } }
+    }
+    return src.slice(start, end + 1);
+  };
+  const NOW = 1_700_000_000_000;
+  const factory = new Function('deps', `
+    const { nowPlaying, state, audioEl } = deps;
+    const _RealDate = Date;
+    function Date(...a) { return a.length ? new _RealDate(...a) : new _RealDate(${NOW}); }
+    Date.now = () => ${NOW};
+    Date.prototype = _RealDate.prototype;
+    ${grab('pickByPosition')}
+    ${grab('playheadWallMs')}
+    ${grab('resolvePlayheadMeta')}
+    return { resolvePlayheadMeta };
+  `);
+
+  const WINDOW_S = 3 * 3600;
+  const seekableEnd = NOW / 1000;
+  const ON_AIR = { title: 'On Air Song', artist: 'Air Artist', startMs: NOW - 60_000, stopMs: NOW + 240_000 };
+  const HISTORIC = { title: 'Historic Song', artist: 'Old Artist', startMs: NOW - 330_000, stopMs: NOW - 150_000 };
+  // The playhead sits 60 s INTO the historic song, i.e. 150 s behind the edge.
+  const currentTime = seekableEnd - (NOW - (HISTORIC.startMs + 60_000)) / 1000;
+
+  const world = (atLiveEdge, onAirCover, playheadCover) => ({
+    nowPlaying: {
+      song: { ...ON_AIR }, onAirArtwork: onAirCover, playheadArtwork: playheadCover,
+      episodeArtwork: null, channelId: 164, timeline: [{ ...HISTORIC }, { ...ON_AIR }],
+    },
+    state: { current: { kind: 'live', id: 164, atLiveEdge, seekableEnd, _srProgramTitle: 'P' } },
+    audioEl: { currentTime },
+  });
+
+  // --- 1. at the live edge: the panel shows the ON-AIR song and cover
+  const atEdge = factory(world(true, 'COVER-ONAIR', 'COVER-HIST')).resolvePlayheadMeta();
+  assert.equal(atEdge.atLiveEdge, true, 'harness: this world is at the live edge');
+  assert.equal(atEdge.song.title, ON_AIR.title, 'at the edge the panel shows the on-air song');
+  assert.equal(atEdge.artwork, 'COVER-ONAIR', 'at the edge the panel shows the on-air cover');
+
+  // --- 2. after a seek: title AND artist must follow the playhead
+  const seeked = factory(world(false, 'COVER-ONAIR', 'COVER-HIST')).resolvePlayheadMeta();
+  assert.equal(seeked.atLiveEdge, false, 'harness: this world is behind live');
+  assert.equal(seeked.song.title, HISTORIC.title,
+    'R1: behind live the panel song must be the one AT THE PLAYHEAD, not the on-air song');
+  assert.equal(seeked.song.artist, HISTORIC.artist,
+    'R2: the artist must follow the playhead too');
+
+  // --- 3. the 45 s poll fires while behind live. This is the WS24 regression.
+  const afterPoll = factory(world(false, 'COVER-ONAIR-CHANGED', 'COVER-HIST')).resolvePlayheadMeta();
+  assert.equal(afterPoll.artwork, 'COVER-HIST',
+    'R3: the poll must NOT overwrite the cover the playhead resolved');
+  assert.equal(afterPoll.song.title, HISTORIC.title,
+    'R1: the poll must NOT overwrite the playhead song');
+  // R6 proper: the two halves of the panel describe the SAME moment. This is
+  // the assertion whose absence let the panel ship with song B under song A's
+  // cover, and it is checked as an equality between the two fields rather than
+  // as two separate facts.
+  assert.equal(afterPoll.artwork === 'COVER-HIST' && afterPoll.song.title === HISTORIC.title, true,
+    'R6: the song and the cover must describe the same playhead');
+  assert.notEqual(afterPoll.song.title, ON_AIR.title,
+    'R6 guard: the panel must genuinely be behind live, or this test proves nothing');
+
+  // --- 4. returning to the edge brings the on-air cover back
+  const back = factory(world(true, 'COVER-ONAIR-CHANGED', 'COVER-HIST')).resolvePlayheadMeta();
+  assert.equal(back.artwork, 'COVER-ONAIR-CHANGED',
+    'at the live edge the panel must show the on-air cover again');
 });

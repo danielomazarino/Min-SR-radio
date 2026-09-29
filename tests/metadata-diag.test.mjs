@@ -866,7 +866,11 @@ test('WS2 Bug 3: renderSongView reads the channel from LIVE state, not the closu
     'the panel label must be unchanged');
   assert.ok(RENDER_SONG_VIEW.includes('song.title'), 'the song title must still be shown');
   assert.ok(RENDER_SONG_VIEW.includes('song.artist'), 'the artist must still be shown');
-  assert.ok(RENDER_SONG_VIEW.includes('nowPlaying.artwork'), 'live artwork must still be shown');
+  // WS26: the live cover comes from the one resolver. The property is that a
+  // cover IS shown for a live song; reading the removed `nowPlaying.artwork`
+  // here would assert the pre-WS26 architecture rather than the behaviour.
+  assert.ok(/head \? head\.artwork : null/.test(RENDER_SONG_VIEW),
+    'live artwork must still be shown, via resolvePlayheadMeta');
 });
 
 test('WS2: enablePlayerGestures removes its previous handlers before re-adding', () => {
@@ -2747,9 +2751,20 @@ test('WS11 Part C: MediaSession carries the position-aware programme and song', 
     'the podcast name must not reuse .player-sub');
   // Artwork: real artwork when it exists, then the track image, then the icon.
   // Episodes deliberately set artwork: null, so nothing is invented.
-  assert.ok(/nowPlaying\.artwork/.test(MEDIA_SESSION) && /cur\.artwork/.test(MEDIA_SESSION)
-    && /icons\/icon-512\.png/.test(MEDIA_SESSION),
-    'artwork must fall back in order and never be invented');
+  // WS26: the first term is now the one resolver, which is what the lock screen
+  // must read (it used to read the raw on-air field, so behind live the car and
+  // the phone showed different songs -- R6 in a third place). The CHAIN and its
+  // ORDER are the property, so all three rungs are asserted and the order too.
+  // The chain is written across three lines with the `||` leading each
+  // continuation, so it is matched with [\s\S]*? rather than a single-line
+  // pattern that would never have matched the real formatting.
+  const chain = /const artworkSrc = [\s\S]*?\|\|\s*cur\.artwork\s*\|\|\s*'icons\/icon-512\.png';/.exec(MEDIA_SESSION);
+  assert.ok(chain, 'artwork must fall back in order and never be invented');
+  assert.ok(/head \? head\.artwork : null/.test(chain[0]),
+    'the first rung must be the position-aware resolver');
+  assert.ok(chain[0].indexOf('head.artwork') < chain[0].indexOf('cur.artwork')
+    && chain[0].indexOf('cur.artwork') < chain[0].indexOf('icon-512.png'),
+    'the fallback order must be resolver -> programme image -> icon');
   // sizes/type must stay correct.
   assert.ok(/sizes: '512x512'/.test(MEDIA_SESSION) && /type: 'image\/png'/.test(MEDIA_SESSION),
     'the artwork sizes/type fields must stay correct');
@@ -3168,8 +3183,29 @@ test('WS18: yesterday is fetched ONLY when the window can actually reach it', ()
   // The threshold must be a real time comparison in ms, not a truthiness test.
   assert.ok(/Number\.isFinite\(start\)/.test(fn),
     'a non-finite seekableStart must not be treated as a window');
-  assert.ok(/windowMs\s*>\s*60\s*\*\s*60\s*\*\s*1000/.test(fn),
-    'yesterday must load only when the window reaches more than an hour back');
+  // ---------------------------------------------------------------------
+  // WS26 SUPERSEDES the assertion below. The PROPERTY is unchanged -- yesterday
+  // must load only when the window genuinely reaches back -- but the FORM of the
+  // comparison is different, and the reason is recorded here rather than by
+  // deletion.
+  //
+  // WAS:  /windowMs > 60 * 60 * 1000/
+  //   "yesterday loads when the window reaches more than an hour back". At the
+  //   owner's 01:19 with a 3 h window the window reaches back 2 h 41 m, so the
+  //   hour threshold said "no" -- and the hour was never consulted. It was a
+  //   stand-in for a question about MIDNIGHT that the formula could not ask.
+  //
+  // NOW:  timeSinceMidnightS < windowS -- two quantities in the same unit. "Has
+  //   enough of the day elapsed that the window's oldest moment falls before
+  //   local midnight?" No threshold, no fudge factor, and it self-adjusts to
+  //   whatever the real window is. A 2 h window then covers hours 0-1 and a 6 h
+  //   window covers 0-5, which the old formula could not do.
+  //
+  // The old regex would have PASSED a hardcoded 3-hour constant. These will not.
+  assert.ok(/timeSinceMidnightS\s*<\s*windowS/.test(fn),
+    'yesterday must load exactly when the window reaches before local midnight');
+  assert.ok(!/windowMs\s*>\s*60\s*\*\s*60\s*\*\s*1000/.test(fn),
+    'the superseded one-hour threshold must be gone -- it never consulted the clock');
   // ---- The gate must be WIRED, not merely present. ----
   // Mutation M3 replaced `if (!needsYesterday) return today || [];` with a
   // constant and the whole suite stayed GREEN: the two assertions above only
@@ -3178,17 +3214,32 @@ test('WS18: yesterday is fetched ONLY when the window can actually reach it', ()
   // ble the arithmetic feeds, which is the only version of this change that
   // actually saves a request.
   //
-  // ---- WS21 SUPERSEDES the assignment's left-hand side ----
+  // ---- WS21 SUPERSEDES the assignment's left-hand side; WS26 supersedes it again ----
   // WS18 assigned `needsYesterday = windowMs > 1h`. Measured live at 01:55,
   // that gate NEVER opened: it is evaluated inside `resolveProgramTitle`,
   // which `playTrack` calls immediately, before any `loadedmetadata` has
   // populated the seekable range -- so `seekableStart` was still null,
-  // `windowMs` was 0, and yesterday was never requested. The fix adds a clock
-  // trigger. The requirement that survives is the one this assertion was
-  // really protecting: the WINDOW comparison must still feed the decision,
-  // not be computed and discarded.
-  assert.ok(/needsYesterday\s*=\s*pastMidnight\s*\|\|\s*windowMs\s*>/.test(fn),
-    'needsYesterday must be assigned from the window comparison, with the WS21 clock trigger OR-ed in');
+  // `windowMs` was 0, and yesterday was never requested. WS21 added a clock
+  // trigger. WS26 replaced the window term with a comparison against local
+  // midnight, and -- the part that matters -- moved the window decision to a
+  // point that actually runs after the window is known.
+  //
+  // The requirement that survives all three forms is the one this assertion was
+  // really protecting: the WINDOW comparison must feed the decision, not be
+  // computed and discarded. It is now a three-way branch, and each arm is
+  // asserted separately so no arm can be quietly dropped.
+  assert.ok(/const windowReachesYesterday = windowS == null/.test(fn),
+    'the window comparison must be computed and named, not inlined away');
+  assert.ok(/needsYesterday\s*=\s*windowReachesYesterday === null/.test(fn),
+    'needsYesterday must branch on whether the window is known');
+  assert.ok(/\?\s*pastMidnight\s*:\s*\(windowReachesYesterday \|\| pastMidnight\)/.test(fn),
+    'unknown window -> clock; known window -> window first, clock second');
+  // The wiring this whole test exists for: the flag that skips the second
+  // request must still be the variable the arithmetic feeds.
+  assert.ok(/if \(!needsYesterday\)/.test(fn),
+    'the gate must still be WIRED -- consumed by the early return, not just computed');
+  assert.ok(/META_DIAG\.lastScheduleGate\.fetchedDays = \['today'\]/.test(fn),
+    'a closed gate must record that only today was fetched');
   // ---- WS21: the early return grew a body, so the assertion is on STRUCTURE ----
   // The one-line `if (!needsYesterday) return today || [];` became a block that
   // records the outcome before returning. Asserting the literal line would fail
@@ -3564,12 +3615,90 @@ test('WS21: the yesterday gate must not depend on a value that is not set yet', 
     'the gate must consult the CLOCK, which is always available (WS21)');
   assert.ok(/new Date\(\)\.getHours\(\)\s*<\s*1/.test(fn),
     'after local midnight a 1h+ window necessarily reaches yesterday (WS21)');
-  assert.ok(/needsYesterday\s*=\s*pastMidnight\s*\|\|/.test(fn),
-    'the clock must be one of the two triggers, not merely computed (WS21)');
-  // The window trigger is KEPT as a second path, so a known long window still
-  // reaches back at any hour of the day.
-  assert.ok(/windowMs\s*>\s*60\s*\*\s*60\s*\*\s*1000/.test(fn),
-    'a known long window must remain a trigger (WS21)');
+  // ---------------------------------------------------------------------
+  // WS26 SUPERSEDES the two assertions below, and the reasoning is recorded
+  // here rather than by deletion, because the PROPERTY this whole test exists
+  // to protect -- "the gate must not depend on a value that is not set yet" --
+  // is STILL enforced, by a stricter route. Read the restatement as the
+  // property surviving a change of form, not as the property being dropped.
+  //
+  // WAS:  /needsYesterday = pastMidnight || /
+  //       /windowMs > 60 * 60 * 1000/
+  //   The gate was "past midnight OR window longer than an hour". WS25 measured
+  //   that as wrong for the case it was written for: the first term is true for
+  //   ONE hour a day, while a 3 h window reaches into yesterday for three. The
+  //   one-hour threshold was a stand-in for a question about MIDNIGHT that the
+  //   formula could not express, and the owner's 01:19 test sat squarely in
+  //   the 01:00-02:59 gap where the gate is shut.
+  //
+  // NOW:  window-first, clock as the EXPLICIT fallback for the unknown case:
+  //     windowReachesYesterday = windowS == null ? null : timeSinceMidnightS < windowS
+  //     needsYesterday = windowReachesYesterday === null
+  //       ? pastMidnight
+  //       : (windowReachesYesterday || pastMidnight)
+  //   `null` means the window is UNKNOWN -- precisely the WS21 situation. So
+  //   this test's property is now an explicit branch in the decision rather
+  //   than an incidental `||`, and it is asserted as such below.
+  assert.ok(/windowReachesYesterday\s*===\s*null\s*\?\s*pastMidnight/.test(fn),
+    'with an UNKNOWN window the gate must fall back to the clock (WS21 property)');
+  assert.ok(/\(windowReachesYesterday \|\| pastMidnight\)/.test(fn),
+    'with a KNOWN window the decision is window-first, clock-second (WS26)');
+  assert.ok(/windowS\s*==\s*null\s*\?\s*null\s*:/s.test(fn),
+    'an unknown window must be null, distinct from a known-but-short one');
+  // The superseded one-hour threshold must be GONE, not merely unused: it
+  // would still pass a hardcoded 3-hour constant, which the brief forbids.
+  assert.ok(!/windowMs\s*>\s*60\s*\*\s*60\s*\*\s*1000/.test(fn),
+    'the superseded one-hour threshold must be gone -- it never consulted the clock');
+  // ---------------------------------------------------------------------
+  // WS26 ADDITION -- and this is the assertion whose absence let an UNREACHABLE
+  // fix look like a working one. Replacing the formula is not the same as
+  // consulting it. Measured before this addition (WS26, by execution): on the
+  // play path the order is armPlaybackWatchdog -> renderPlayer ->
+  // resolveProgramTitle -> fetchSchedule -> the gate, and renderPlayer does NOT
+  // call updateSeekableState(), so the window is STILL null when the gate
+  // runs. A window-derived gate in that position is dead code: it always takes
+  // the clock branch, which is shut for 01:00-02:59, which is exactly the
+  // owner's report. So the formula was correct and the FIX was not yet real.
+  //
+  // The gate must therefore be re-evaluated from a path that provably runs
+  // AFTER the window is written. `timeupdate` calls updateSeekableState() for
+  // an HLS transport, so within a few hundred ms of playback the window is
+  // known. That is the only reachable point, and it must be wired.
+  const SEEKABLE = stripComments(region('function updateSeekableState() {',
+    'function setExpandOpen(open) {'));
+  assert.ok(/lastWindowGateKey\s*!==\s*key/.test(SEEKABLE),
+    'the gate must be re-evaluated from updateSeekableState, the only reachable point');
+  assert.ok(/resolveProgramTitle\(cur\)/.test(SEEKABLE),
+    'that re-evaluation must go through the SAME resolveProgramTitle path');
+  // It must be bounded: a 4 Hz timeupdate would otherwise re-fetch the schedule
+  // four times a second. One refetch per (channel, local date) transition.
+  assert.ok(/lastWindowGateKey\s*=\s*key/.test(SEEKABLE),
+    'the re-evaluation must record its key so it fires once, not per tick');
+  assert.ok(/scheduleCache\.delete\(key\)/.test(SEEKABLE),
+    'the cached day must be dropped, or the refetch returns the stale decision');
+  // And the key must not survive a channel switch, or the new channel\'s
+  // window-becomes-known transition would be suppressed by the old one.
+  assert.ok(/lastWindowGateKey = null/.test(
+    stripComments(region('function stopNowPlayingPoll() {', 'async function fetchNowPlaying('))),
+    'the gate key is per channel and must be reset on a switch');
+  // The window length must be MEASURED, never hardcoded: a 3 h/10800 s
+  // constant would freeze one observation into permanent behaviour.
+  assert.ok(/const windowS = \(Number\.isFinite\(sStart\) && Number\.isFinite\(sEnd\)/.test(fn),
+    'the window must be measured from seekableStart/seekableEnd');
+  assert.ok(!/windowS\s*=\s*3\s*\*\s*3600|windowS\s*=\s*10800/.test(fn),
+    'the window length must not be hardcoded');
+  // MUTATION-PROVEN ADDITION. The assertion above is NOT satisfied by its own
+  // negative form: a mutation that replaced the measured window with the
+  // literal 10800 was reported STILL GREEN before this was added, because the
+  // negative pattern only matched an ASSIGNMENT (`windowS = 10800`) while the
+  // constant had been inlined into the COMPARISON instead. That is the exact
+  // "freeze one observation into permanent behaviour" trap the brief forbids,
+  // and a negative assertion that cannot see it is decoration. Both forms are
+  // now rejected, and the mutation is re-run to prove it.
+  assert.ok(!/timeSinceMidnightS\s*<\s*(3\s*\*\s*3600|10800)/.test(fn),
+    'a window length hardcoded INTO the comparison must also be rejected');
+  assert.ok(/Number\.isFinite\(sStart\)/.test(fn) && /Number\.isFinite\(sEnd\)/.test(fn),
+    'the window must come from the real seekable range, both ends');
   // The gate must be OBSERVABLE, or the next silent failure is just as
   // undiagnosable as this one was.
   assert.ok(/META_DIAG\.lastScheduleGate\s*=/.test(fn),
@@ -3901,4 +4030,286 @@ test('WS23: the new diagnostics stay read-only with respect to playback state', 
   // Registered once, at startup, beside the other handlers.
   assert.ok(APP_CODE.split("setActionHandler('play'").length - 1 === 1,
     "the 'play' handler must be registered exactly once");
+});
+
+// ===================================================================
+// WS26 Part 3 -- the SR timeline lookup, and its REQUIRED fallback
+// ===================================================================
+//
+// WS25 refuted the "data ceiling" belief: ondemand returns per-song tracks with
+// boundaries for a broadcast that finished yesterday. Part 3 uses that. The
+// brief requires a specific degradation: when the lookup fails or returns no
+// tracks -- talk programmes return an EMPTY list, verified live, and that is
+// NORMAL -- the panel must fall back to the polled timeline unchanged, never
+// to a blank panel. A new data source that can blank the panel on a routine
+// response would be a worse defect than the one it fixes.
+
+test('WS26 Part 3: a failed episode lookup leaves the POLLED timeline intact', async () => {
+  const MERGE = (() => {
+    const a = APP_CODE.indexOf('function mergeTimelineEntries(');
+    assert.notEqual(a, -1, 'mergeTimelineEntries must exist');
+    return APP_CODE.slice(a, APP_CODE.indexOf('async function resolveSeekTracksFromSr(', a));
+  })();
+
+  // It merges into the SAME timeline the poll writes, and shares the poll's
+  // dedupe / sort / cap. A second cap or a second dedupe rule would be a second
+  // place for the timeline to be wrong.
+  assert.ok(/nowPlaying\.timeline\.some\(\(t\) => t\.startMs === e\.startMs\)/.test(MERGE),
+    'the SR entries must dedupe by start time, exactly as the poll does');
+  assert.ok(/nowPlaying\.timeline\.sort\(\(a, b\) => a\.startMs - b\.startMs\)/.test(MERGE),
+    'the SR entries must keep the same sort');
+  // MUTATION-PROVEN: asserting the cap's PRESENCE was not enough. Replacing
+  // this guard with `if (false)` -- so SR entries grow the timeline without
+  // bound -- left the whole suite GREEN, because a pattern match cannot tell a
+  // live guard from a disabled one. It is now DRIVEN: mergeTimelineEntries is
+  // extracted and executed against an over-long timeline, and the assertion is
+  // on the resulting LENGTH. A presence check that cannot fail is not a check.
+  const capConst = Number(/const NOW_PLAYING_TIMELINE_MAX = (\d+);/.exec(APP_CODE)[1]);
+  const capRunner = new Function('deps', `
+    const { nowPlaying, NOW_PLAYING_TIMELINE_MAX } = deps;
+    ${(() => {
+      const a = APP_CODE.indexOf('function mergeTimelineEntries(');
+      let d = 0, e = a;
+      for (let i = a; i < APP_CODE.length; i++) {
+        if (APP_CODE[i] === '{') d++;
+        else if (APP_CODE[i] === '}') { d--; if (d === 0) { e = i; break; } }
+      }
+      return APP_CODE.slice(a, e + 1);
+    })()}
+    return mergeTimelineEntries;
+  `);
+  const overLong = { timeline: [] };
+  for (let i = 0; i < capConst + 25; i++) {
+    overLong.timeline.push({ title: `t${i}`, artist: 'a', startMs: i * 1000, stopMs: i * 1000 + 500 });
+  }
+  const before = overLong.timeline.length;
+  capRunner({ nowPlaying: overLong, NOW_PLAYING_TIMELINE_MAX: capConst })(
+    Array.from({ length: 40 }, (_, i) => ({
+      title: `new${i}`, artist: 'n', startMs: 10_000_000 + i * 1000, stopMs: 10_000_000 + i * 1000 + 500,
+    })));
+  assert.equal(before, capConst + 25, 'harness: the timeline starts over the cap');
+  assert.equal(overLong.timeline.length, capConst,
+    `merging must trim the timeline back to NOW_PLAYING_TIMELINE_MAX (${capConst}), not grow it`);
+  // And it must still be SORTED, or a trimmed timeline would resolve wrongly.
+  const sorted = overLong.timeline.every((e, i, a) => i === 0 || a[i - 1].startMs <= e.startMs);
+  assert.ok(sorted, 'after merging and trimming, the timeline must remain sorted by start time');
+  // Malformed entries are dropped, never inserted as zero-length ranges that
+  // would then match every position and blank the panel.
+  assert.ok(/if \(!Number\.isFinite\(e\.startMs\) \|\| !Number\.isFinite\(e\.stopMs\)\) continue;/.test(MERGE),
+    'a non-finite range must be skipped, not inserted');
+
+  const RESOLVE = (() => {
+    const a = APP_CODE.indexOf('async function resolveSeekTracksFromSr(');
+    assert.notEqual(a, -1, 'resolveSeekTracksFromSr must exist');
+    return APP_CODE.slice(a, APP_CODE.indexOf('function ', a + 40));
+  })();
+  // THE FALLBACK, asserted on both failure shapes. `return` with no mutation
+  // before it is the whole mechanism: the polled timeline is left as it was.
+  assert.ok(/if \(!entry \|\| entry\.episodeId == null\) return;/.test(RESOLVE),
+    'an entry with no episode id must return without touching the timeline');
+  assert.ok(/if \(!Array\.isArray\(tracks\) \|\| !tracks\.length\) return;/.test(RESOLVE),
+    'an EMPTY track list -- the normal talk-programme response -- must return unchanged');
+  assert.ok(/if \(seq !== seekTracksSeq\) return;/.test(RESOLVE),
+    'a superseded lookup must return without merging');
+  // A relativeEndTime that is missing must NOT be invented -- guessing an end
+  // would create overlapping ranges and a title that shows in the wrong place.
+  assert.ok(/if \(e != null\) stopMs = entry\.startMs \+ e \* 1000;\s*else continue;/.test(RESOLVE),
+    'a track with no end must be skipped, not given an invented end');
+  // The cache must store the EMPTY result too, or a talk programme would be
+  // re-requested on every seek -- the wasteful outcome the cache exists to stop.
+  const FETCH = (() => {
+    const a = APP_CODE.indexOf('async function fetchEpisodeTracks(');
+    return APP_CODE.slice(a, APP_CODE.indexOf('function mergeTimelineEntries(', a));
+  })();
+  assert.ok(/episodeTracksById\.set\(episodeId, tracks\)/.test(FETCH),
+    'the session cache must store the result, including an empty one');
+  // MUTATION-PROVEN: the cache READ was asserted by presence only, and
+  // DELETING the read line entirely -- so every seek re-requested the same
+  // episode -- left the suite GREEN. Presence cannot distinguish a live cache
+  // from an absent one. It is now driven: a fetch for an already-cached id
+  // must not call fetch at all, and a fetch for an id that returned [] must
+  // also not re-request. Both are the behaviour that bounds the request count.
+  // The extracted body calls the BARE identifier `fetch`, so a same-scope
+  // binding shadows the global -- the same lesson as the Date shadow in the
+  // R6 test. Naming it fetchImpl in deps and shadowing it as `fetch` is what
+  // makes this driven rather than a real network call.
+  const cacheRunner = new Function('deps', `
+    const { episodeTracksById, log } = deps;
+    const fetch = async () => { log.push('FETCHED'); return { ok: true, json: async () => ({ tracks: [{ title: 'x' }] }) }; };
+    ${(() => {
+      const a = APP_CODE.indexOf('async function fetchEpisodeTracks(');
+      let d = 0, e = a;
+      for (let i = a; i < APP_CODE.length; i++) {
+        if (APP_CODE[i] === '{') d++;
+        else if (APP_CODE[i] === '}') { d--; if (d === 0) { e = i; break; } }
+      }
+      return APP_CODE.slice(a, e + 1);
+    })()}
+    return fetchEpisodeTracks;
+  `);
+  const run = async (prefilled) => {
+    const log = [];
+    const f = cacheRunner({
+      episodeTracksById: prefilled,
+      log,
+    });
+    return { f, log };
+  };
+  // (a) a cached id must not issue a request
+  const warm = await run(new Map([[2864965, [{ title: 'cached' }]]]));
+  const got = await warm.f(2864965);
+  assert.equal(warm.log.length, 0, 'a cached episode id must NOT issue a request');
+  assert.deepEqual(got, [{ title: 'cached' }], 'a cached episode must return the cached tracks');
+  // (b) an EMPTY cached result must also not re-request -- a talk programme
+  // returns [] and re-requesting it on every seek is the wasteful case.
+  const cold = await run(new Map([[2864966, []]]));
+  await cold.f(2864966);
+  assert.equal(cold.log.length, 0,
+    'a cached EMPTY result must not be re-requested -- talk programmes return [] normally');
+  // (c) an UNKNOWN id must issue exactly one request and cache the result
+  const fresh = await run(new Map());
+  await fresh.f(2864967);
+  assert.equal(fresh.log.length, 1, 'an unknown episode id must issue exactly one request');
+  // BOUNDED, and each bound is load-bearing.
+  assert.ok(/const SEEK_TRACKS_DEBOUNCE_MS = 250;/.test(APP_CODE),
+    'the SR lookup must be debounced so a drag issues one request');
+  const TU = APP_CODE.slice(APP_CODE.indexOf("addEventListener('timeupdate'"),
+    APP_CODE.indexOf('window.__srSeekable'));
+  assert.ok(!/resolveSeekTracksFromSr|fetchEpisodeTracks/.test(TU),
+    'no SR lookup may be added to a timeupdate handler -- those run 4x/second');
+  // ---------------------------------------------------------------------
+  // THE SUCCESS PATH, DRIVEN. Added after a REAL defect: Part 3's first draft
+  // passed `cur._srSchedule` straight into pickByPosition, which matches on
+  // `e.stopMs`, while the schedule entries carry `endMs`. So `entry` was
+  // ALWAYS null, the function returned on its second line, and the entire
+  // SR-backed lookup was dead code.
+  //
+  // Every assertion above still passed while that was true, because they only
+  // test the FAILURE paths. A test that checks "nothing is touched" cannot
+  // detect "nothing ever happens". This block drives the positive case and
+  // asserts the timeline actually GROWS.
+  // ---------------------------------------------------------------------
+  const driveRunner = new Function('deps', `
+    const { nowPlaying, state, audioEl, scheduleCache, localDateStr, localDateStrOffset,
+            paintNowPlaying, repaintExpandPanel, pickByPosition, playheadWallMs,
+            episodeTracksById, hmsToSec, SEEK_TRACKS_DEBOUNCE_MS, NOW_PLAYING_TIMELINE_MAX,
+            log } = deps;
+    let seekTracksSeq = 0;
+    const fetch = async () => ({ ok: true, json: async () => ({ tracks: log.tracks }) });
+    ${(() => {
+      const a = APP_CODE.indexOf('function mergeTimelineEntries(');
+      let d = 0, e = a;
+      for (let i = a; i < APP_CODE.length; i++) {
+        if (APP_CODE[i] === '{') d++;
+        else if (APP_CODE[i] === '}') { d--; if (d === 0) { e = i; break; } }
+      }
+      return APP_CODE.slice(a, e + 1);
+    })()}
+    ${(() => {
+      const a = APP_CODE.indexOf('async function fetchEpisodeTracks(');
+      let d = 0, e = a;
+      for (let i = a; i < APP_CODE.length; i++) {
+        if (APP_CODE[i] === '{') d++;
+        else if (APP_CODE[i] === '}') { d--; if (d === 0) { e = i; break; } }
+      }
+      return APP_CODE.slice(a, e + 1);
+    })()}
+    ${(() => {
+      const a = APP_CODE.indexOf('async function resolveSeekTracksFromSr(');
+      let d = 0, e = a;
+      for (let i = a; i < APP_CODE.length; i++) {
+        if (APP_CODE[i] === '{') d++;
+        else if (APP_CODE[i] === '}') { d--; if (d === 0) { e = i; break; } }
+      }
+      return APP_CODE.slice(a, e + 1);
+    })()}
+    return resolveSeekTracksFromSr;
+  `);
+  const polled = [
+    { title: 'Earlier Song', artist: 'A', startMs: 1000, stopMs: 2000 },
+    { title: 'On Air Song', artist: 'B', startMs: 2000, stopMs: 9000 },
+  ];
+  const realTracks = Array.from({ length: 17 }, (_, i) => ({
+    title: `Historic ${i}`, artist: 'H',
+    relativeStartTime: `00:${String(i * 3).padStart(2, '0')}:00`,
+    relativeEndTime: `00:${String(i * 3 + 2).padStart(2, '0')}:30`,
+  }));
+  const mkDrive = (tracks) => {
+    const log = { tracks, calls: [] };
+    const nowPlaying = { timeline: polled.map((e) => ({ ...e })), channelId: 164 };
+    const deps = {
+      log,
+      nowPlaying,
+      // NOTE the shape: fetchScheduleDay produces `endMs`, NOT `stopMs`. This
+      // is the exact detail the first draft got wrong, pinned deliberately.
+      state: { current: { kind: 'live', id: 164, _srSchedule: [{ startMs: 0, endMs: 3_600_000, title: 'Vaken', episodeId: 2864965 }] } },
+      audioEl: { currentTime: 0 },
+      scheduleCache: new Map(),
+      localDateStr: () => '2026-09-29',
+      localDateStrOffset: () => '2026-09-28',
+      paintNowPlaying: () => log.calls.push('paint'),
+      repaintExpandPanel: () => log.calls.push('repaint'),
+      pickByPosition: (arr, at) => arr.find((e) => e.startMs <= at && at < e.stopMs) || null,
+      playheadWallMs: () => 3000,
+      episodeTracksById: new Map(),
+      hmsToSec: (s) => {
+        if (typeof s !== 'string') return null;
+        const p = s.split(':').map(Number);
+        return p.length === 3 && p.every(Number.isFinite) ? p[0] * 3600 + p[1] * 60 + p[2] : null;
+      },
+      SEEK_TRACKS_DEBOUNCE_MS: 250,
+      NOW_PLAYING_TIMELINE_MAX: 60,
+    };
+    return { run: driveRunner(deps), nowPlaying, log };
+  };
+  const positive = mkDrive(realTracks);
+  await positive.run();
+  assert.equal(positive.nowPlaying.timeline.length, polled.length + realTracks.length,
+    'THE SUCCESS PATH: 17 SR tracks must be merged into the timeline. If this is ' +
+    'the polled length, the lookup returned early and the whole path is dead.');
+  // The polled entries must SURVIVE. They are checked BY IDENTITY, not by
+  // position: the merge re-sorts the whole timeline by start time, and the SR
+  // tracks are anchored at the episode start (0), which is EARLIER than the
+  // polled entries (1000 and 2000). So the surviving polled songs are at
+  // indices 1 and 2, not 0 and 1. Asserting positions would have been asserting
+  // the sort order rather than the survival -- and would have failed on a
+  // perfectly correct merge.
+  const titles = positive.nowPlaying.timeline.map((e) => e.title);
+  assert.ok(titles.includes('Earlier Song') && titles.includes('On Air Song'),
+    'the polled entries must SURVIVE the merge -- SR data is added, not substituted');
+  assert.equal(titles.filter((t) => t === 'Earlier Song').length, 1,
+    'a polled entry must not be duplicated by the merge');
+  assert.ok(positive.nowPlaying.timeline.every((e, i, a) => i === 0 || a[i - 1].startMs <= e.startMs),
+    'the merged timeline must be sorted by start time, or the selector breaks');
+  assert.deepEqual(positive.log.calls, ['paint', 'repaint'],
+    'a successful merge must repaint through the normal path, not reach into the header');
+  // The relative times must become ABSOLUTE wall-clock, so the existing
+  // selector works unchanged. Asserted BY TITLE, not by index -- the merge
+  // re-sorts, so index 2 is not necessarily the first SR track. Track "Historic 0"
+  // starts at relative 00:00:00, which anchors to entry.startMs (0); "Historic 1"
+  // starts at relative 00:03:00, which is 180_000 ms after it. If these were left
+  // as the raw relative values, every track would collapse onto the episode start
+  // and the selector would return the same song for the whole programme.
+  const byTitle = Object.fromEntries(positive.nowPlaying.timeline.map((e) => [e.title, e]));
+  assert.equal(byTitle['Historic 0'].startMs, 0,
+    'the first SR track must anchor to the episode start (entry.startMs + 0)');
+  assert.equal(byTitle['Historic 1'].startMs, 180_000,
+    'relativeStartTime must become an absolute offset: 00:03:00 -> 180000 ms');
+  assert.equal(byTitle['Historic 0'].stopMs, 150_000,
+    'relativeEndTime must become absolute too, or every track would run to the end of the episode');
+  assert.equal(byTitle['Historic 1'].stopMs, 330_000,
+    'each track must end at its own relativeEndTime, not at the next track start');
+  assert.ok(byTitle['Historic 0'].stopMs > byTitle['Historic 0'].startMs,
+    'a merged track must have a positive duration, or it can never match a position');
+  // And the negative control, in the same shape: an EMPTY list changes nothing.
+  const talk = mkDrive([]);
+  await talk.run();
+  assert.equal(talk.nowPlaying.timeline.length, polled.length,
+    'a talk programme (tracks: []) must leave the timeline exactly as the poll left it');
+  assert.deepEqual(talk.log.calls, [],
+    'an empty result must not trigger a repaint -- there is nothing new to show');
+
+  // The cache is per channel: another channel's songs must not leak in.
+  assert.ok(/episodeTracksById\.clear\(\)/.test(APP_CODE),
+    'the per-episode cache must be cleared on a channel switch');
 });

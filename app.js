@@ -840,6 +840,43 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     if (cur.dvrAvailable !== prevDvr || cur.atLiveEdge !== prevAtLive) {
       renderPlayer();
     }
+    // ---- WS26 Part 4 (reachability fix): re-evaluate the yesterday gate ----
+    // WHY THIS EXISTS, and it is the reason the gate is not dead code:
+    //
+    // playTrack() runs  armPlaybackWatchdog -> renderPlayer -> resolveProgramTitle
+    // -> fetchSchedule -> the gate. renderPlayer does NOT call
+    // updateSeekableState(), and nothing has fired `timeupdate` yet, so
+    // seekableStart is STILL NULL when the gate first runs. A window-derived
+    // gate is therefore unreachable on the play path -- it falls back to the
+    // clock, which is shut for 01:00-02:59, which is exactly the owner's
+    // 01:19 report. WS25 measured that; this line is what makes the fix real.
+    //
+    // THIS is the reachable point. `timeupdate` calls updateSeekableState() on
+    // every tick for an HLS transport, so within a few hundred ms of playback
+    // the window is known and this block runs. It fires ONCE per
+    // (channel, local date, transition-to-known), not per tick: without that
+    // guard a 4 Hz listener would re-fetch the schedule four times a second.
+    //
+    // It re-runs the SAME fetchSchedule()/resolveProgramTitle() path, so the
+    // gate decision and the merge remain the identical code. There is no
+    // second implementation of "which days do I need".
+    if (cur.dvrAvailable && cur.seekableStart != null && cur.seekableEnd != null) {
+      const key = `${cur.id}:${localDateStr()}`;
+      if (lastWindowGateKey !== key) {
+        lastWindowGateKey = key;
+        // Drop the cached day first, so the refetch actually re-runs the gate
+        // instead of returning the value computed while the window was null.
+        scheduleCache.delete(key);
+        scheduleCache.delete(`${cur.id}:${localDateStrOffset(1)}`);
+        // No extra seq guard is needed here, and that is worth stating
+        // rather than leaving as a habit: resolveProgramTitle(cur) writes
+        // `cur._srSchedule` on the track OBJECT it was handed, so a response
+        // that arrives after a channel switch lands on the OLD object and
+        // cannot paint onto the new track. Adding a token here would guard
+        // against nothing while implying a hazard that does not exist.
+        resolveProgramTitle(cur).catch(() => { /* schedule is best-effort */ });
+      }
+    }
   }
 
   // ---- expand-panel open/close STATE (WS2) ----
@@ -901,12 +938,33 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // ISOLATION CONTRACT: this loop never touches audioEl, hls, or playback
   // state. Any fetch/network/parse failure just leaves the last known song
   // (or hides the line). One loop total, keyed to the active live channel.
-  const nowPlaying = { song: null, artwork: null, channelId: null, timeline: [],
+  const nowPlaying = { song: null, channelId: null, timeline: [],
     // WS13 Part B: the iTunes album cover for an EPISODE. Kept separate from
-    // nowPlaying.artwork on purpose -- that field belongs to the live poll's
+    // the live covers on purpose -- that field belongs to the live poll's
     // position-aware song, and mixing the two would make one kind's cover
     // overwrite the other's. Null until a real track cover resolves.
-    episodeArtwork: null };
+    episodeArtwork: null,
+    // ---- WS26 Part 2: THREE cover fields, THREE writers, no overlap ----
+    // WS25 reproduced the regression: one field, `artwork`, served two intents.
+    // The seek path wrote it with the song AT THE PLAYHEAD; the 45 s poll wrote
+    // it with the ON-AIR song, unconditionally and with no knowledge of where
+    // the playhead was. Last writer won, so a correct cover survived about
+    // 45 seconds and was then replaced by a different song's cover.
+    //
+    // A guard ("only write if behind live") would not have fixed it: two
+    // genuine intents, two genuine values, needing two genuine fields. So
+    // there are now two live fields and one episode field, and each has
+    // exactly ONE writer:
+    //
+    //   onAirArtwork    <- fetchNowPlaying()          (the poll, on-air song)
+    //   playheadArtwork <- resolveMetadataForPosition() (the seek/playhead)
+    //   episodeArtwork  <- updateEpisodeTrack()       (episodes)
+    //
+    // The cover the PANEL shows is then chosen by resolvePlayheadMeta() from
+    // whether the playhead is at the live edge -- a read, not a write. Which
+    // is the whole point: a reader cannot create a race.
+    onAirArtwork: null,
+    playheadArtwork: null };
   // ---- WS9: the song timeline, not just the current song ----
   // The rightnow payload carries previoussong / nextsong alongside song, each
   // with starttimeutc / stoptimeutc (verified live 2026-09-27: ch163
@@ -937,6 +995,191 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // path (poll -> fetch -> paint) and cannot be made synchronous without
   // blocking the UI on a network call.
   const SEEK_ARTWORK_DEBOUNCE_MS = 400;
+  // WS26 Part 1: the open expand panel's repaint hook, named. It was inlined
+  // in two places (identical code) and a third consumer needed it; a named
+  // function is the only way "every consumer reads the one resolver" can be
+  // true of the repaint as well as of the metadata.
+  function repaintExpandPanel() {
+    const panel = $player.querySelector('.player-expand');
+    if (panel && typeof panel._srRepaint === 'function') panel._srRepaint();
+  }
+  // ---- WS26 Part 1: ONE resolver for "what is the playhead sitting on?" ----
+  // Before this, two functions answered that question and they disagreed: the
+  // compact line (row 4) asked the timeline, the expand-panel header asked the
+  // on-air poll. WS25 measured the result: title right, header wrong, cover
+  // racing. R6 -- the two halves must never disagree -- was therefore not a
+  // property of the code, it was a wish.
+  //
+  // Now there is exactly one derivation, and every consumer reads it. The
+  // compact line's SELECTION EXPRESSION is deliberately left byte-identical
+  // (`pickByPosition(nowPlaying.timeline, playheadWallMs())`) -- R4 works and
+  // changing it would be the regression, not the fix. A "one source of truth"
+  // that alters the thing which is already correct is not a refactor.
+  //
+  // Returns null for an episode, because an episode has no live DVR playhead:
+  // episodeCurrentTrack is resolved against `audioEl.currentTime` by a
+  // different mechanism entirely, and mixing the two would be the same class of
+  // bug this function exists to remove.
+  function resolvePlayheadMeta() {
+    const cur = state.current;
+    if (!cur || cur.kind !== 'live') return null;
+    const atLiveEdge = cur.atLiveEdge !== false;
+    // THE one timeline read. The compact line and this function must agree by
+    // construction, not by discipline: they are the same expression on the
+    // same array with the same playhead.
+    const hit = pickByPosition(nowPlaying.timeline, playheadWallMs());
+    // The programme at the playhead. For a live channel `_srProgramTitle` is
+    // set by resolveMetadataForPosition() from _srSchedule, position-aware
+    // already; at the live edge it is the programme on air, which is the same
+    // thing the owner expects to see.
+    const programme = cur._srProgramTitle || null;
+    return {
+      atLiveEdge,
+      // Behind live the playhead song is the ONLY truth. At the live edge the
+      // poll's on-air song is authoritative and the timeline entry is the same
+      // song by construction -- but preferring the poll there keeps the panel
+      // identical to the pre-WS26 live path, so nothing about the live case
+      // changes. (Preferring the timeline everywhere would be equivalent at
+      // the edge and strictly worse if the poll and timeline ever disagreed.)
+      song: atLiveEdge ? (nowPlaying.song || hit) : (hit || null),
+      // The cover follows the SONG, not the position. The two cover fields
+      // belong to two different songs, so which one is shown is decided by
+      // which song won above -- not by a separate "is behind live" test that
+      // could disagree with it. This is what makes R6 structural.
+      artwork: atLiveEdge
+        ? (nowPlaying.onAirArtwork || nowPlaying.playheadArtwork || null)
+        : (nowPlaying.playheadArtwork || null),
+      programme,
+    };
+  }
+  // ---- WS26 Part 3: fill the timeline from SR, not from listening ----
+  // The polled timeline only knows songs a poll HAPPENED to see while the app
+  // was open. WS25 refuted the "data ceiling" belief: `ondemand` returns
+  // per-song tracks with relativeStartTime/relativeEndTime for a broadcast
+  // that finished yesterday, and scheduledepisodes gives episode ids 30+ days
+  // back. So on a seek we ask SR what was playing at that moment.
+  //
+  // BOUNDED, and each bound is deliberate:
+  //   * debounced, so a drag across the window issues ONE lookup;
+  //   * cached per episode id for the session, so seeking back and forth over
+  //     the same programme costs nothing;
+  //   * NOT in any timeupdate handler -- those run ~4x/second.
+  const SEEK_TRACKS_DEBOUNCE_MS = 250;
+  const episodeTracksById = new Map(); // episodeId -> tracks[] (session)
+  let seekTracksTimer = null;
+  let seekTracksSeq = 0;
+  // ---- WS26 Part 4: the gate-reachability key ----
+  // Set once per (channel, local date) when the window FIRST becomes known, so
+  // the schedule is re-fetched exactly once at that transition and not on every
+  // 4 Hz timeupdate tick. Reset on channel switch, because a different channel
+  // has a different schedule and a different window.
+  let lastWindowGateKey = null;
+  // Resolve the wall-clock moment under the playhead to absolute entries and
+  // merge them into the SAME timeline the poll writes, so the existing selector
+  // works unchanged. That is the whole trick: no second selector, no second
+  // shape, no second code path for a reader to disagree with.
+  //
+  // `schedule` entries carry startMs/endMs/episodeId (fetchScheduleDay keeps
+  // them). `tracks` carry relativeStartTime/relativeEndTime as HH:MM:SS
+  // relative to the START OF THE EPISODE AUDIO, so the conversion is
+  // entry.startMs + seconds -- an offset, not an absolute. Note this is
+  // ASSUMED alignment, not proven: the episode's own start is the anchor and
+  // SR does not publish a separate audio-start offset. If it is ever wrong the
+  // failure mode is benign -- titles shift within the programme, and the
+  // fallback below is not involved. Unverified on device (see the WS26 report).
+  async function fetchEpisodeTracks(episodeId) {
+    if (episodeId == null) return null;
+    if (episodeTracksById.has(episodeId)) return episodeTracksById.get(episodeId);
+    let tracks = null;
+    try {
+      const r = await fetch(`https://web-api.sr.se/v1/player/ondemand?id=${episodeId}&type=episode`);
+      if (r && r.ok) {
+        const j = await r.json();
+        tracks = Array.isArray(j?.tracks) ? j.tracks : [];
+      }
+    } catch {
+      tracks = null; // network/CORS/parse -> treated exactly like "no tracks"
+    }
+    // Cached either way, INCLUDING the empty result: a talk programme really
+    // does return tracks: [] (verified live), and re-requesting it on every
+    // seek would be the wasteful outcome. A cached [] therefore means "ask no
+    // further", which is why the caller's fallback is the polled timeline.
+    episodeTracksById.set(episodeId, tracks);
+    return tracks;
+  }
+  // Merge absolute entries into the timeline: same dedupe, same sort, same cap
+  // as the poll. Deliberately shares those three rules rather than having its
+  // own copy, because a second cap or a second dedupe rule is a second place
+  // for the timeline to be wrong.
+  function mergeTimelineEntries(entries) {
+    if (!Array.isArray(entries) || !entries.length) return 0;
+    let added = 0;
+    for (const e of entries) {
+      if (!Number.isFinite(e.startMs) || !Number.isFinite(e.stopMs)) continue;
+      if (!e.title && !e.artist) continue;
+      if (nowPlaying.timeline.some((t) => t.startMs === e.startMs)) continue;
+      nowPlaying.timeline.push({ title: e.title, artist: e.artist, startMs: e.startMs, stopMs: e.stopMs });
+      added += 1;
+    }
+    if (added) {
+      nowPlaying.timeline.sort((a, b) => a.startMs - b.startMs);
+      if (nowPlaying.timeline.length > NOW_PLAYING_TIMELINE_MAX) {
+        nowPlaying.timeline.splice(0, nowPlaying.timeline.length - NOW_PLAYING_TIMELINE_MAX);
+      }
+    }
+    return added;
+  }
+  // Called (debounced) from the seek path. NEVER throws, never blocks, and on
+  // every failure path it simply leaves the timeline as the poll left it --
+  // which is the required fallback and also today's behaviour.
+  async function resolveSeekTracksFromSr() {
+    const cur = state.current;
+    if (!cur || cur.kind !== 'live' || !cur.id) return;
+    const schedule = cur._srSchedule;
+    if (!Array.isArray(schedule) || !schedule.length) return;
+    // REMAP, and this is a real bug that shipped in the first draft of Part 3.
+    // `pickByPosition` matches on `e.stopMs`, but the schedule entries built by
+    // fetchScheduleDay carry `endMs` (that is the name the API field parses
+    // into). Passing the raw array therefore matched NOTHING -- `entry` was
+    // always null, the function returned on its second line, and the whole
+    // SR-backed lookup was dead code that looked correct.
+    //
+    // Found by DRIVING the function, not by reading it: a fixture with 17 real
+    // tracks merged zero entries while every assertion about the empty-list
+    // fallback still passed. A test that only checks the failure path cannot
+    // see a success path that never runs.
+    //
+    // resolveMetadataForPosition has always done this remap for the programme
+    // title, and that is why R5 worked while this did not. Same shape, same
+    // reason, one place remembered it and the other did not.
+    const entry = pickByPosition(schedule.map((e) => ({
+      startMs: e.startMs, stopMs: e.endMs, episodeId: e.episodeId, title: e.title,
+    })), playheadWallMs());
+    if (!entry || entry.episodeId == null) return; // talk / no episode id
+    const seq = ++seekTracksSeq;
+    const tracks = await fetchEpisodeTracks(entry.episodeId);
+    // A channel switch or a later seek superseded this lookup.
+    if (seq !== seekTracksSeq) return;
+    if (!Array.isArray(tracks) || !tracks.length) return; // FALLBACK: unchanged
+    const absolute = [];
+    for (const tr of tracks) {
+      const s = hmsToSec(tr.relativeStartTime);
+      const e = hmsToSec(tr.relativeEndTime);
+      if (s == null) continue;
+      // relativeEndTime is absent on some payloads; the next track's start is
+      // the only honest end. Never invented beyond that.
+      let stopMs;
+      if (e != null) stopMs = entry.startMs + e * 1000;
+      else continue;
+      absolute.push({ startMs: entry.startMs + s * 1000, stopMs, title: tr.title || '', artist: tr.artist || '' });
+    }
+    if (mergeTimelineEntries(absolute)) {
+      // The panel may now resolve a song it could not before; repaint through
+      // the normal path rather than reaching into the header.
+      paintNowPlaying();
+      repaintExpandPanel();
+    }
+  }
   // Timer handle, module scope, so a second song change can cancel the first
   // and a channel switch can clear a pending lookup (see stopNowPlayingPoll).
   // Same pattern as nowPlayingTimer and audioEl._srUpd.
@@ -1020,7 +1263,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       // programme image, which is the correct thing to show when no album
       // cover can be resolved.
       if (next && next.title && next.artist) {
-        refreshNowPlayingArtwork(next, nowPlaying);
+        refreshNowPlayingArtwork(next, 'episode');
       }
     }
   }
@@ -1032,6 +1275,9 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // cover land in the new channel's panel. Same reason artworkSeq is bumped
     // below, applied to the timer rather than to a response.
     if (seekArtworkTimer) { clearTimeout(seekArtworkTimer); seekArtworkTimer = null; }
+    // WS26 Part 3: the debounced SR lookup belongs to the channel being left.
+    if (seekTracksTimer) { clearTimeout(seekTracksTimer); seekTracksTimer = null; }
+    seekTracksSeq += 1; // an in-flight episode lookup must not outlive the channel
     // WS24: the song->cover association is per channel, so it must not survive
     // one. Otherwise the first song resolved on the new channel would compare
     // equal to the old channel's last song and skip the clear.
@@ -1039,11 +1285,18 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     nowPlayingSeq += 1; // invalidate in-flight responses
     artworkSeq += 1; // an old live artwork response must not outlive the channel
     nowPlaying.song = null;
-    nowPlaying.artwork = null;
+    nowPlaying.onAirArtwork = null;
+    nowPlaying.playheadArtwork = null;
     nowPlaying.channelId = null;
+    // WS26 Part 3: per-channel song data from SR must not survive a switch.
+    episodeTracksById.clear();
     // WS9: the timeline is per-channel, so it must not survive a channel switch
     // or the entries would be matched against another channel's playhead.
     nowPlaying.timeline = [];
+    // WS26 Part 4: the gate-reachability key is per channel, so it must not
+    // survive a switch -- otherwise the new channel's window-becomes-known
+    // transition would be suppressed by the old channel's key.
+    lastWindowGateKey = null;
   }
 
   async function fetchNowPlaying(channelId, seq) {
@@ -1093,7 +1346,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       nowPlaying.channelId = channelId;
       paintNowPlaying();
       // Artwork lookup is fully isolated: failure = no image, nothing else.
-      refreshNowPlayingArtwork(nowPlaying.song, nowPlaying);
+      refreshNowPlayingArtwork(nowPlaying.song, 'poll');
     } catch {
       // Network/API error: keep last known song; never touch playback.
     }
@@ -1156,18 +1409,30 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // GUARD, and the reason the old bad hits happened: only search when the track
   // has a real artist AND title. An empty artist produces a garbage query, and
   // a garbage query is how an unrelated cover ends up under a radio programme.
-  async function refreshNowPlayingArtwork(song, target) {
+  // WS26 Part 2: the field this call may write is now passed in explicitly and
+  // is one of three. `kind` names the WRITER, never the reader:
+  //   'poll'     -> nowPlaying.onAirArtwork     (fetchNowPlaying)
+  //   'playhead' -> nowPlaying.playheadArtwork  (resolveMetadataForPosition)
+  //   'episode'  -> nowPlaying.episodeArtwork   (updateEpisodeTrack)
+  // Nothing else may assign those three fields; the "one writer per field"
+  // test enumerates assignment sites on comment-stripped source and fails if a
+  // fourth appears. A reader never writes, so a reader cannot create a race.
+  async function refreshNowPlayingArtwork(song, kind) {
     const seq = ++artworkSeq;
-    const isLive = target === nowPlaying;
+    // A caller that does not name a writer is a bug, not a default. Checked
+    // before the try, because a throw inside the try would be swallowed.
+    if (kind !== 'poll' && kind !== 'playhead' && kind !== 'episode') return;
     if (!song || !song.title || !song.artist) {
-      // No usable song: clear only our own field, never the other kind's.
-      if (isLive) { nowPlaying.artwork = null; paintNowPlaying(); }
+      // No usable song: clear only this writer's own field, never another's.
+      if (kind === 'poll') { nowPlaying.onAirArtwork = null; paintNowPlaying(); }
+      else if (kind === 'playhead') { nowPlaying.playheadArtwork = null; paintNowPlaying(); }
       else { nowPlaying.episodeArtwork = null; }
       return;
     }
     const key = `${song.artist}|${song.title}`.toLowerCase();
     if (artworkCache.has(key)) {
-      if (isLive) { nowPlaying.artwork = artworkCache.get(key); paintNowPlaying(); }
+      if (kind === 'poll') { nowPlaying.onAirArtwork = artworkCache.get(key); paintNowPlaying(); }
+      else if (kind === 'playhead') { nowPlaying.playheadArtwork = artworkCache.get(key); paintNowPlaying(); }
       else nowPlaying.episodeArtwork = artworkCache.get(key);
       return;
     }
@@ -1180,7 +1445,8 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       const big = url ? url.replace(/\d+x\d+bb/, '600x600bb') : null;
       artworkCache.set(key, big);
       if (seq !== artworkSeq) return;
-      if (isLive) { nowPlaying.artwork = big; paintNowPlaying(); }
+      if (kind === 'poll') { nowPlaying.onAirArtwork = big; paintNowPlaying(); }
+      else if (kind === 'playhead') { nowPlaying.playheadArtwork = big; paintNowPlaying(); }
       else nowPlaying.episodeArtwork = big;
     } catch {
       // Artwork failure: never blocks anything. Keep old image briefly to
@@ -1285,17 +1551,14 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       }
     }
     // If the expand panel is open, repaint its song view too.
-    const panel = $player.querySelector('.player-expand');
-    if (panel && typeof panel._srRepaint === 'function') {
-      panel._srRepaint();
-      // WS15: this early return was the second half of the podcast bug. Even
-      // with the kind === 'live' gate below removed, an episode would still
-      // RETURN here before reaching the MediaSession refresh -- and an episode
-      // is exactly the case that needs it. Removed deliberately; the comment
-      // about "the episode painter deliberately has no compact song line"
-      // describes why the compact line is skipped, not why the car should
-      // stop hearing about the song.
-    }
+    repaintExpandPanel();
+    // WS15: this early return was the second half of the podcast bug. Even
+    // with the kind === 'live' gate below removed, an episode would still
+    // RETURN here before reaching the MediaSession refresh -- and an episode
+    // is exactly the case that needs it. Removed deliberately; the comment
+    // about "the episode painter deliberately has no compact song line"
+    // describes why the compact line is skipped, not why the car should
+    // stop hearing about the song.
     // ---- WS11 Part C / WS15: keep the car / lock screen in step with the song ----
     // The updateMediaSession() call sites all fire on track load, stop and
     // playstate. NONE fire when the song changes, so fixing the fields alone
@@ -1324,8 +1587,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     }
     // If the expand panel is open, repaint its fallback view too — the
     // program title may have resolved AFTER the panel was opened.
-    const panel = $player.querySelector('.player-expand');
-    if (panel && typeof panel._srRepaint === 'function') panel._srRepaint();
+    repaintExpandPanel();
     // ---- WS11 Part C: a programme change must reach the car / lock screen ----
     // Same reasoning as paintNowPlaying: the programme title is the fallback
     // title on a talk channel, and the artist line on a music one, so a
@@ -1448,39 +1710,46 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       nowPlaying._srPaintedTitle = title || null;
       nowPlaying._srPaintedArtist = artist || null;
       paintNowPlaying();
-      // ---- WS24: fetch the COVER for a song resolved by a seek ----
-      // The title and artist above resolve correctly for a historical song, but
-      // the cover did not: `nowPlaying.artwork` is only ever written by
-      // refreshNowPlayingArtwork(), and that function has exactly two call
-      // sites — fetchNowPlaying() (the 45 s live poll) and
-      // updateEpisodeTrack() (episodes). The seek path called neither, so a
-      // seek-resolved song inherited whatever the LAST POLLED song's cover was.
+      // ---- WS24, corrected by WS26: the COVER for a song resolved by a seek ---
+      // The WS24 note is kept because its measurement is the reason WS26 exists,
+      // but two of its statements are now FALSE and are corrected here rather
+      // than left to mislead the next reader.
       //
-      // Measured before this change, by simulating the panel's own expression
-      // (`const songArtwork = isEpisode ? ... : nowPlaying.artwork`):
-      //   at the live edge, song A on air  -> title A, cover A   (correct)
-      //   scrub back into song B          -> title B, cover A   (MISMATCHED)
-      // The owner reported "a correct song and artist, no cover" — the same
+      // FALSE NOW (1): "refreshNowPlayingArtwork() has exactly two call sites".
+      // It has three. WS24 added this one and the poll kept writing the same
+      // field, so the fix was undone about 45 s later -- reproduced in WS25 with
+      // real extracted code. `nowPlaying.artwork` was one field with two
+      // intents, and last writer won.
+      // FALSE NOW (2): "the target === nowPlaying guard keeps the live/episode
+      // fields apart". It did keep episodeArtwork apart, but it could not keep
+      // the two LIVE intents apart, because they were the same field. WS26
+      // splits them: onAirArtwork (poll) and playheadArtwork (this path), each
+      // with exactly one writer, and the panel chooses between them in
+      // resolvePlayheadMeta() as a READ.
+      //
+      // STILL TRUE, and the reason this block exists: the title and artist above
+      // resolve correctly for a historical song, and the cover did not. The
+      // owner's report was "a correct song and artist, no cover" -- the same
       // defect in the case where the on-air song had no resolved cover, i.e.
-      // `nowPlaying.artwork === null`, which shows the ♪ placeholder instead.
-      // So the symptom is one bug with two faces: a missing cover when the
-      // previous song had none, and a WRONG cover when it had one. The second
-      // is worse, and it is why the fix must never leave the old cover in place.
+      // null, which shows the placeholder. So the symptom was one bug with two
+      // faces: a missing cover when the previous song had none, and a WRONG
+      // cover when it had one. The second is worse, and it is why the fix must
+      // never leave the old cover in place.
       //
       // ONE implementation, ONE cache: the same refreshNowPlayingArtwork() and
-      // the same artworkCache the live path uses. The `target === nowPlaying`
-      // guard inside it keeps the live/episode fields apart, so this cannot
-      // write into `episodeArtwork` and an episode's cover cannot appear here.
+      // the same artworkCache the live path uses, called with the writer name
+      // 'playhead' so it can only ever write `playheadArtwork`. An episode
+      // cover cannot appear here and this cannot write episodeArtwork, because
+      // the function dispatches on `kind`, not on a target object.
       //
-      // BOUNDED, and deliberately: refreshNowPlayingArtwork() is already a
-      // network request per DISTINCT song, deduped by `artworkCache` for the
-      // session. But a user dragging the scrubber across an hour of history
-      // would cross many songs in a second, so an undebounced call would fire
-      // one request per boundary crossed. `seekArtworkTimer` collapses that
-      // into a single lookup for wherever the playhead finally settles, and the
-      // artworkSeq guard inside the function discards any response that a
-      // later song has already superseded. The timer is cleared by
-      // stopNowPlayingPoll(), so a channel switch cannot leave it pending.
+      // BOUNDED, and deliberately: one network request per DISTINCT song,
+      // deduped by artworkCache for the session. A user dragging the scrubber
+      // across an hour would cross many songs in a second, so an undebounced
+      // call would fire one request per boundary crossed. seekArtworkTimer
+      // collapses that into a single lookup for wherever the playhead settles,
+      // and the artworkSeq guard discards any response a later song has already
+      // superseded. The timer is cleared by stopNowPlayingPoll(), so a channel
+      // switch cannot leave it pending.
       //
       // NOT added to any timeupdate handler: those run several times a second.
       if (hit && hit.title && hit.artist) {
@@ -1506,7 +1775,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         // blanking it there would be a visible regression of its own.
         if (seekArtworkSongKey !== key) {
           seekArtworkSongKey = key;
-          if (nowPlaying.artwork) refreshNowPlayingArtwork(null, nowPlaying);
+          if (nowPlaying.playheadArtwork) refreshNowPlayingArtwork(null, 'playhead');
         }
         seekArtworkTimer = setTimeout(() => {
           seekArtworkTimer = null;
@@ -1514,7 +1783,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
           // song resolved then may be a different one (or none).
           const now = pickByPosition(nowPlaying.timeline, playheadWallMs());
           if (!now || !now.title || !now.artist) return;
-          refreshNowPlayingArtwork(now, nowPlaying);
+          refreshNowPlayingArtwork(now, 'playhead');
         }, SEEK_ARTWORK_DEBOUNCE_MS);
       }
     }
@@ -2125,7 +2394,12 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       // every episode track is built with `artwork: pod.image` /
       // `item.imageUrl` / `ev.image`, so a podcast shows its programme cover
       // on the lock screen too. Nothing is invented; the icon is last resort.
-      const artworkSrc = (cur.kind === 'live' ? nowPlaying.artwork : null)
+      // WS26 Part 1: the lock screen / car display read the SAME resolver as
+      // the panel and the compact line. It used to read the raw on-air field,
+      // so behind live the car and the phone showed different songs -- the
+      // same R6 defect in a third place.
+      const head = cur.kind === 'live' ? resolvePlayheadMeta() : null;
+      const artworkSrc = (cur.kind === 'live' && head ? head.artwork : null)
         || cur.artwork
         || 'icons/icon-512.png';
       // Album: the channel on radio, the EPISODE name on a podcast. Wired up
@@ -2544,7 +2818,42 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     const windowMs = Number.isFinite(start)
       ? Math.max(0, Date.now() - start * 1000)
       : 0;
-    const needsYesterday = pastMidnight || windowMs > 60 * 60 * 1000;
+    // ---- WS26 Part 4: derive the trigger from the WINDOW, not the clock ----
+    // The bug: `getHours() < 1` opens the gate for hour 0 only, but a 3 h DVR
+    // window reaches into yesterday until 03:00. The two disagree for
+    // 01:00-02:59, which is exactly when the owner tested (01:19-01:22). The
+    // right question is not "is it just after midnight?" but "does the DVR
+    // window reach before local midnight?" -- which is a property of the
+    // window, not of the clock.
+    //
+    // Computed from the REAL window, read from seekableStart/seekableEnd. No
+    // 3-hour constant is hardcoded: if the window is 2 h the gate covers hours
+    // 0-1, if it is 6 h it covers 0-5. `localDateStrOffset(1)` remains the
+    // fallback when the window is not yet known (seekableStart is null at
+    // playTrack time -- the WS21 finding, still true), and pastMidnight stays
+    // as a trigger so the worst case is a request that was not strictly
+    // necessary rather than a missing title.
+    //
+    // NO OFFSET, NO FUDGE. The correction is not a tunable: the window is
+    // measured, and timeSinceMidnight is exact. A constant here would freeze
+    // one observation into permanent behaviour, which is how "10 seconds"
+    // became folklore in WS23.
+    const sStart = state.current ? state.current.seekableStart : null;
+    const sEnd = state.current ? state.current.seekableEnd : null;
+    const windowS = (Number.isFinite(sStart) && Number.isFinite(sEnd) && sEnd > sStart)
+      ? sEnd - sStart
+      : null;
+    const now = new Date();
+    const timeSinceMidnightS = (now.getHours() * 3600) + (now.getMinutes() * 60)
+      + now.getSeconds() + (now.getMilliseconds() / 1000);
+    // True when the window's oldest moment falls before local midnight. With an
+    // unknown window this is `null`, and the caller falls back to the clock.
+    const windowReachesYesterday = windowS == null
+      ? null
+      : timeSinceMidnightS < windowS;
+    const needsYesterday = windowReachesYesterday === null
+      ? pastMidnight
+      : (windowReachesYesterday || pastMidnight);
     // WS21: record the decision and its inputs. The gate failed silently for a
     // whole pass because nothing exposed WHY it chose one day or two.
     META_DIAG.lastScheduleGate = {
@@ -2553,6 +2862,13 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       seekableStart: start ?? null,
       windowMs: Math.round(windowMs),
       needsYesterday,
+      // WS26 Part 4: the inputs to the NEW decision, so the owner's device
+      // check can tell "the window was unknown" from "the window did not reach
+      // yesterday" -- which are different defects with different fixes.
+      windowS: windowS == null ? null : Math.round(windowS),
+      timeSinceMidnightS: Math.round(timeSinceMidnightS),
+      windowReachesYesterday,
+      gateSource: windowReachesYesterday === null ? 'clock-fallback' : 'window',
     };
     if (!needsYesterday) {
       META_DIAG.lastScheduleGate.fetchedDays = ['today'];
@@ -2713,8 +3029,32 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // A seek can jump beyond what the retained timeline covers (or before its
     // first entry), so refresh the ends of the range. One request, through
     // the SAME seq-guarded path as the periodic poll -- it cannot race a
-    // channel switch, and it does not re-fetch the schedule.
+    // channel switch.
     scheduleNowPlayingPoll();
+    // ---- WS26 Part 3: ask SR what was playing at the new position ----
+    // Debounced and session-cached per episode id; never on timeupdate. On any
+    // failure it leaves the polled timeline exactly as the poll left it, so the
+    // worst case is today's behaviour.
+    if (seekTracksTimer) clearTimeout(seekTracksTimer);
+    seekTracksTimer = setTimeout(() => {
+      seekTracksTimer = null;
+      resolveSeekTracksFromSr();
+    }, SEEK_TRACKS_DEBOUNCE_MS);
+    // ---- WS26 Part 4: a SEEK DOES re-run the schedule fetch ----
+    // The second cause of the pre-midnight title gap, found in WS25: the
+    // schedule is cached 10 minutes per (channel, date) and was only ever
+    // fetched at track load. A session that started before 01:00 kept its
+    // yesterday data; a session that STARTED at 01:19 never got any, and a
+    // mid-window seek could not recover it. That made the symptom look
+    // intermittent and deploy-shaped when it is neither.
+    //
+    // Invalidate the day cache for this channel and refetch. The refetch runs
+    // through the same fetchSchedule()/resolveProgramTitle() path as the
+    // initial load, so the gate decision and the merge are the identical code
+    // -- there is no second implementation of "which days do I need".
+    scheduleCache.delete(`${cur.id}:${localDateStr()}`);
+    scheduleCache.delete(`${cur.id}:${localDateStrOffset(1)}`);
+    resolveProgramTitle(cur);
   };
   metaDiagCountAdd('seeked');
   audioEl.addEventListener('seeked', audioEl._srSeekedUpd);
@@ -2999,10 +3339,18 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         // already-visible stale panel corrects itself on the next repaint.
         // Falls back to the captured `cur` only if live state is somehow gone.
         const live = state.current || cur;
-        // Same source of truth as paintNowPlaying: episodes read the
-        // ondemand track at the current position; live reads rightnow.
+        // Same source of truth as paintNowPlaying, and now literally the same
+        // function: episodes read the ondemand track at the current position;
+        // live reads resolvePlayheadMeta(), which is the SAME
+        // `pickByPosition(nowPlaying.timeline, playheadWallMs())` the compact
+        // line uses. Before WS26 this line read `nowPlaying.song` -- the on-air
+        // poll -- so the header and the compact line answered "what am I
+        // looking at?" differently, and R6 could not hold by construction.
         const isEpisode = live.kind === 'episode';
-        const song = isEpisode ? episodeCurrentTrack : nowPlaying.song;
+        // One read, for title, artist and cover together. Reading them from
+        // three different fields is what allowed the halves to disagree.
+        const head = isEpisode ? null : resolvePlayheadMeta();
+        const song = isEpisode ? episodeCurrentTrack : (head ? head.song : null);
         if (!song || !song.title) {
           content.appendChild(el('div', { class: 'expand-row' },
             live.artwork
@@ -3044,7 +3392,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         // never to an unrelated one.
         const songArtwork = isEpisode
           ? (nowPlaying.episodeArtwork || live.artwork || null)
-          : nowPlaying.artwork;
+          : (head ? head.artwork : null);
         content.appendChild(el('div', { class: 'expand-row' },
           songArtwork
             ? el('img', { class: 'expand-img expand-img-song', src: songArtwork, alt: '' })
@@ -5390,7 +5738,9 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
                 stopMs: nowPlaying.song.stopMs,
               }
             : null,
-          artwork: nowPlaying.artwork,
+          artwork: nowPlaying.onAirArtwork,
+          playheadArtwork: nowPlaying.playheadArtwork,
+          resolvedAtPlayhead: resolvePlayheadMeta(),
           channelId: nowPlaying.channelId,
         },
         nowPlayingSeq,

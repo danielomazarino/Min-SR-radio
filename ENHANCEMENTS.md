@@ -4808,7 +4808,7 @@ Classification key, used inline throughout:
 |---|---|---|---|
 | 1 | WS24 artwork fix is **undone ~45 s later by the live poll** | FIXTURE | Yes, to see it |
 | 2 | Title and cover are **not** the same bug — the compact line is right, the header is wrong | CODE-READING | No |
-| 3 | `_srPaintedTitle` / `_srPaintedArtist` are **dead fields** — written, never read | CODE-READING | No |
+| 3 | `_srPaintedTitle` / `_srPaintedArtist` are **not a render cache** — read only by the change-detector in their own `if`; no display path consumes them | CODE-READING | No |
 | 4 | R5 pre-midnight titles: **NOT a WS23/WS24 regression.** Gate is byte-identical since WS21 | MEASURED | No |
 | 5 | R5 real cause: gate opens **hour 0 only**, but the 3 h window reaches yesterday until **03:00** | FIXTURE | No |
 | 6 | R6 "Spelas just nu" is a **static string** in the header, position-blind | CODE-READING | No |
@@ -4909,14 +4909,23 @@ split**, and it is the reason a single-cause story kept failing. Anyone who
 "fixes" the header by copying the compact line's approach must leave the compact
 line alone.
 
-**Dead fields found (finding #3).** `_srPaintedTitle` and `_srPaintedArtist`
-are written at exactly **one** site (app.js:1448–1449, inside `advanceCandidate`)
-and read at **zero** sites anywhere in `app.js`. They are a change-detection
-cache for `paintNowPlaying()` that nothing consumes — `paintNowPlaying()`
-re-derives from `pickByPosition` instead. **[CODE-READING]**
+**Dead fields found (finding #3).** — *wording corrected 2026-09-29 (WS26);
+the conclusion below is unchanged and still stands.*
+`_srPaintedTitle` and `_srPaintedArtist` are written at exactly **one** site
+(app.js:1448–1449, inside `advanceCandidate`) and they are read at exactly
+**one** site — the comparison at the top of the very same `if` block, where they
+serve as a change-detector. **The accurate statement is that they are not a
+cache which the render consumes:** no display path ever reads them.
+`paintNowPlaying()` re-derives from `pickByPosition` instead, so the fields
+guard a repaint but do not feed one. **[CODE-READING]**
+
+An earlier draft of this entry said "read at zero sites" and "never read".
+Both were wrong about the mechanism — the first clause missed the in-block
+comparison, and the second overstated it. What the finding actually turns on,
+and what still holds, is the next paragraph.
 
 Why this matters beyond tidiness: these fields are the *only* place the seek
-path records which song it resolved. Because they are never read, a seek leaves
+path records which song it resolved. Because no render path reads them, a seek leaves
 **no** trace on the header — the header's song comes solely from the poll. The
 WS24 comment at app.js:1450 says "the title and artist above resolve correctly
 for a historical song" — that is true of the **compact line only**, and the
@@ -5257,3 +5266,219 @@ causes (§3) and the metadata problem has *two* ceilings (§8). A single "fix th
 song display" change would plausibly appear to work while leaving the header
 mismatched and the back of the window empty. That is the failure mode of the
 last three sessions, and it is worth more than any of the fixes themselves.
+
+---
+
+## 2026-09-29 (WS26) — one integrated change. The panel describes the playhead.
+
+**Test counts, run fresh:** baseline **214/214** before any edit. Final
+**217/217**. `app.js` was `a28914f1b49ce901bde04095e49a1ed3` before this
+workstream and is `65663e30477e5d1209ce49eea965d927` after.
+
+**Source and tests are in ONE commit**, as the standing rules require.
+
+### R5 IS **NOT FIXED**. Read this first.
+
+The pre-midnight programme title is **still broken on first load**, and this
+workstream did not fix it. It made it *diagnosable*.
+
+**What is fixed:** the gate now asks the right question. It no longer tests
+`getHours() < 1` (true for one hour a day) but compares the real DVR window
+against the time elapsed since local midnight:
+
+```js
+windowReachesYesterday = windowS == null ? null : timeSinceMidnightS < windowS
+needsYesterday = windowReachesYesterday === null
+  ? pastMidnight                                   // window UNKNOWN -> clock
+  : (windowReachesYesterday || pastMidnight)       // window KNOWN  -> window
+```
+
+Measured against a 3 h window: correct at **every** hour, where the old formula
+was shut for 01:00–02:59 — the band containing the owner's 01:19 test.
+
+**What is NOT fixed: reachability.** `playTrack` runs
+`armPlaybackWatchdog → renderPlayer → resolveProgramTitle → fetchSchedule → the
+gate`, and `renderPlayer` does **not** call `updateSeekableState()`. No
+`timeupdate` has fired yet. So `seekableStart` is still `null` when the gate
+runs on the play path, the gate takes the `windowS == null` branch, and it falls
+back to `pastMidnight` — which is `false` at 01:19. **The window branch is never
+consulted on first load.** The second `fetchSchedule` is inside a tile
+click-handler, not a load path.
+
+A re-evaluation hook now exists in `updateSeekableState()` (reached by
+`timeupdate` for an HLS transport, so within a few hundred ms of playback on the
+owner's iPhone). That closes the gap **after the first tick**, not on first
+paint. Whether the owner's report is therefore resolved **is unverified — it
+needs the phone.**
+
+**How to tell the two states apart on the device.** `?diag=metadata` (with
+`localStorage['sr-meta-diag'] = 'on'`; the URL flag alone is deliberately
+insufficient) → `schedule.gate`:
+
+| reading | meaning |
+|---|---|
+| `gateSource: "clock-fallback"` on first paint | **expected.** The window is genuinely not known yet. Not a bug. |
+| `gateSource: "window"` a moment later | the fix engaged. Yesterday is being merged. |
+| `gateSource: "window"` but the title is still wrong | a **second** cause. Look at the seek path, not the gate. |
+| `windowS: null` and `gateSource: "window"` | impossible — treat as a bug in the diagnostics. |
+
+So: **`R5 = NOT FIXED on first load, fix engaged from the first tick onward,
+and the state is now readable rather than silent.** A session that sat at the
+live edge from before 01:00 will also have cached the wrong answer for up to
+10 minutes; the seek path invalidates that cache, the play path does not.
+
+### CODE CHANGE
+
+`app.js`, one commit. Named functions, so a reader can find each:
+
+- **`resolvePlayheadMeta()`** (new) — the single answer to "what is the
+  playhead sitting on?", returning `{ atLiveEdge, song, artwork, programme }`.
+  Every consumer reads it: the expand-panel header, the lock screen / car
+  display, and nothing else. The compact line keeps its own
+  `pickByPosition(nowPlaying.timeline, playheadWallMs())` **byte-identical** —
+  R4 was working and changing it would have been the regression.
+- **`refreshNowPlayingArtwork(song, kind)`** — signature changed. The
+  `target === nowPlaying` identity test is **gone**; it could not separate two
+  *live* intents, which is the WS24 regression. `kind` is `'poll'`,
+  `'playhead'` or `'episode'`, and an unrecognised value writes nothing.
+- **Three cover fields, one writer each** — `onAirArtwork` (poll),
+  `playheadArtwork` (seek), `episodeArtwork` (episodes). The old single
+  `artwork` field no longer exists. The panel *chooses* between them in
+  `resolvePlayheadMeta()` as a **read**, which is the point: a reader cannot
+  create a race.
+- **`resolveSeekTracksFromSr()` / `fetchEpisodeTracks()` /
+  `mergeTimelineEntries()`** (new) — on a seek, resolve the playhead's episode
+  from `_srSchedule`, fetch its `tracks`, convert `relativeStartTime` /
+  `relativeEndTime` to absolute wall-clock, and merge into the **same**
+  timeline the poll writes, sharing its dedupe, sort and cap. Debounced 250 ms,
+  cached per episode id for the session, never on `timeupdate`. The 45 s poll
+  is **not** removed — it remains the live path and is correct there.
+- **`fetchSchedule()`** — window-derived gate (above), plus a re-evaluation hook
+  in `updateSeekableState()` guarded by `lastWindowGateKey` so it fires once per
+  (channel, date), not four times a second.
+- **`repaintExpandPanel()`** (new) — the panel repaint was inlined in two
+  places; a third consumer needed it.
+- **NOT changed:** `NOW_PLAYING_INTERVAL_MS`, `NOW_PLAYING_TIMELINE_MAX`,
+  `LIVE_EDGE_TOLERANCE_S`, `SEEK_ARTWORK_DEBOUNCE_MS`, the compact line's
+  selection, and `Spelas just nu` (see below).
+
+### A REAL DEFECT found by driving the code, not by reading it
+
+**Part 3's first draft was dead code.** It passed `cur._srSchedule` straight
+into `pickByPosition`, which matches on `e.stopMs`, while the schedule entries
+built by `fetchScheduleDay` carry **`endMs`**. So `entry` was *always* `null`,
+the function returned on its second line, and the SR-backed lookup never ran.
+
+`resolveMetadataForPosition` has always remapped `endMs → stopMs` for the
+programme title — which is exactly why R5's programme lookup worked while this
+did not. Same shape, same reason; one place remembered and the other did not.
+
+**Every fallback assertion still passed while this was true**, because they only
+test failure paths. A test that checks "nothing is touched" cannot detect
+"nothing ever happens". Found by driving the function with 17 real tracks and
+watching the timeline not grow. Fixed, and the success path is now driven in
+the test.
+
+### TESTS — 217, and 19 mutations, 0 vacuous
+
+| Requirement | How it is guarded | Mutation |
+|---|---|---|
+| R1 header title | reads `head.song`, never `nowPlaying.song` | reverts → RED |
+| R2 header artist | same read, artist included | reverts → RED |
+| R3 header cover | the two cover fields | poll writes playhead's → RED |
+| R4 compact line | selection expression byte-identical | changed → RED |
+| R5 gate | formula + **reachability hook** | hook removed → RED |
+| R6 both halves | **driven** poll→seek→poll | mismatch → RED |
+| one writer/field | three writer names → three distinct fields | shared field → RED |
+| Part 3 fallback | driven, both empty and non-empty | timeline cleared → RED |
+| no hardcoded 3 h | rejected in the comparison too | `10800` inlined → RED |
+
+**Four assertions were found VACUOUS and rewritten** — each because a mutation
+stayed green:
+
+1. **R1 had no test at all.** Reverting the header to `nowPlaying.song` left
+   the whole suite green. The header's *song* was never covered — only its
+   artwork. Now `WS26 R1` in `tests/fixpass.test.mjs`.
+2. The `10800` constant check missed a constant inlined into the comparison.
+3. The cap and the session cache were asserted by **presence**; disabling the
+   cap guard with `if (false)` and deleting the cache read both stayed green.
+   Both are now **driven** — the cap is asserted on the resulting length.
+4. `nowPlaying.song` inside a *comment* failed a negative assertion. Comments
+   are now stripped first.
+
+**Two comment-traps and one scope trap in the harnesses**, all recorded so they
+are not repeated: `new Date()` is a constructor call and needs a same-scope
+shadow, not a parameter; a destructured `deps` field that collides with an
+injected binding is a `SyntaxError`; a raw-source slice that runs to EOF polices
+prose, not code.
+
+### Part 5 — the label: NOT DONE, and it is the owner's call
+
+`Spelas just nu` is still a hardcoded string, still wrong behind live. The brief
+says report the options and stop, so:
+
+| option | what the owner would see behind live |
+|---|---|
+| **A** — leave it | "Spelas just nu" (today) |
+| **B** — show the offset | "−12 min" — needs `dvrOffsetLabel`, which exists |
+| **C** — change the words | "Spelas inte direkt" — no data needed, no risk |
+
+I have not chosen. **B** is the most informative and the code already exists;
+**C** is the smallest change. This is a product decision.
+
+### Device protocol — the owner
+
+Check the build id under **NYHETER** on the main screen first. **If it is not
+the id in the commit below, you are testing old code** and every result is void.
+
+1. **Scrub back 2–3 minutes on P3.** Read the panel: title, artist, cover. All
+   three must describe the **same** song. Then **wait 45 seconds without
+   touching anything** and read them again. Under the old build the cover
+   changed to a different song's while the title stayed put. Under this build
+   nothing should change.
+2. **Compare the two halves.** The small line under the player and the opened
+   panel must name the same song. If they ever disagree, that is R6 and it is
+   the important one.
+3. **A talk programme** (Ekot, nyheter): the song line may be empty. That is
+   correct — talk has no per-song data. What must **not** happen is the line
+   going blank when it was populated a moment ago.
+4. **Between 00:50 and 01:10** (only if you are up then): open
+   `?diag=metadata` and read `schedule.gate`. See the table above for what each
+   reading means.
+
+### 5. The one thing that needs your phone: the song-lookup time axis
+
+**This is the single load-bearing assumption in the whole change, and I cannot
+test it.** Desktop Chromium cannot load SR's DVR stream at all, so there is no
+way for me to observe a live DVR window and compare it against a past
+broadcast's per-song times.
+
+**What is assumed:** that a song's time inside a past broadcast maps to the
+same clock as the live recording. The app anchors each song to the moment the
+programme started (`episode start + the song's offset into it`) and then treats
+that as a wall-clock time it can look up in the DVR window. SR publishes no
+audio-start offset, so the episode start is the only anchor available.
+
+**What to look for.** Find a programme you remember well — a music show is best
+— scrub to a song you can identify by ear, and check **when the title appears
+versus when the song actually starts**:
+
+| what you see | what it means |
+|---|---|
+| the title appears as the song starts, and changes at the right moments | the axis is right. This is the good case. |
+| the title is right but appears **late** — you hear the song, then the title catches up | the app is resolving slightly behind the playhead. |
+| the title appears **early**, before the song starts | the axis is shifted the other way. |
+| the title is a **different song entirely** from the one you can hear | the worst case, and the one to report. It means the window and the episode are being matched to the wrong programme. |
+| the title never appears at all | Part 3's lookup returned nothing; the panel is falling back to the polled timeline, which is the intended degradation. |
+
+**The failure mode is bounded, and worth knowing before you report:** a shifted
+axis makes titles appear at the wrong point *within* a programme. It does not
+blank the panel, and it does not show another programme's songs. But a title
+belonging to a different song is exactly the "cover race" symptom in a new
+place, and if you see it, say so plainly — it would mean the anchoring needs
+revisiting and I have no way to find that out without you.
+
+**Two other things I could not measure:** how many requests a scrub across the
+full 3 h window actually costs (it is debounced and cached per episode, but I
+have no rate-limit data and did not go looking), and how long SR keeps the
+per-song data for a given episode.
