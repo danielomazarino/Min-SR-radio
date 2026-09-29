@@ -5519,3 +5519,87 @@ missed it.** The rule this earns: a 404 on a freshly pushed asset means
 "propagating", not "failed", **only after** confirming the commit is on the
 remote and the Pages build reports `built` for it. Both were confirmed before
 the re-run.
+
+---
+
+## 2026-09-29 (late, owner device result) — HISTORICAL SONGS WORK. A live-edge mismatch is OPEN.
+
+**Build `1b4287b` on the owner's iPhone 13, P3, 02:50, at the LIVE edge.**
+
+### What the owner confirms WORKS
+
+**The historical song lookup — the thing WS26 was written for — works on the
+device.** This is the first device confirmation of it, and it is the item that
+three sessions had recorded as an SR "data ceiling" before WS25 refuted that.
+The timeline now resolves past positions from SR's per-episode track list rather
+than only from what the app happened to hear while open.
+
+### What is OPEN: the two halves disagree AT THE LIVE EDGE
+
+Screenshot evidence, one moment, at the live edge (pill reads `LIVE`):
+
+| surface | shows |
+|---|---|
+| expanded card, cover + title + artist | **"More!" / Robin Bengtsson** |
+| row 4 (`.now-playing-line`) | **"Depeche Mode – Enjoy The Silence"** |
+
+**These are different songs, at the same instant, on the same channel.**
+
+**MECHANISM — located in the source, not guessed.**
+`resolvePlayheadMeta()` chooses the song like this:
+
+```js
+song: atLiveEdge ? (nowPlaying.song || hit) : (hit || null),
+```
+
+At the live edge it **prefers the poll's `nowPlaying.song`** and only falls back
+to the timeline (`hit`). Row 4 uses `hit` unconditionally. So the two surfaces
+can never agree whenever the poll's current song and the timeline entry covering
+the same wall-clock moment differ — which is exactly what the screenshot shows.
+
+**The comment beside that line states the assumption that is now falsified:**
+*"the timeline entry is the same song by construction"*. It is not. The timeline
+is built from `previoussong` / `song` / `nextsong` across polls, and the poll's
+`song` is whatever the most recent response said. Between a song boundary and
+the next poll they disagree, and the card shows one while row 4 shows the other.
+
+**This is R6 — "the two halves must never disagree" — failing in the one
+configuration not yet exercised.** Everything verified so far was behind-live.
+`AGENTS.md` §12 records R6 as the cheapest and most important check; it is the
+check that just found a live defect.
+
+### Why preferring the poll was a deliberate choice, and why it is now wrong
+
+The choice was made so the live case would stay byte-identical to the pre-WS26
+path. That is a real reason, and it is why the mismatch is easy to miss: both
+halves are individually defensible and jointly wrong.
+
+**The fix shape is small and is NOT yet applied:** make the live edge use the
+same source as row 4 (`hit`), or make row 4 use `nowPlaying.song` at the edge.
+**One source, both surfaces** — the same rule the rest of WS26 was built on.
+Note the trade-off the implementer must check: the timeline can be *empty* at
+the live edge if no poll has landed yet, in which case the card must fall back
+to the poll's song rather than blanking. **The edge case is "timeline empty",
+not "poll and timeline disagree".**
+
+### For the next pass — device checks, in order
+
+1. **The live-edge mismatch (this one).** On any music channel at the live edge,
+   compare the card's song with row 4. Report whether they agree, and if not,
+   whether one is consistently ahead of the other.
+2. **Does the cover follow the song?** The cover is chosen by which song won, so
+   once the song agrees the cover should follow. Confirm.
+3. **Historical titles: is the song right, not just present?** Scrub back to a
+   song you can identify by ear and check the title belongs to *that* song. A
+   title from a neighbouring song means the time-axis anchoring is off — the one
+   load-bearing assumption WS26 could not test offline.
+4. **Wait 60 s after a scrub.** The cover must stay on the scrubbed-to song. If
+   it swaps to the live song, the 45 s race survived.
+5. **Talk radio (P1).** The song line should empty naturally and the programme
+   name must remain. A blank programme name is a regression.
+
+### State
+
+`1b4287b` (source + tests) -> `8f183ce` (artifacts), pushed. 217/217. All four
+deploy checks PASS against the live site. **The live-edge mismatch is OPEN and
+is the next thing to fix.** Nothing else from WS26 is known-broken on the device.
