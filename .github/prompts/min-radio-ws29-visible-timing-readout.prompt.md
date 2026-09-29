@@ -19,11 +19,11 @@ but **the owner cannot reach it**, so it has never been read on a device.
 
 **Two independent blockers, and this brief removes both:**
 
-1. **The gate.** `metaDiagGateOpen()` (`app.js:5595`) needs
+1. **The gate.** `metaDiagGateOpen()` — `function metaDiagGateOpen()` needs
    `localStorage['sr-meta-diag'] === 'on'`, and **nothing in the app ever writes
    that flag** — it is read, never set.
 2. **The output.** `srMetaDiagSnapshot()` writes to `console.log` and
-   `localStorage['sr-diag-log']` (`app.js:375`, `app.js:6007`). **Neither is
+   `localStorage['sr-diag-log']` — `const diagLog = (msg) => {` and `window.srMetaDiag = srMetaDiagSnapshot;`. **Neither is
    visible on a phone.**
 
 **Everything downstream is blocked on this.** WS28 cannot start until this
@@ -38,15 +38,23 @@ timing number as text on screen.**
 
 ### Where exactly
 
-- `openAbout()` — `app.js:4886`. The overlay is
-  `el('div', { class: 'reader-overlay', role: 'dialog', 'aria-label': 'Om appen' })`.
-- The sheet is reached: **⚙️ cog** (`edit-btn`, `index.html:29`) → the sheet →
-  the button labelled **`Info`** (`app.js:5362`, `onclick: openAbout`).
-  **There is no word "Om" on screen — it is an aria-label only.** Do not tell the
-  owner to look for "Om".
-- The body is built with `el(...)` into `body`, which is appended to `about` at
-  `app.js:4950`. **The existing sections end with "Datakällor & villkor"
-  (`app.js:4942`)** — add the new section after that list, before `about.appendChild(body)`.
+**Find every one of these by its TEXT, not by line number** — your own edits will
+shift the line numbers, and a line number that has drifted is worse than none.
+
+| what | how to find it |
+|---|---|
+| the About overlay | the function `openAbout()`, whose first line contains `'aria-label': 'Om appen'` (on the same line as `class: 'reader-overlay'` and `role: 'dialog'`) |
+| how the sheet is reached | the button built as `class: 'sheet-action sheet-action-info'` with `onclick: openAbout` and `text: 'Info'` |
+| **insertion point** | immediately after the `about-list` holding the last bullet, *"… är oberoende av och inte utgiven av Sveriges Radio."*, and **before** the line `about.appendChild(body);` |
+| the existing sections to sit under | the headings `'Så fungerar appen'`, `'Att veta'`, `'Hur appen är byggd (för den nyfikne)'`, `'Datakällor & villkor'` |
+| the gate — leave alone | `function metaDiagGateOpen()` |
+| the snapshot to reuse | `window.srMetaDiag = srMetaDiagSnapshot;` |
+| the existing debug handle | `window.__srSeekable = () => {` |
+| the log sink (the problem) | `const diagLog = (msg) => {` — writes to `console.log` and `localStorage['sr-diag-log']` |
+
+**⚙️ cog is `edit-btn` in `index.html`.** And note: **there is no word "Om" on
+screen** — it is an `aria-label` for screen readers only. The visible button says
+**Info**. Do not tell the owner to look for "Om".
 
 ### What it must do
 
@@ -94,9 +102,9 @@ exist.
 
 ### Where the number comes from
 
-`window.srMetaDiag()` is already exported (`app.js:6007`) and returns
+`window.srMetaDiag()` is already exported (`window.srMetaDiag = srMetaDiagSnapshot;`) and returns
 `dvr.streamEdge.edgeMinusNowS` when the gate is open. `window.__srSeekable()`
-(`app.js:912`) is also exported. **Use the existing snapshot — do not
+(`window.__srSeekable = () => {`) is also exported. **Use the existing snapshot — do not
 re-implement the edge calculation**, and do not compute the number a second way.
 `AGENTS.md` §3.
 
@@ -162,7 +170,7 @@ present a difference between them as "the offset" without saying so.
   `SEEK_TRACKS_DEBOUNCE_MS`, WS27's one-song rule in `resolvePlayheadMeta()`,
   the `Spelas just nu` label (**owner's decision: leave it**), or anything in
   the WS23 `seekableEnd` assumption sites.
-- **Do not correct the `app.js:3337` DATERANGE comment in this workstream.** It
+- **Do not correct the the comment above the DATERANGE note in the episode-track area DATERANGE comment in this workstream.** It
   is a false technical claim — measured 2026-09-30, SR publishes
   `#EXT-X-PROGRAM-DATE-TIME`, not `EXT-X-DATERANGE` — and it is wrong. But it
   belongs with the timing work that uses it, not smuggled in here. Note it in
