@@ -20,8 +20,10 @@ but **the owner cannot reach it**, so it has never been read on a device.
 **Two independent blockers, and this brief removes both:**
 
 1. **The gate.** `metaDiagGateOpen()` — `function metaDiagGateOpen()` needs
-   `localStorage['sr-meta-diag'] === 'on'`, and **nothing in the app ever writes
-   that flag** — it is read, never set.
+   `localStorage['sr-meta-diag'] === 'on'` **AND `diag=metadata` in the URL**,
+   and **nothing in the app ever writes that flag** — it is read, never set.
+   **The URL half is why the panel alone cannot work — read §1a, it is the most
+   important section in this brief.**
 2. **The output.** `srMetaDiagSnapshot()` writes to `console.log` and
    `localStorage['sr-diag-log']` — `const diagLog = (msg) => {` and `window.srMetaDiag = srMetaDiagSnapshot;`. **Neither is
    visible on a phone.**
@@ -63,6 +65,8 @@ screen** — it is an `aria-label` for screen readers only. The visible button s
   `localStorage['sr-meta-diag'] = 'on'`; turning it off sets it to `'off'`.
   **Read the existing value on open, so the switch reflects reality** rather
   than assuming a default.
+  - **Setting this flag is NECESSARY BUT NOT SUFFICIENT** — the gate also wants
+    the URL. See §1a before you write a line of this.
 - **The number rendered as visible text in the DOM.** This is the entire point.
   The owner must be able to read it and photograph it.
 - **Refresh the reading while the sheet is open**, on an interval, and once
@@ -74,11 +78,10 @@ screen** — it is an `aria-label` for screen readers only. The visible button s
 
 ### What it must NOT do
 
-- **Do not weaken `metaDiagGateOpen()`.** The two-key gate is deliberate: a query
+- **Do not modify `metaDiagGateOpen()` or weaken the two-key gate.** A query
   string travels in links, screenshots and bug reports, so it must never be
-  sufficient on its own. Switching the flag **inside the app** is deliberate
-  user action, which is exactly what the gate is asking for. Leave the function
-  as it is.
+  sufficient on its own. The function stays exactly as it is, and case D below
+  must keep returning nothing.
 - **Do not change any playback, transport, or scheduling behaviour.** This is a
   read-only display. `AGENTS.md` §3: one field, one writer — this adds a reader,
   not a writer.
@@ -90,6 +93,46 @@ screen** — it is an `aria-label` for screen readers only. The visible button s
 
 ### Graceful degradation — this is a real requirement, not a nicety
 
+> ### §1a — THE PANEL CANNOT OPEN THE GATE. Read this before writing anything.
+>
+> `metaDiagGateOpen()` needs **two** keys: the URL query **and** the flag.
+> **MEASURED in Chromium against the live site, 2026-09-30:**
+>
+> | case | URL | flag | `gateOpen` |
+> |---|---|---|---|
+> | **flag only, no query — what §2 tells the owner to do** | `/` | `on` | **`false`** |
+> | flag + query | `?diag=metadata` | `on` | `true` |
+> | flag `off` + query | `?diag=metadata` | `off` | `false` |
+> | query only, no flag (a shared link) | `?diag=metadata` | absent | `false` |
+>
+> **So the brief as first written would build a panel, flip a switch, and show
+> "no data" — and that "no data" would be very easy to report as the
+> measurement.** Do not ship that. Do not report "no data" as a reading.
+>
+> **The gate is a good design and must not be weakened.** Its own comment says
+> the query parameter "travels in links, screenshots, bug reports and browser
+> history, so it must never be sufficient" — the property being protected is
+> *a stray artefact must not silently enable diagnostics*. An explicit switch
+> inside a settings sheet is precisely the **deliberate action** that comment
+> asks for; it is the gate asking the wrong question ("are both keys present?")
+> rather than the switch being insufficient.
+>
+> **The owner has NOT yet chosen between these. Do not pick one yourself:**
+>
+> 1. **RECOMMENDED — the panel reads the edge itself**, via its own small,
+>    read-only helper, and `metaDiagGateOpen()` is left **completely untouched**.
+>    The switch's flag stays as it is; the panel simply does not require the URL
+>    half. Weakening of existing gates: **none**.
+> 2. The switch **also navigates** to `?diag=metadata`. Works, but it puts the
+>    marker in the URL, which this brief otherwise forbids.
+> 3. Drop the URL half of the gate. **Weakest**, and ruled out by this brief's
+>    own reasoning.
+>
+> **Whichever is chosen: it is an owner decision, it must be recorded, and the
+> reasoning must be written next to `metaDiagGateOpen()`** so a later session
+> does not "fix" the divergence. If the owner has not answered, **stop and say
+> so in `SESSION-STATUS.md`** — do not implement option 1 and call it decided.
+
 `edgeMinusNowS` is derived from `seekableEnd`, which **only exists while a live
 radio stream is playing.** On a talk channel, before playback starts, and on
 podcasts it will be `null` or absent.
@@ -100,15 +143,55 @@ similar) rather than showing `null`, `undefined`, an empty box, or a misleading
 panel**, and it would send the next session chasing a zero offset that does not
 exist.
 
-### Where the number comes from
+### Where the number comes from — READ THIS, IT IS THE CRITICAL PART
 
-`window.srMetaDiag()` is already exported (`window.srMetaDiag = srMetaDiagSnapshot;`) and returns
-`dvr.streamEdge.edgeMinusNowS` when the gate is open. `window.__srSeekable()`
-(`window.__srSeekable = () => {`) is also exported. **Use the existing snapshot — do not
-re-implement the edge calculation**, and do not compute the number a second way.
-`AGENTS.md` §3.
+**The panel must NOT go through `metaDiagGateOpen()`. It cannot work, and here is
+the measured proof** (coding agent, 2026-09-30, confirmed independently by the
+tech lead in Chromium against the live site — all four cases reproduced):
 
----
+| case | URL | flag | `gateOpen` | snapshot |
+|---|---|---|---|---|
+| **A** — **flag on, normal URL = what §2 tells the owner to do** | `/` | `on` | **`false`** | **`null`** |
+| B — flag + query | `?diag=metadata` | `on` | `true` | object |
+| C — flag `off` + query | `?diag=metadata` | `off` | `false` | `null` |
+| D — shared link, no flag | `?diag=metadata` | absent | `false`** | `null` |
+
+**Case A is the whole problem.** The owner opens the app normally, with no query
+string, so the gate stays shut, the panel shows "no data", and the reading is
+worthless. A panel that is built this way looks like it works and measures
+nothing.
+
+**THE REQUIRED SHAPE — a second, explicit read path, and the gate is untouched:**
+
+- Extract the snapshot **body** into a function that takes no gate check, e.g.
+  `buildMetaDiagSnapshot()`, and let `srMetaDiagSnapshot()` call it **only after**
+  `metaDiagGateOpen()` returns true. **That ordering is the whole protection** and
+  it must be preserved: nothing may reach the body without passing the gate.
+- The panel calls the **body function directly**, and only when its own switch is
+  on. The switch is the deliberate action; the query string is not needed and is
+  not asked for.
+- **`metaDiagGateOpen()` is not edited, not bypassed for anyone else, and not
+  removed.** Cases B, C and D must behave exactly as they do today.
+- **Write the reasoning next to the gate**, in a comment, so a later session does
+  not "fix" the divergence by deleting the flag. State: *the gate exists to stop a
+  stray link or screenshot silently enabling diagnostics; the panel exists because
+  the owner must be able to read a number deliberately, and a switch inside a
+  settings sheet is precisely the deliberate action the gate's own comment asks
+  for.*
+
+**This was an owner decision, taken 2026-09-30.** The alternatives were rejected:
+having the switch also navigate to `?diag=metadata` (puts a diagnostics flag in a
+URL), and dropping the URL half of the gate (a shared link could then enable
+diagnostics). **Do not "improve" on this by taking one of those instead.**
+
+**Reuse, do not re-implement:** the edge calculation itself lives in
+`streamEdgeWallMs()`. **Call it — never write a second version of it.** Same for
+the snapshot body. A second copy of the edge calculation is a second place for
+the number to be wrong, and this number is the instrument everything else depends
+on.
+
+**`window.__srSeekable()` already exists as a debug handle** and is unchanged.
+Use it if it is the cleaner route; do not add a second debug handle.
 
 ## 2. The owner's instructions, verbatim in substance
 
@@ -120,6 +203,9 @@ number, not understand anything.**
 > 2. Tap the **programme-skip** button once (the ⏮ / ⏭ next to the play button).
 > 3. Open the ⚙️ cog → **Info** → scroll to the bottom → turn on **Visa
 >    tidsdiagnostik**.
+>    *(Only send these instructions to the owner **after** §1a is resolved and
+>    the panel is built and deployed. Before that, step 3 produces "no data"
+>    and the reading is void.)*
 > 4. Read the line that says how many seconds the app thinks the stream is
 >    behind. **Write that number down, or photograph the screen.**
 
@@ -156,8 +242,17 @@ present a difference between them as "the offset" without saying so.
 ## 4. What you must not do
 
 - **No correction constant. No margin. No fudge factor.** There is currently
-  **no** such constant in the code and a test in `tests/fixpass.test.mjs`
-  **rejects one by name**. That test is a deliberate guard; keep it green.
+  **no** such constant in the code and a test **rejects one by name**.
+  > **CORRECTION — the earlier version of this brief named the wrong file.** The
+  > guard is in **`tests/metadata-diag.test.mjs`** (line ~3815), **not**
+  > `tests/fixpass.test.mjs`, which has no such guard. Verified by
+  > `grep -rn STREAM_EDGE_CORRECTION tests/` → exactly one hit, in
+  > `metadata-diag.test.mjs`:
+  > ```js
+  > assert.ok(!/STREAM_EDGE_CORRECTION|EDGE_CORRECTION_S|SEEK_CORRECTION/.test(APP_JS), …)
+  > ```
+  > **Keep that one green.** Do not add a duplicate guard in `fixpass.test.mjs`
+  > — two guards look like protection and one of them would test nothing.
   The readings across sessions are ~10 s, then ~30 s, then ~25 s, on different
   programmes. **The owner has said explicitly the programme-skip offset and the
   song-title offset are not the same offset.** A constant fitted to any one
@@ -194,8 +289,19 @@ Cover at minimum:
    **This is the one that matters most**, because a panel showing `0 s` when it
    means "no data" would send the next session chasing a zero offset.
 3. **No timer runs when the switch is off, and none survives the sheet closing.**
-4. **`metaDiagGateOpen()` is unchanged** — assert the two-key behaviour still
-   holds and that a bare `?diag=metadata` with no flag still returns nothing.
+4. **The gate is intact — all four cases, driven.** Assert case B (flag + query)
+   returns a snapshot, and that **C** (flag `off`) and **D** (query, no flag) both
+   return `null`. **Case D is the one that matters: it is the shared-link case
+   the gate exists to stop.** If D ever returns a snapshot, the gate has been
+   broken.
+5. **The panel reads without the gate.** With the switch on and **no query
+   string**, the panel must render a number (or the plain "start a channel first"
+   message). **This is the regression test for the defect that made this brief
+   unbuildable** — without it, the same mistake can be reintroduced silently.
+   **This test must survive whichever §1a option is chosen.** If the owner picks
+   option 1, the gate keeps its exact current behaviour and the *panel* has a
+   separate read path — that separation is the thing to assert, so a later
+   session cannot quietly widen the panel's path into everything.
 5. **The panel is read-only** — assert that no state field is written by it.
 
 Any test that reads source text where a rendered-DOM assertion is possible is the
