@@ -6020,11 +6020,43 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // is deliberately no fallback to the self-referential number, because a
   // fallback is how the tautology would come back wearing a new name.
   function metaDiagReadoutLines() {
+    // ---- WS32 (3a): a snapshot FAILURE is not the same fact as NO CHANNEL. ----
+    // The `catch` used to set `snap = null`, which made an internal error
+    // indistinguishable from "nothing is playing" — so the panel told the owner
+    // to start a channel whenever anything inside the snapshot builder threw.
+    // That is the same class of untruth WS31 fixed one level up, and it is the
+    // most likely reason a future session sees a nonsense panel state, because
+    // the failure is silent: no number, no number ever.
+    //
+    // The two facts are now kept apart. `snapFailed` distinguishes "the readout
+    // could not be built" from "the readout is fine and nothing is playing",
+    // and only the latter may claim a channel must be started. The error is
+    // also recorded so a session can act on it rather than re-deriving it.
     let snap = null;
-    try { snap = metaDiagBuildSnapshot(); } catch { snap = null; }
+    let snapFailed = false;
+    try {
+      snap = metaDiagBuildSnapshot();
+    } catch {
+      snap = null;
+      snapFailed = true;
+    }
     const dvr = snap && snap.dvr ? snap.dvr : null;
     const two = dvr ? dvr.twoSource : null;
     const seek = dvr ? dvr.seek : null;
+
+    // (0) The snapshot itself could not be built. NO number is shown — this is
+    //     a wrong LABEL being fixed, not a reading being added. It comes BEFORE
+    //     the no-stream check, because with `snap === null` both would otherwise
+    //     match and the untruth would survive.
+    if (snapFailed) {
+      return {
+        ok: false,
+        state: 'snapshot-error',
+        primary: 'Kunde inte läsa appens egen diagnosdata',
+        secondary: 'Det här är inte en mätning och inte noll — panelen kunde '
+          + 'inte byggas upp. Starta om appen och försök igen.',
+      };
+    }
 
     // ---- WS31: WHICH condition each message is derived from, and why. ----
     //
@@ -6438,6 +6470,33 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         // non-numeric state. There is deliberately no path here that turns a
         // missing or failed sample into 0, and none that falls back to
         // `edgeMinusNowS`.
+        // ---- WS32 (3b): expose the browser-clamp so the panel can use it. ----
+        // `metaDiagReadoutLines` has read `dvr.seek.clampedByS` since WS29 to
+        // say "Sökningen ändrades av webbläsaren med N s", but the snapshot
+        // NEVER PROVIDED `dvr.seek`. The line was dead UI: a seek clamped by
+        // the browser was silently never reported.
+        //
+        // CHOSEN OVER DELETION, and the reachability was PROVED rather than
+        // assumed (AGENTS.md §7a — a reader fed by nothing has bitten this repo
+        // twice). `SEEK_EDGE_DIAG.clampedByS` is written on BOTH of the owner's
+        // real seek paths:
+        //   seekToLive()        — "Till Direkt"
+        //   seekToProgramTime() — the programme skip (the circular arrows)
+        // each as `audioEl.currentTime - target` immediately after the seek, so
+        // it is a real measurement of what the element accepted rather than a
+        // recomputation of what we asked for.
+        //
+        // Exposing it is strictly more informative than removing the line: the
+        // whole point of the clamp is that it is INDISTINGUISHABLE from a wrong
+        // offset from the outside. Without it, a clamped seek and a genuine
+        // offset look identical on screen.
+        seek: {
+          clampedByS: SEEK_EDGE_DIAG.clampedByS,
+          requestedTarget: SEEK_EDGE_DIAG.requestedTarget,
+          acceptedPosition: SEEK_EDGE_DIAG.acceptedPosition,
+          calls: SEEK_EDGE_DIAG.calls,
+          lastCalledAt: SEEK_EDGE_DIAG.lastCalledAt,
+        },
         twoSource: {
           status: STREAM_EDGE_PROBE.status,
           // BOTH raw clocks, so the difference is checkable by hand.

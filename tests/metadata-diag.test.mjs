@@ -4657,7 +4657,171 @@ test('WS31 an HLS channel still reaches the measurement (the fix narrows nothing
   }
 });
 
-test('WS30 a real reading states WHICH clock is ahead, and shows the sample age', () => {
+// ===================================================================
+// WS32 Part 3 — the two defects the WS31 agent named as NOT DONE.
+// ===================================================================
+
+test('WS32 3a: a snapshot ERROR must not be reported as "start a channel"', () => {
+  // THE DEFECT. `metaDiagReadoutLines` wrapped the snapshot call in
+  // `try { ... } catch { snap = null; }`. With snap null the no-stream branch
+  // matched, so ANY internal error in the snapshot builder produced
+  // "Starta en radiokanal först" — telling the owner to start a channel they
+  // may well have started, and reporting a code failure as a usage error.
+  //
+  // USER-VISIBLE FAILURE IT CATCHES: the panel says "start a radio channel"
+  // when nothing is wrong with playback at all, and the real fault is invisible
+  // — no number, and no clue. This is the most likely reason a future session
+  // meets a nonsense panel state.
+  //
+  // The world is driven for real: the snapshot builder THROWS, exactly as it
+  // would on an internal error.
+  const src = APP_JS;
+  const grab = (name) => {
+    const start = src.indexOf(`function ${name}(`);
+    assert.notEqual(start, -1, `${name} must exist in app.js`);
+    let d = 0, end = -1;
+    for (let i = start; i < src.length; i += 1) {
+      if (src[i] === '{') d += 1;
+      else if (src[i] === '}') { d -= 1; if (d === 0) { end = i; break; } }
+    }
+    assert.notEqual(end, -1, `brace matching failed for ${name}`);
+    return src.slice(start, end + 1);
+  };
+  const canary = { readoutCalls: 0 };
+  const readout = new Function('deps', `
+    const { canary } = deps;
+    function metaDiagBuildSnapshot() { throw new Error('internal fault'); }
+    ${grab('metaDiagReadoutLines')}
+    return () => { canary.readoutCalls += 1; return metaDiagReadoutLines(); };
+  `)({ canary });
+
+  const r = readout();
+  assert.ok(canary.readoutCalls > 0, 'canary: the readout was never called');
+  assert.equal(r.ok, false, 'a failed snapshot is not a reading');
+  assert.equal(r.state, 'snapshot-error',
+    'a build failure is a different fact from "nothing is playing"');
+  assert.ok(!/Starta en radiokanal/.test(`${r.primary} ${r.secondary || ''}`),
+    `a snapshot error must not claim a channel must be started `
+    + `(got: "${r.primary}")`);
+  // It must say plainly that this is NOT a measurement — the panel's whole
+  // contract is that a missing reading never looks like a zero offset.
+  assert.match(r.secondary, /inte noll|inte en mätning/i,
+    `the message must state this is not a measurement (got: "${r.secondary}")`);
+  // And no number of any kind.
+  assert.ok(!/(^|[^.\d])\d+\s*s/.test(`${r.primary} ${r.secondary || ''}`),
+    'a failed snapshot must render NO number');
+
+  // The genuine no-channel case is unaffected: no throw, no playback record.
+  const c2 = { buildCalls: 0, readoutCalls: 0 };
+  const none = ws29Harness(APP_JS, null, null)({
+    edge: null, two: null, canary: c2, playing: null,
+  });
+  const r2 = none.readout();
+  assert.equal(r2.state, 'no-stream');
+  assert.match(r2.primary, /Starta en radiokanal/,
+    'with nothing playing and nothing broken the original message must remain');
+});
+
+test('WS32 3b: the browser-clamp the panel shows is REAL and REACHABLE', () => {
+  // 3b's decision: wire the dead line to the real source, not delete it.
+  //
+  // REACHABILITY IS PROVED, NOT ASSUMED (AGENTS.md §7a). A key that exists on
+  // a path nothing writes is the trap that has bitten this repo twice, so this
+  // asserts BOTH halves: the snapshot exposes the value, AND the owner's real
+  // seek paths write it.
+  //
+  // ANCHORED ON `seek: {`, NOT ON `clampedByS`. The mutation proof caught this:
+  // `clampedByS: SEEK_EDGE_DIAG.clampedByS` appears TWICE — once in the
+  // pre-existing `streamEdge` block and once in the new `dvr.seek` block — so a
+  // regex on the field matched the wrong one and stayed green when the new
+  // block was replaced with a constant `0`. The same trap that once let a
+  // renamed field pass here (see the M13 note in this file).
+  const snap = stripComments(region('seek: {', 'twoSource: {', APP_JS));
+  assert.ok(/seek:\s*{/.test(snap), 'the snapshot must expose a seek block');
+  assert.match(snap, /clampedByS:\s*SEEK_EDGE_DIAG\.clampedByS/,
+    'dvr.seek.clampedByS must come from the real recorder, not a constant');
+
+  // The WRITER must be on a path the owner actually presses. Both seek paths
+  // the brief names by aria-label must record it:
+  //   "Till Direkt"            -> seekToLive
+  //   programme skip (the ↺ ↻)  -> seekToProgramTime
+  const toLive = stripComments(region('function seekToLive()',
+    "['waiting', 'stalled'].forEach", APP_JS));
+  assert.match(toLive, /SEEK_EDGE_DIAG\.clampedByS\s*=/,
+    'seekToLive (Till Direkt) must record the clamp, or the line is dead again');
+  const toProgram = stripComments(region('function seekToProgramTime(startMs)',
+    "['waiting', 'stalled'].forEach", APP_JS));
+  assert.match(toProgram, /SEEK_EDGE_DIAG\.clampedByS\s*=/,
+    'the programme skip must record the clamp too — it is the button that '
+    + 'produced the owner\'s offset report');
+
+  // The value must be MEASURED (what the element accepted minus what we asked
+  // for), not recomputed from the request. A clamp read back off the element is
+  // the only thing that can distinguish "clamped" from "wrong offset".
+  assert.match(toLive, /clampedByS\s*=\s*Number\.isFinite\(audioEl\.currentTime\)[\s\S]{0,80}currentTime\s*-\s*target/,
+    'the clamp must be the element\'s accepted position minus the requested target');
+
+  // And it must be read back IMMEDIATELY after the assignment, so it reflects
+  // that seek rather than a later one.
+  const seekAt = toLive.indexOf('SEEK_EDGE_DIAG.clampedByS =');
+  const assignAt = toLive.indexOf('audioEl.currentTime = target');
+  assert.ok(assignAt !== -1 && seekAt > assignAt,
+    'the clamp must be read back after the seek is assigned to the element');
+});
+
+test('WS32 3b: a real clamp makes the panel say so (driven, not a key-existence check)', () => {
+  // The line must actually RENDER. A test asserting only that `dvr.seek` exists
+  // would pass on a permanent null — the §7a trap in its purest form.
+  //
+  // One clamp shape is asserted to render, and the ABSENT case is asserted NOT
+  // to, so the pair cannot both pass on a constant.
+  const grabReadout = () => {
+    const start = APP_JS.indexOf('function metaDiagReadoutLines(');
+    let d = 0, end = -1;
+    for (let i = start; i < APP_JS.length; i += 1) {
+      if (APP_JS[i] === '{') d += 1;
+      else if (APP_JS[i] === '}') { d -= 1; if (d === 0) { end = i; break; } }
+    }
+    assert.notEqual(end, -1, 'brace matching failed');
+    return APP_JS.slice(start, end + 1);
+  };
+  const render = (clamp) => new Function('deps', `
+    const { two, canary, clamp } = deps;
+    function metaDiagBuildSnapshot() {
+      canary.buildCalls += 1;
+      return {
+        playback: { current: { kind: 'live', id: 164 } },
+        dvr: {
+          streamEdge: { edgeMinusNowS: 27 },
+          twoSource: two,
+          transportKind: 'hls-hlsjs',
+          seek: { clampedByS: clamp },
+        },
+      };
+    }
+    ${grabReadout()}
+    return metaDiagReadoutLines();
+  `)({ two: ws29Two(-28, { sampleAgeS: 1 }), canary: { buildCalls: 0, readoutCalls: 0 }, clamp });
+
+  const clamped = render(4.2);
+  assert.equal(clamped.ok, true, 'a reading plus a clamp is still a reading');
+  assert.match(clamped.secondary, /webbläsaren/,
+    `a real clamp must be reported to the owner (got: "${clamped.secondary}")`);
+  assert.match(clamped.secondary, /4\.2/,
+    `the clamp magnitude must be shown (got: "${clamped.secondary}")`);
+
+  // The mirror case. Without it, a panel that ALWAYS printed "webbläsaren 4.2"
+  // would satisfy the assertions above.
+  const unclamped = render(null);
+  assert.ok(!/webbläsaren/.test(`${unclamped.primary} ${unclamped.secondary || ''}`),
+    'with no clamp the browser note must be absent — otherwise the line is a constant');
+  // A sub-half-second clamp is below the panel's own threshold and must not show.
+  const tiny = render(0.2);
+  assert.ok(!/webbläsaren/.test(`${tiny.primary} ${tiny.secondary || ''}`),
+    'a 0.2 s clamp is below the stated 0.5 s threshold and must not be shown');
+});
+
+test('WS29/30 a real reading states WHICH clock is ahead, and shows the sample age', () => {
   // R-B: "both clocks present -> the signed offset, AND the age of the sample".
   // An offset with no age is indistinguishable from one taken ten minutes ago.
   const canary = { buildCalls: 0, readoutCalls: 0 };
