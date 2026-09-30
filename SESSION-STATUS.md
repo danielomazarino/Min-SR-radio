@@ -2512,3 +2512,128 @@ It proves the right code is **SERVED**. It says nothing about how it
   `f2cb0b1` on the main screen before any result is valid.
 - **A stale service worker will still serve the old bundle** until the app is
   fully closed and reopened; the owner must be told this.
+
+---
+
+## WS38-FIX — coding agent: make measurement 2 collectable — 2026-10-01T09:20:00+02:00
+
+**Scope authorised:** the measurement-collection fix ONLY. No deploy, no push.
+
+**Pre-change state (recorded before anything):** HEAD `cf53acd` (= `origin/main`),
+working tree clean of source (3 pre-existing modified docs, 6 untracked prompt
+files). `npm test` → **272/272**.
+
+**Test count: 272 → 279** (+7, all new, in `tests/seek-rate-sampling.test.mjs`).
+
+### THE ROOT CAUSE WAS NOT THE PANEL GATING
+
+In the previous report I diagnosed the missing measurement 2 as a *panel-state
+gating* problem. **That diagnosis was incomplete, and the code said so plainly
+once read closely.** The real defect:
+
+```js
+maybeRefreshStreamClockForRate();                      // calls an ASYNC function
+...
+const trueEdgeWallMs = STREAM_EDGE_PROBE.trueEdgeWallMs;   // reads it immediately
+```
+
+`sampleStreamEdgeClock()` is `async` — it awaits two playlist fetches before it
+writes `trueEdgeWallMs`. The sampler therefore read the field **before the fetch
+had resolved**: `null` on the first run, STALE on every run afterwards. **No rate
+could be produced on any platform, regardless of panel state.** Fixing only the
+gating would have left the sampler still broken, and the panel would still have
+said "more than one point missing" for ever.
+
+**Both defects existed and both are fixed.** Recording this because a partial
+fix here would have looked complete: the suite was green throughout, which is
+precisely how a never-executed fix survives in this repo.
+
+### WHAT CHANGED — `app.js`, sampler only (+68 −32)
+
+1. **`takeSeekRateSample()` is now `async` and `await`s the existing fetch.**
+   This is the fix. `sampleStreamEdgeClock()` is reused exactly as it is — same
+   function, same single fetch path, **no second playlist fetcher**. The sampler
+   simply waits for it to settle, so each sample carries a stream clock fetched
+   AT that moment rather than one borrowed from a previous run. That is what
+   makes the two samples **independent**.
+2. **The panel gate is removed.** `maybeRefreshStreamClockForRate()` is deleted.
+   The sampler no longer consults `isMetaDiagReadoutActive()` at all, so the rate
+   is collectable whether the Info panel is open or closed. The flag is retained
+   only so a reader can see whether the panel happened to be open.
+3. **New constant `SEEK_RATE_CLOCK_FRESH_MS = 5000`**, replacing the reuse of
+   `SEEK_RATE_INTERVAL_MS`. It governs only the sampler's own freshness need. It
+   is **not** one of the 7 timing constants, all of which are unchanged. Chosen
+   below the 10 s sample interval on purpose: a stream clock up to 5 s old is
+   still a genuinely time-separated reading, and demanding strict freshness on
+   every sample would mean a playlist fetch per sample for no measurement gain.
+4. **The first sample now also records `lastSeekableEnd` / `lastTrueEdgeWallMs`.**
+   Previously the first sample stored only its timestamp, so the second sample
+   paired against `null` inputs and could never yield a rate. This is part of the
+   same defect and part of the same fix.
+
+### THE CONCEPTUAL CORRECTION, PRESERVED IN CODE AND IN A TEST
+
+A rate near `1.0000` establishes only that two timelines **ADVANCE TOGETHER**. It
+does **not** prove their absolute positions are aligned and does **not** eliminate
+a constant timeline-origin difference — a constant offset cancels perfectly in an
+elapsed figure. This is stated in the code comment beside the fix, and pinned by
+`WS38-FIX a constant timeline-origin difference SURVIVES a rate of 1.0000`, which
+asserts that two timelines **5 hours apart** still report `seekableRateVsStream
+=== 1`. Anyone who later reads "1.0000" as "aligned" meets that assertion.
+
+### TESTS — 7 new, written against BEHAVIOUR not presence
+
+The whole point is that a suite asserting "the sampler calls the fetch" stayed
+green through this bug, because presence is not ordering. The new tests execute
+the **real extracted sampler** against a stub that writes the stream clock only
+**after a real `await`** — the exact ordering the bug broke.
+
+1. two independently-fetched samples produce a rate (**the test the bug fails**)
+2. the sampler awaits: the recorded value equals what the fetch wrote
+3. identical behaviour with the panel open AND closed; the gate is *gone*, not bypassed
+4. a constant 5-hour timeline offset still yields 1.0000 (the correction, executable)
+5. no rate is manufactured when a frame does not advance
+6. exactly one fetch implementation; the panel's 20 s cadence intact
+7. the seek calculation and record semantics unchanged
+
+**Mutations — 4, ALL RED, restored by checksum, no NO-OP** (`ddba59ad…`):
+| # | mutation | result |
+|---|---|---|
+| M1 | remove the `await` (restore the original bug) | **RED ×4** |
+| M2 | reintroduce the panel-state gate | **RED** — the open/closed test |
+| M3 | never refresh the stream clock | **RED ×3** |
+| M4 | pair two samples from the SAME instant | **RED ×3** |
+
+### TWO HARNESS BUGS I INTRODUCED, disclosed
+
+Both produced a FALSE FAILURE and neither was a defect in `app.js`:
+
+1. **No `audioEl` stub.** The extracted `readFreshSeekableEnd()` closes over
+   `audioEl` exactly as in `app.js`; with nothing to read it returned `null`, and
+   the first test reported "no rate" for an unrelated reason.
+2. **`Date` passed but not destructured.** The sampler calls the **bare**
+   `Date.now()`. I passed `Date` into `deps` without binding it into the function
+   scope, so the sampler read the **real** wall clock and `wallElapsedMs` came out
+   as `22` (the few ms the stub's `await` took) instead of `10000`.
+
+Both were found by reading the actual failure numbers rather than adjusting
+assertions to pass. Worth recording: **a test harness that silently fails to
+control time is more dangerous than no harness**, because it produces confident
+nonsense.
+
+### NOT DONE, named as not done
+
+- **NOT DEPLOYED. NOT PUSHED. NOT BUILT.** Committed locally only.
+- **NO measurement has been collected.** The rate is still unmeasured on both
+  platforms; this makes it *collectable*, nothing more.
+- **NO hypothesis tested.** No conclusion offered about where the offset lives.
+  A rate, once collected, shows only whether timelines advance together.
+- **The seek algorithm is byte-identical** to `cf53acd` — verified for
+  `seekToProgramTime`, `seekBy`, `seekToLive`, `playheadWallMs`,
+  `dvrPositionToDate`, `updateSeekableState`, `readFreshSeekableEnd`,
+  `seekRateFromSamples`, `recordSeekMeasurement`.
+- **`styles.css` / `index.html` / `sw.js` untouched.** All 7 timing constants
+  unchanged. No correction, no compensation constant, no new absolute
+  media↔wall-clock conversion, no new offset calculation.
+- The `2.34` edge-growth ratio from the previous analysis remains **unexplained**
+  and is untouched by this workstream.
