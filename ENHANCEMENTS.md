@@ -5786,3 +5786,131 @@ On the iPhone, **confirm the build line reads `5d92f76`**, then:
 start a channel with **hourly news** → tap **programme-skip once** → ⚙️ cog →
 **Info** → scroll to the bottom → turn on **Visa tidsdiagnostik** → read the
 number, and **report it with the build id**.
+
+---
+
+## 2026-09-30 (late) — THE MEASUREMENT IS A TAUTOLOGY. WS29's number measures nothing.
+
+**Read this before any further timing work. It corrects WS22, WS23 and WS29 at
+once, and it is the most important entry in this file.**
+
+### The owner's report
+
+Owner, iPhone, build `5d92f76` (the WS29 build — **confirmed in a screenshot**,
+so no stale-service-worker confound):
+
+> "when i watch the number it changes every second to different values between
+> +1 to -7 and all numbers in between are present at different seconds."
+
+**That is the playhead moving. It is not a stream-versus-clock offset, and it is
+not evidence about the ~25 s.** A value that changes every second cannot be a
+constant bias.
+
+### The cause, from the shipped code
+
+`app.js`:
+
+```js
+function streamEdgeWallMs() {
+  const end = state.current ? state.current.seekableEnd : null;
+  if (!Number.isFinite(end)) return null;
+  return Date.now() - (end - (audioEl.currentTime || 0)) * 1000;   // (1)
+}
+```
+
+```js
+edgeMinusNowS: (() => {
+  const e = streamEdgeWallMs();
+  return Number.isFinite(e) ? Math.round((Date.now() - e)) / 1000 : null;
+})(),                                                               // (2)
+```
+
+Substituting (1) into (2), **`Date.now()` cancels**:
+
+```
+edgeMinusNowS = round((Date.now() - (Date.now() - (end - currentTime)*1000)) / 1000)
+              = end - currentTime
+              = distanceFromLiveEdge
+```
+
+**And that is a number the app already computes for itself**, at `app.js:827`:
+`cur.distanceFromLiveEdge = Math.max(0, end - audioEl.currentTime)`.
+
+**MEASURED** (both expressions transcribed and executed): `0, 2.4, 4.9, 7.3, 1`
+— **identical to `distanceFromLiveEdge` in every case.**
+
+### What this means
+
+**The app has no second clock.** Any quantity derived from `seekableEnd` and
+`Date.now()` is the app comparing itself with itself, and the difference is
+identically zero by construction. `edgeMinusNowS` was never capable of detecting
+an offset, and therefore never was a measurement.
+
+**This retires a belief held since WS22:** that the "10 s offset" was a constant
+the app applied. **It was not. There is no constant, and there never has been.**
+The number on the screen was always the playhead's own position, restated.
+
+**WS29 shipped this.** The panel, its placement, its Swedish wording, its
+graceful degradation and the intact security gate are all correct and worth
+keeping. **The quantity it displays is wrong**, and 235 tests passed because the
+tests were written from the same formula. **A gate that cannot fail — and this
+one was mine, reviewed and deployed without reducing the algebra.**
+
+### Also withdrawn: the "sign mismatch" reasoning
+
+Earlier in this session I reported that the PDT-derived window end sits **~30 s
+ahead** of the local clock, and that this **contradicted** the owner's
+"early" symptom, so the app's edge belief "could not explain it."
+
+**That reasoning was wrong, and it rested on the same substitution error.** If
+`edgeMinusNowS` is identically zero, there is no sign to contradict. The
+apparent 30 s figure is a difference between **a playlist end** (from the CDN)
+and **a playhead position** (from the app) — **two different quantities, not two
+readings of the same one.**
+
+### What a real measurement requires — two different sources
+
+```
+trueEdgeWall  = headPDT + sum(EXTINF)            <- SR's own clock (CDN, CORS *)
+appEdgeBelief = the app's assumption about now   <- seekableEnd, read as a clock
+offset        = appEdgeBelief - trueEdgeWall      <- signed, no constant fitted
+```
+
+**Only the second term exists in the app today.** The first is browser-readable
+(`#EXT-X-PROGRAM-DATE-TIME` at playlist head, 1700 × `#EXTINF:6.4` = 3.02 h) and
+is **not** wired into the app at all. Until it is, **the offset cannot be
+measured on any device**, and no amount of reading the current panel will help.
+
+**The PDT-derived figure is itself drifting** — `+30.8 s`, and `+28.6/+28.4/+28.1`
+thirteen minutes earlier: **~2 s in 13 min. Never treat it as a constant.**
+
+### State at close of session
+
+`main` = `4c7083d` (plus the deploy commits), **235/235**, tree clean. **Live
+build `5d92f76`** — `app.39e44300.js`, `styles.a7560d22.css`, SW
+`minradio-54ca13fd`. All four deploy checks PASS.
+
+**What is fixed and working:** WS27's one-song rule (R6, code-proven behind
+live); the historical song lookup (owner-confirmed on device); the Info-sheet
+readout itself; the diagnostics gate, verified intact in all four cases.
+
+**What is NOT fixed — named as not done:**
+1. **The ~25 s programme-skip offset.** Unmeasured. Not even instrumented.
+2. **The 10–15 s song-title offset.** Unmeasured, and per the owner a different
+   mechanism.
+3. **The tautological readout.** Live on the owner's phone now; it displays the
+   wrong quantity and should be replaced or hidden.
+4. R5 (pre-midnight title): owner reports it working on `c016cdb`, but WS27
+   provably did not cause it and it may be service-worker dependent. **Not
+   marked fixed.**
+5. The false `DATERANGE` comment (`app.js:3337`) — still there, noted not edited.
+
+### Next session — do these, in order
+
+1. **Fix the panel before anything else.** It is currently showing the owner a
+   number that means nothing, and the owner has been asked to read it. Either
+   replace it with a genuine two-source comparison, or **hide it**. Do not leave
+   it on screen as-is.
+2. **Decide the two offsets are one problem or two.** The owner has said
+   explicitly they are not the same. Instrument them separately.
+3. **Only then** consider a fix, and never with a constant.
