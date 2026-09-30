@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '5d92f76';
+  const APP_BUILD = '5eeabb9';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -1689,6 +1689,251 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // The assumption is now MEASURABLE on a device: `?diag=metadata` exposes
   // `streamEdge` (see metaDiagBuildSnapshot), which reports the buffer's edge
   // as a clock time next to the real time, before and after a seek.
+  //
+  // ---- WS30: and it is measured against a SECOND, INDEPENDENT clock. ----
+  //
+  // The readout above describes an assumption the app cannot verify by itself.
+  // `streamEdgeWallMs()` is built from `Date.now()` and `seekableEnd`, and the
+  // WS29 `edgeMinusNowS` was `now - (now - X)`, which collapses to X. Every
+  // quantity in that readout was the app's clock compared against itself, so a
+  // reader could not tell a real offset from a restatement of the playhead.
+  //
+  // There IS a second clock: the STREAM carries absolute wall-clock timestamps.
+  // A variant playlist opens with one `#EXT-X-PROGRAM-DATE-TIME` and every
+  // segment carries an `#EXTINF` duration, so the true edge in the stream's
+  // own time base is headPdt + sum(EXTINF). That is not derived from this
+  // device's clock at all, which is the whole point: comparing the app's
+  // belief against it yields a genuinely two-source number.
+  //
+  // WHAT THIS IS NOT: a correction. Nothing here subtracts a constant from a
+  // seek target. AGENTS.md §5 — an offset fitted to one sample freezes that
+  // sample into permanent behaviour, and the measured bias DRIFTS (see
+  // SESSION-STATUS.md), so a constant would be wrong within minutes. This is
+  // an instrument only.
+
+  // ---- Pure playlist parsing. No network, no globals, no Date. ----
+  // Returns { headPdtMs, totalMs, segmentCount, mediaSequence } or null.
+  // Pure so it is testable against real playlist text without a network, and
+  // so a change to the fetch policy cannot silently change the arithmetic.
+  //
+  // A single head PDT is REQUIRED, not assumed. A discontinuity or a second
+  // PDT would make headPdt + sum(EXTINF) meaningless, and reporting a wrong
+  // edge silently is exactly the failure mode being fixed. Refusing is the
+  // only honest answer, and the panel shows an explicit state instead.
+  function parseVariantEdge(playlistText) {
+    if (typeof playlistText !== 'string' || !playlistText) return null;
+    const pdtMatches = playlistText.match(/#EXT-X-PROGRAM-DATE-TIME:(.+)/g);
+    if (!pdtMatches || pdtMatches.length !== 1) return null;
+    const pdtRaw = pdtMatches[0].split(':').slice(1).join(':').trim();
+    const headPdtMs = Date.parse(pdtRaw);
+    if (!Number.isFinite(headPdtMs)) return null;
+    // EXTINF is "duration," — a decimal, possibly several digits, then a comma.
+    const durations = playlistText.match(/#EXTINF:\s*([0-9.]+)/g);
+    if (!durations || !durations.length) return null;
+    let totalMs = 0;
+    for (const d of durations) {
+      const secs = parseFloat(d.slice(d.indexOf(':') + 1));
+      if (!Number.isFinite(secs)) return null;
+      totalMs += secs * 1000;
+    }
+    const seqMatch = playlistText.match(/#EXT-X-MEDIA-SEQUENCE:(\d+)/);
+    return {
+      headPdtMs,
+      totalMs,
+      segmentCount: durations.length,
+      mediaSequence: seqMatch ? Number(seqMatch[1]) : null,
+    };
+  }
+
+  // The stream's own clock. Pure over the parse result.
+  // headPdt + sum(EXTINF) is the wall time of the last byte in the buffer.
+  function trueEdgeWallMs(parsed) {
+    if (!parsed || !Number.isFinite(parsed.headPdtMs) || !Number.isFinite(parsed.totalMs)) {
+      return null;
+    }
+    return parsed.headPdtMs + parsed.totalMs;
+  }
+
+  // ---- Master manifest: resolve ONE variant, never a hardcoded filename. ----
+  // The master is the source of truth. Returns a list of
+  // { bandwidth, url } with relative URIs resolved against the master's own
+  // URL and absolute ones left alone — SR's manifest contains BOTH forms.
+  function parseMasterVariants(playlistText, masterUrl) {
+    if (typeof playlistText !== 'string' || typeof masterUrl !== 'string') return [];
+    const lines = playlistText.split(/\r?\n/);
+    const out = [];
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i].trim();
+      if (!line.startsWith('#EXT-X-STREAM-INF')) continue;
+      const bw = /BANDWIDTH=(\d+)/.exec(line);
+      if (!bw) continue;
+      // The URI is the next non-empty, non-comment line (RFC 8216 §4.3.4.2).
+      let uri = null;
+      for (let j = i + 1; j < lines.length; j += 1) {
+        const cand = lines[j].trim();
+        if (!cand || cand.startsWith('#')) continue;
+        uri = cand;
+        break;
+      }
+      if (!uri) continue;
+      out.push({ bandwidth: Number(bw[1]), url: resolveUrl(uri, masterUrl) });
+    }
+    return out;
+  }
+
+  // Absolute-or-relative URL resolution, without the URL constructor's
+  // base requirements. Handles the two forms SR emits and a protocol-relative
+  // URI, and returns null rather than a silently wrong URL.
+  function resolveUrl(uri, baseUrl) {
+    const trimmed = String(uri || '').trim();
+    if (!trimmed) return null;
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) return trimmed;
+    if (trimmed.startsWith('//')) {
+      const m = /^([a-z][a-z0-9+.-]*:)\/\/([^/]+)(\/.*)$/i.exec(baseUrl || '');
+      return m ? `${m[1]}${trimmed}` : null;
+    }
+    const m = /^([a-z][a-z0-9+.-]*:)\/\/([^/]+)(\/.*)$/i.exec(baseUrl || '');
+    if (!m) return null;
+    const origin = `${m[1]}//${m[2]}`;
+    if (trimmed.startsWith('/')) return origin + trimmed;
+    const dir = m[3].replace(/[^/]*$/, '');
+    // Collapse ./ and ../ so a variant like "./p2/p2_320.pls" resolves correctly.
+    const segs = (dir + trimmed).split('/');
+    const stack = [];
+    for (const seg of segs) {
+      if (!seg || seg === '.') continue;
+      if (seg === '..') { stack.pop(); continue; }
+      stack.push(seg);
+    }
+    return `${origin}/${stack.join('/')}`;
+  }
+
+  // ---- The two-source state. One writer: the fetcher below. ----
+  // AGENTS.md §3. The panel is a READER of this object and never writes it, so
+  // a 2 s repaint cannot race the sample that is arriving. `state` here is the
+  // app's playback state; this is a separate, explicitly named holder so the
+  // two can never be confused at a call site.
+  //
+  // `status` is the panel's whole contract, and it is deliberately ENUMERATED
+  // so a missing sample can never render as a number:
+  //   'idle'      — nothing requested yet (panel never opened, or no stream)
+  //   'loading'   — a fetch is in flight. NEVER renders as a number.
+  //   'failed'    — network/CORS/parse error. NEVER renders as a number, and
+  //                 never falls back to a previous reading, because a stale
+  //                 number presented as current is the defect being fixed.
+  //   'ok'        — a real two-source reading, with both raw clocks and the age.
+  const STREAM_EDGE_PROBE = {
+    status: 'idle',
+    sampledAtMs: null,      // this device's clock, taken with the sample
+    appEdgeWallMs: null,    // the app's belief (from streamEdgeWallMs)
+    trueEdgeWallMs: null,   // the STREAM's own clock (from the playlist)
+    offsetS: null,          // (appEdge - trueEdge)/1000. Signed. No constant.
+    segmentCount: null,
+    mediaSequence: null,
+    variantUrl: null,
+    masterUrl: null,
+    error: null,            // a short machine-readable reason, never raw text
+    // A sample older than this is reported as stale on screen. Chosen to be
+    // longer than the playlist's own roll period (segments are 6.4 s, the
+    // whole playlist rolls far more often) and shorter than a human's
+    // patience. It is a DISPLAY threshold, not a correction: it changes no
+    // number, it only decides whether the number is presented as current.
+    staleAfterMs: 15000,
+    inFlight: false,
+  };
+
+  // The URL the running stream is actually playing, from the app's own
+  // descriptor — never a re-derivation and never a constant. Returns null for
+  // direct (non-HLS) streams, which genuinely have no playlist to read.
+  function activeHlsMasterUrl() {
+    const cur = state.current;
+    if (!cur || cur.kind !== 'live') return null;
+    if (cur.transport !== 'hls') return null;
+    const url = cur.audioUrl;
+    return typeof url === 'string' && /\.m3u8($|\?)/i.test(url) ? url : null;
+  }
+
+  // One sample. Fetches master -> variant -> parses -> stores. Read-only with
+  // respect to playback: it never touches audioEl, hls, or state.current.
+  //
+  // REUSE: the AbortController + setTimeout timeout pattern is the one already
+  // used by apiFetch and fetchNewsFlashes, not a new invention. A fetch with
+  // no timeout can hang the panel on a phone indefinitely, which on the
+  // Info sheet looks like a frozen app.
+  async function sampleStreamEdgeClock() {
+    const masterUrl = activeHlsMasterUrl();
+    if (!masterUrl) {
+      // No HLS stream: not an error, and NOT a reading. The panel's own
+      // no-stream state owns this case.
+      return null;
+    }
+    if (STREAM_EDGE_PROBE.inFlight) return null; // no pile-up on a slow phone
+    STREAM_EDGE_PROBE.inFlight = true;
+    STREAM_EDGE_PROBE.status = 'loading';
+    STREAM_EDGE_PROBE.error = null;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    try {
+      const masterRes = await fetch(masterUrl, { signal: controller.signal });
+      if (!masterRes.ok) throw new Error('master http ' + masterRes.status);
+      const masterText = await masterRes.text();
+      const variants = parseMasterVariants(masterText, masterUrl);
+      if (!variants.length) throw new Error('no variants in master');
+      // Highest bandwidth is closest to what actually plays. Verified 2026-09-30:
+      // all three of SR's variants agree on the head PDT and the EXTINF sum, so
+      // the choice does not currently change the reading — but it is taken from
+      // the manifest rather than hardcoded so that stays true.
+      let best = variants[0];
+      for (const v of variants) if (v.bandwidth > best.bandwidth) best = v;
+      const variantRes = await fetch(best.url, { signal: controller.signal });
+      if (!variantRes.ok) throw new Error('variant http ' + variantRes.status);
+      const variantText = await variantRes.text();
+      const parsed = parseVariantEdge(variantText);
+      if (!parsed) throw new Error('variant unparseable as a single-clock playlist');
+      const trueEdge = trueEdgeWallMs(parsed);
+      // The app's belief is sampled HERE, in the same breath as the stream's
+      // clock, so the two numbers describe the same instant rather than two
+      // moments a round trip apart. This is the one place both clocks are
+      // read, which is what makes the subtraction a real comparison.
+      const appEdge = streamEdgeWallMs();
+      if (!Number.isFinite(appEdge)) {
+        // The app has no seekable range yet (or just lost it). The stream's
+        // clock is still real, but there is nothing to compare it against, so
+        // this is NOT a zero offset — it is no reading.
+        STREAM_EDGE_PROBE.status = 'failed';
+        STREAM_EDGE_PROBE.error = 'no-seekable-range';
+        return null;
+      }
+      STREAM_EDGE_PROBE.sampledAtMs = Date.now();
+      STREAM_EDGE_PROBE.appEdgeWallMs = appEdge;
+      STREAM_EDGE_PROBE.trueEdgeWallMs = trueEdge;
+      STREAM_EDGE_PROBE.offsetS = (appEdge - trueEdge) / 1000;
+      STREAM_EDGE_PROBE.segmentCount = parsed.segmentCount;
+      STREAM_EDGE_PROBE.mediaSequence = parsed.mediaSequence;
+      STREAM_EDGE_PROBE.variantUrl = best.url;
+      STREAM_EDGE_PROBE.masterUrl = masterUrl;
+      STREAM_EDGE_PROBE.status = 'ok';
+      return STREAM_EDGE_PROBE;
+    } catch (err) {
+      STREAM_EDGE_PROBE.status = 'failed';
+      STREAM_EDGE_PROBE.error = err && err.name === 'AbortError'
+        ? 'timeout' : (err && err.message ? String(err.message).slice(0, 80) : 'unknown');
+      // A failed sample must NOT leave a previous reading visible as if it
+      // were current. The old numbers are kept for the record but `status`
+      // governs every read, so no reader can pick them up as a live value.
+      return null;
+    } finally {
+      clearTimeout(timer);
+      STREAM_EDGE_PROBE.inFlight = false;
+    }
+  }
+
+  // Seconds since the sample, or null when there is no sample. Drives the
+  // "stale" label. Never rounds to 0 for a fresh sample.
+  function streamEdgeSampleAgeS() {
+    if (!Number.isFinite(STREAM_EDGE_PROBE.sampledAtMs)) return null;
+    return (Date.now() - STREAM_EDGE_PROBE.sampledAtMs) / 1000;
+  }
 
   // The app's belief about which clock time the buffered edge represents.
   // Read-only. Returns null when there is no usable window.
@@ -4890,9 +5135,16 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // WS29: the readout's interval is declared here so `close` can clear it.
     // Declared before `close` is defined because `close` closes over it.
     let readoutTimer = null;
+    // WS30: the sample interval is declared HERE, beside the paint interval and
+    // for the same reason — `close` closes over it, so a declaration further
+    // down would be a temporal-dead-zone error on a fast close.
+    let sampleTimer = null;
     const close = () => {
       // WS29: no timer may outlive the sheet. Verified by a driven test.
       if (readoutTimer) { clearInterval(readoutTimer); readoutTimer = null; }
+      // WS30: nor may the sampler. Two fetches per panel open, forever, is
+      // exactly the battery bug the paint interval was fixed for.
+      if (sampleTimer) { clearInterval(sampleTimer); sampleTimer = null; }
       overlay.remove();
       document.body.style.overflow = '';
     };
@@ -5000,8 +5252,17 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // the sheet that created it. `readoutTimer` is the one declared at the top
     // of openAbout() so close() can clear it — a second declaration here would
     // shadow it and the close handler would clear nothing.
+    //
+    // ---- WS30: sampling and PAINTING are on SEPARATE intervals, on purpose. ----
+    // `META_DIAG_READOUT_INTERVAL_MS` (2 s) repaints the text only; it never
+    // fetches. The sample interval below is deliberately slower, because
+    // SR's playlist rolls every few seconds and re-fetching on every paint
+    // would be wasteful and would look like a bug on a phone. So: fresh on
+    // panel open (R-A), then refreshed on the slower cadence, with the sample
+    // age on screen so staleness is visible rather than implied.
     const stopReadout = () => {
       if (readoutTimer) { clearInterval(readoutTimer); readoutTimer = null; }
+      if (sampleTimer) { clearInterval(sampleTimer); sampleTimer = null; }
     };
     const paintReadout = () => {
       if (readoutTimer === null) return; // switched off: do not poll at all
@@ -5016,6 +5277,22 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       // on open. The suite could not see this — the text assertion passed while
       // the element was invisible. Found by driving the real DOM.
       readoutTimer = setInterval(paintReadout, META_DIAG_READOUT_INTERVAL_MS);
+      // ---- WS30 R-A: THE REACHABILITY ARGUMENT, in one place. ----
+      // A sample is requested HERE, on the path the owner actually walks:
+      // channel playing -> cog -> Info -> switch on. Without this line the
+      // fetch would only ever run on the 2 s repaint or a 45 s poll, and the
+      // owner would open the panel onto a stale or empty number — which is
+      // indistinguishable from "no offset", the exact failure R-A exists to
+      // prevent. A fresh sample per panel open is also why the sample AGE is
+      // on screen: a reader can see how current the number is.
+      // Fire-and-forget: the panel paints 'Mäter…' until it lands, and a
+      // rejection here must not break the Info sheet.
+      try { sampleStreamEdgeClock(); } catch { /* the panel shows the state */ }
+      // The refresh cadence. Declared here rather than at module scope so the
+      // number cannot drift away from the panel it serves.
+      sampleTimer = setInterval(() => {
+        try { sampleStreamEdgeClock(); } catch { /* the panel shows the state */ }
+      }, META_DIAG_SAMPLE_INTERVAL_MS);
       paintReadout();
     };
 
@@ -5719,37 +5996,182 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // not a writer.
   const META_DIAG_READOUT_INTERVAL_MS = 2000;
 
-  // The whole point is that a missing reading must never look like a zero
-  // offset. `edgeMinusNowS` is null until a live stream is playing, so this
-  // returns EXPLICIT text for the no-data case. A panel showing "0 s" when it
-  // means "no data" would send the next session chasing an offset that does not
-  // exist — that is the failure this function exists to prevent.
-  function metaDiagReadoutLines() {
-    let snap = null;
-    try { snap = metaDiagBuildSnapshot(); } catch { snap = null; }
-    const edge = snap && snap.dvr ? snap.dvr.streamEdge : null;
-    const seek = snap && snap.dvr ? snap.dvr.seek : null;
-    const emn = edge ? edge.edgeMinusNowS : null;
+  // ---- WS30: the SAMPLE cadence, deliberately slower than the paint cadence. ----
+  // SR's playlist rolls every few seconds (segments are 6.4 s), so a sample
+  // taken 2 s after the last one adds information but costs a fetch. 20 s keeps
+  // the reading current on screen while staying well under the 15 s staleness
+  // threshold, so a normally-refreshing panel never shows the stale label.
+  // It is a display/fetch policy only: no transport constant is touched and no
+  // number is corrected by it.
+  const META_DIAG_SAMPLE_INTERVAL_MS = 20000;
 
-    if (!Number.isFinite(emn)) {
+  // The whole point is that a missing reading must never look like a zero
+  // offset. A panel showing "0 s" when it means "no data" would send the next
+  // session chasing an offset that does not exist — that is the failure this
+  // function exists to prevent.
+  //
+  // ---- WS30: this no longer reads `edgeMinusNowS` at all. ----
+  //
+  // That field was `(now - (now - X))/1000`, i.e. identically X. It was the
+  // playhead's own distance from the buffer edge, wearing the label "offset",
+  // and the tests built from that formula could not fail. This function now
+  // requires `twoSource`, which is only ever populated from the STREAM's own
+  // PROGRAM-DATE-TIME clock. If that field is absent the panel says so — there
+  // is deliberately no fallback to the self-referential number, because a
+  // fallback is how the tautology would come back wearing a new name.
+  function metaDiagReadoutLines() {
+    // ---- WS32 (3a): a snapshot FAILURE is not the same fact as NO CHANNEL. ----
+    // The `catch` used to set `snap = null`, which made an internal error
+    // indistinguishable from "nothing is playing" — so the panel told the owner
+    // to start a channel whenever anything inside the snapshot builder threw.
+    // That is the same class of untruth WS31 fixed one level up, and it is the
+    // most likely reason a future session sees a nonsense panel state, because
+    // the failure is silent: no number, no number ever.
+    //
+    // The two facts are now kept apart. `snapFailed` distinguishes "the readout
+    // could not be built" from "the readout is fine and nothing is playing",
+    // and only the latter may claim a channel must be started. The error is
+    // also recorded so a session can act on it rather than re-deriving it.
+    let snap = null;
+    let snapFailed = false;
+    try {
+      snap = metaDiagBuildSnapshot();
+    } catch {
+      snap = null;
+      snapFailed = true;
+    }
+    const dvr = snap && snap.dvr ? snap.dvr : null;
+    const two = dvr ? dvr.twoSource : null;
+    const seek = dvr ? dvr.seek : null;
+
+    // (0) The snapshot itself could not be built. NO number is shown — this is
+    //     a wrong LABEL being fixed, not a reading being added. It comes BEFORE
+    //     the no-stream check, because with `snap === null` both would otherwise
+    //     match and the untruth would survive.
+    if (snapFailed) {
       return {
         ok: false,
+        state: 'snapshot-error',
+        primary: 'Kunde inte läsa appens egen diagnosdata',
+        secondary: 'Det här är inte en mätning och inte noll — panelen kunde '
+          + 'inte byggas upp. Starta om appen och försök igen.',
+      };
+    }
+
+    // ---- WS31: WHICH condition each message is derived from, and why. ----
+    //
+    // The three "there is no number" cases are genuinely different, and
+    // conflating them is the same defect class WS30 exists to fix: a state
+    // that tells the reader something untrue.
+    //
+    // (a) NO CHANNEL PLAYING. Condition tested: `playback.current` is absent.
+    //     That is the condition the message actually describes, so it is the
+    //     condition tested. `playback.current.kind` is 'live' | 'episode' | null.
+    //
+    // (b) A CHANNEL IS PLAYING BUT NOT ON HLS (direct MP3). Condition tested:
+    //     `dvr.transportKind` is not an HLS value. This IS reachable for the
+    //     owner: the app falls back HLS -> direct MP3 whenever HLS is
+    //     unavailable, on desktop and on the phone alike. `activeHlsMasterUrl()`
+    //     correctly returns null here, so there is genuinely no playlist to
+    //     read and NO stream clock to compare against — but telling the owner
+    //     to "start a channel" while one is playing is simply false.
+    //
+    // (c) The sample has not landed / failed / is stale — handled below, from
+    //     the probe's own `status`, which is the only thing that knows.
+    //
+    // NOTE ON WHAT THIS IS NOT. The `no-stream` branch used to be
+    // `!dvr || !dvr.streamEdge`. The tech lead's WS31 brief attributes the
+    // misleading message to that guard. I could not reproduce that: the
+    // snapshot builds `streamEdge` UNCONDITIONALLY, so on a playing channel
+    // that object exists and the guard does not fire — verified in the browser
+    // (`hasDvr: true`, `hasStreamEdge: true`, 13 snapshot keys while direct MP3
+    // was playing). The message I saw came from `status: 'idle'`, reached
+    // because the fetcher returns early for non-HLS and leaves status at its
+    // initial value. The FIX is the same either way — stop conflating the cases
+    // — but the cause is recorded here so the next session does not "fix" the
+    // guard again.
+    const playing = snap && snap.playback ? snap.playback.current : null;
+    // "Something is playing" covers BOTH live radio and a podcast episode. An
+    // episode is not a live HLS stream either, so it must not be told to start
+    // a radio channel — the WS31 test drives this case and it went red, which
+    // is why the condition is `playing` and not `isLive`.
+    const isPlaying = !!playing;
+    const isLive = isPlaying && playing.kind === 'live';
+    const transport = dvr ? dvr.transportKind : null;
+    const onHls = transport === 'hls-hlsjs' || transport === 'hls-native';
+
+    // (a) Nothing playing at all — the pre-existing, owner-facing state, kept
+    //     EXACTLY as it was because it is correct and the owner knows it.
+    if (!isPlaying) {
+      return {
+        ok: false,
+        state: 'no-stream',
         primary: 'Starta en radiokanal först',
         secondary: 'Timningen mäts bara medan en radiokanal spelar.',
       };
     }
-    // Whole seconds, sign always shown. A signed value is what makes the sign
-    // of the owner's "lands early" report checkable rather than assumed.
-    const secs = Math.round(emn);
+
+    // (b) Something IS playing, but it is not a live HLS stream, so there is no
+    //     playlist and no stream clock to compare against. Say what is actually
+    //     true instead of contradicting what the owner can see and hear. This
+    //     covers a direct-MP3 radio channel AND a podcast episode. `ok: false`
+    //     and NO number: there is no second clock, and inventing one is the
+    //     defect WS30 exists to fix.
+    if (!isLive || !onHls) {
+      return {
+        ok: false,
+        state: 'no-stream-clock',
+        primary: isLive
+          ? 'Direkt ljud — ingen strömklocka att jämföra med'
+          : 'Podcast — ingen strömklocka att jämföra med',
+        secondary: 'Strömmen spelar, men har ingen spellista. '
+          + 'Timningen kan bara mätas på en HLS-kanal.',
+      };
+    }
+
+    // Every non-numeric state is EXPLICIT. None of them may render a number,
+    // and none of them may fall back to an earlier reading.
+    const status = two ? two.status : 'idle';
+    if (status !== 'ok' || !Number.isFinite(two.offsetS)) {
+      const text = {
+        loading: ['Mäter…', 'Läser strömmens egen klocka.'],
+        failed: ['Kunde inte läsa strömmens klocka',
+          'Ingen mätning — det här är inte noll.'],
+        idle: ['Startar mätning…', 'Öppna panelen igen för att mäta.'],
+      }[status] || ['Startar mätning…', 'Öppna panelen igen för att mäta.'];
+      return { ok: false, state: status, primary: text[0], secondary: text[1] };
+    }
+
+    const ageS = Number.isFinite(two.sampleAgeS) ? two.sampleAgeS : null;
+    const stale = two.stale === true;
+    const secs = Math.round(two.offsetS);
     const sign = secs > 0 ? '+' : (secs < 0 ? '−' : '±');
-    const lines = [`Appen tror att strömmen slutar ${sign}${Math.abs(secs)} s från klockan nu`];
-    // The two supporting numbers, because a bare number gets misread. A seek the
-    // browser CLAMPED looks identical from outside to a wrong offset.
+    // The subject is the APP and the direction word is derived from the sign,
+    // and the two must AGREE. This is not cosmetic: the browser caught the
+    // first version rendering "−30 s före" — a minus sign next to the word for
+    // "ahead". offsetS is app-relative (appEdge - trueEdge), so:
+    //   positive => the app's belief is LATER than the stream's clock => "före"
+    //   negative => the app's belief is EARLIER                 => "efter"
+    // Swedish "före" = ahead, "efter" = behind. So + pairs with före and −
+    // pairs with efter, and the owner can read the sign without knowing what it
+    // means. WS30 test asserts this agreement directly.
+    const ahead = secs > 0;
+    const primary = secs === 0
+      ? 'Appens klocka ligger i linje med strömmens (±0 s)'
+      : `Appens klocka ligger ${sign}${Math.abs(secs)} s ${ahead ? 'före' : 'efter'} strömmens`;
+    const parts = [];
+    if (ageS !== null) {
+      parts.push(`Mätt ${ageS < 5 ? 'nyss' : Math.round(ageS) + ' s sedan'}`);
+    }
+    if (stale) {
+      // Stale is not fresh. Saying so is the whole point of keeping the age.
+      parts.push('mätningen kan vara gammal');
+    }
     const clamp = seek && Number.isFinite(seek.clampedByS) ? seek.clampedByS : null;
     if (clamp !== null && Math.abs(clamp) > 0.5) {
-      lines.push(`Sökningen ändrades av webbläsaren med ${clamp.toFixed(1)} s`);
+      parts.push(`Sökningen ändrades av webbläsaren med ${clamp.toFixed(1)} s`);
     }
-    return { ok: true, primary: lines[0], secondary: null, seconds: secs };
+    return { ok: true, state: 'ok', primary, secondary: parts.join(' · ') || null, seconds: secs };
   }
 
   // Bound a captured raw API body so a snapshot stays readable in a console.
@@ -6013,6 +6435,14 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
             const e = streamEdgeWallMs();
             return Number.isFinite(e) ? Math.round((Date.now() - e)) / 1000 : null;
           })(),
+          // ---- WS30: WHY THE FIELD ABOVE IS NOT AN OFFSET ----
+          // `edgeMinusNowS` is `(now - (now - X))/1000`, which cancels to `X`.
+          // It is `distanceFromLiveEdge` — the playhead's own distance from the
+          // buffer edge — and it is the app's clock compared with itself. It is
+          // KEPT, because WS23 tests and older sessions read it and a rename
+          // would break them, but it is NOT an offset and must never be
+          // presented as one. `twoSource` below is the real measurement.
+          selfReferential: true,
           // Sampled around the most recent seek, so a reader can tell whether
           // the seek itself moved the edge.
           before: SEEK_EDGE_DIAG.before,
@@ -6025,6 +6455,78 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
           assumption: 'seekableEnd is read as "now" by playheadWallMs, '
             + 'dvrPositionToDate, seekToProgramTime and seekToLive. The real '
             + 'size of that error is NOT known and is NOT corrected for.',
+        },
+        // ---- WS30: the genuine TWO-SOURCE comparison. ----
+        // `appEdgeWallMs` comes from the app's own clock and `seekableEnd`.
+        // `trueEdgeWallMs` comes from the STREAM's own clock: the head
+        // #EXT-X-PROGRAM-DATE-TIME plus the sum of every #EXTINF, fetched from
+        // SR's own CDN. `offsetS` is their signed difference.
+        //
+        // Three numbers from two sources, not one derived number, so a reader
+        // can check the arithmetic and either clock can be shown to be wrong
+        // later without the other being lost.
+        //
+        // `status` is ENUMERATED and the readout treats anything but 'ok' as a
+        // non-numeric state. There is deliberately no path here that turns a
+        // missing or failed sample into 0, and none that falls back to
+        // `edgeMinusNowS`.
+        // ---- WS32 (3b): expose the browser-clamp so the panel can use it. ----
+        // `metaDiagReadoutLines` has read `dvr.seek.clampedByS` since WS29 to
+        // say "Sökningen ändrades av webbläsaren med N s", but the snapshot
+        // NEVER PROVIDED `dvr.seek`. The line was dead UI: a seek clamped by
+        // the browser was silently never reported.
+        //
+        // CHOSEN OVER DELETION, and the reachability was PROVED rather than
+        // assumed (AGENTS.md §7a — a reader fed by nothing has bitten this repo
+        // twice). `SEEK_EDGE_DIAG.clampedByS` is written on BOTH of the owner's
+        // real seek paths:
+        //   seekToLive()        — "Till Direkt"
+        //   seekToProgramTime() — the programme skip (the circular arrows)
+        // each as `audioEl.currentTime - target` immediately after the seek, so
+        // it is a real measurement of what the element accepted rather than a
+        // recomputation of what we asked for.
+        //
+        // Exposing it is strictly more informative than removing the line: the
+        // whole point of the clamp is that it is INDISTINGUISHABLE from a wrong
+        // offset from the outside. Without it, a clamped seek and a genuine
+        // offset look identical on screen.
+        seek: {
+          clampedByS: SEEK_EDGE_DIAG.clampedByS,
+          requestedTarget: SEEK_EDGE_DIAG.requestedTarget,
+          acceptedPosition: SEEK_EDGE_DIAG.acceptedPosition,
+          calls: SEEK_EDGE_DIAG.calls,
+          lastCalledAt: SEEK_EDGE_DIAG.lastCalledAt,
+        },
+        twoSource: {
+          status: STREAM_EDGE_PROBE.status,
+          // BOTH raw clocks, so the difference is checkable by hand.
+          appEdgeWallMs: STREAM_EDGE_PROBE.appEdgeWallMs,
+          trueEdgeWallMs: STREAM_EDGE_PROBE.trueEdgeWallMs,
+          appEdgeIso: Number.isFinite(STREAM_EDGE_PROBE.appEdgeWallMs)
+            ? new Date(STREAM_EDGE_PROBE.appEdgeWallMs).toISOString() : null,
+          trueEdgeIso: Number.isFinite(STREAM_EDGE_PROBE.trueEdgeWallMs)
+            ? new Date(STREAM_EDGE_PROBE.trueEdgeWallMs).toISOString() : null,
+          // Signed seconds. The ONE number the panel shows.
+          offsetS: Number.isFinite(STREAM_EDGE_PROBE.offsetS)
+            ? STREAM_EDGE_PROBE.offsetS : null,
+          // Age of the sample, and whether it has passed the display threshold.
+          // Stale is not fresh, and the panel says so.
+          sampleAgeS: streamEdgeSampleAgeS(),
+          stale: (() => {
+            const age = streamEdgeSampleAgeS();
+            return age !== null && age * 1000 > STREAM_EDGE_PROBE.staleAfterMs;
+          })(),
+          sampledAtIso: Number.isFinite(STREAM_EDGE_PROBE.sampledAtMs)
+            ? new Date(STREAM_EDGE_PROBE.sampledAtMs).toISOString() : null,
+          segmentCount: STREAM_EDGE_PROBE.segmentCount,
+          mediaSequence: STREAM_EDGE_PROBE.mediaSequence,
+          masterUrl: STREAM_EDGE_PROBE.masterUrl,
+          variantUrl: STREAM_EDGE_PROBE.variantUrl,
+          error: STREAM_EDGE_PROBE.error,
+          note: 'appEdgeWallMs is the app\'s belief; trueEdgeWallMs is the '
+            + 'stream\'s own clock (head PROGRAM-DATE-TIME + sum of EXTINF). '
+            + 'offsetS = (appEdge - trueEdge)/1000. No correction constant is '
+            + 'applied anywhere, and none should be added from one sample.',
         },
         seekableDuration: cur?.seekableDuration ?? null,
         positionWallClockIso: positionWallClock,
