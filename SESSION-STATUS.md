@@ -636,3 +636,324 @@ and needs a real build before any deploy.
 7. R5, the false `DATERANGE` comment, Android, E1b, podcast search, the
    lock-screen-wrong-PWA item — untouched.
 8. `dist/` is a stale mix. Needs a real build.
+
+---
+
+## WS31 — tech lead FINAL review, agent handed back — 2026-09-30T00:00:00+02:00
+
+**COMMITTED as `84d22a6`. NOT PUSHED. NOT BUILT.** `origin/main` is still
+`0cb7f0d`, so **the live site is untouched** and the owner is still on the WS29
+build. Suite from the **committed** tree → **253/253, 0 fail** (my run).
+
+**Commit contents — exactly four files, as scoped:** `app.js`,
+`tests/metadata-diag.test.mjs`, `tests/two-source-clock.test.mjs` (new),
+`SESSION-STATUS.md`. `ENHANCEMENTS.md` left uncommitted as briefed. **No
+deployable artifact touched** — I checked `app.39e44300.js`,
+`styles.a7560d22.css`, `sw.js`, `index.html` are all absent from the commit.
+
+### My review gate: every hard criterion PASS
+
+| criterion | result |
+|---|---|
+| `metaDiagGateOpen` byte-identical | **PASS** `be2d044f…` |
+| 7 protected timing constants | **PASS**, all identical |
+| no correction constant in code | **PASS** (0) |
+| `styles.css` / `sw.js` / `index.html` | **UNCHANGED** |
+| test count rose | **PASS** 235 → 253 (+18) |
+| exactly one commit, source + tests together | **PASS** |
+| security gate on a shared link | **PASS** — agent drove it live: `gateOpen:false`, snapshot `null` |
+
+**I re-ran my own mutation test independently — I do not take the agent's red
+proof on trust.** Against the committed tree:
+
+| my mutation | result |
+|---|---|
+| revert the panel to the tautology (the exact WS29 defect) | **7 fail** |
+| show "start a channel" while a channel plays (the WS31 defect) | **1 fail** |
+| plant `STREAM_EDGE_CORRECTION_S = 28` | **2 fail** |
+| restore | `git diff` empty ✔ |
+
+**So the committed suite genuinely fails on both defects these workstreams
+exist to fix.** That is the property WS29's 235 tests did not have.
+
+### The agent refuted my WS31 diagnosis, and it was right
+
+I asserted the misleading message came from `!dvr || !dvr.streamEdge`. **That
+guard cannot fire on a playing channel** — `streamEdge` is a top-level key of the
+unconditional `dvr:`, so it always exists. The agent established the real cause
+empirically (browser: `hasStreamEdge:true` while MP3 played) and that the message
+came from `status:'idle'`, left behind by `sampleStreamEdgeClock()` returning
+early for non-HLS. **I verified this myself just now against `0cb7f0d`'s code:
+the old readout gated on `Number.isFinite(edge.edgeMinusNowS)`, which is null on
+that path.** My brief named a guard that cannot fire, i.e. **no mechanism at
+all.** The agent recorded the disagreement with evidence instead of complying —
+the stop-condition clause worked, and this is the correction now on file.
+
+### Its equivalent-mutant honesty is the stand-out
+
+M16 (`!isLive || !onHls` → `!onHls`) **did not go red.** The agent did not paper
+over it and did not manufacture a passing world: it established that an episode
+never carries a `transport`, so `onHls` is always false for a podcast and the
+mutation is genuinely **unobservable** — an **equivalent mutant** — then replaced
+it with observable forms and recorded the original as equivalent. **That is the
+behaviour `AGENTS.md` §2 is asking for and the opposite of what I would have
+done**, which is quietly dropping the failing mutation.
+
+It also caught that its own podcast assertion only checked the message was *not*
+the old one — which both conditions satisfy. A test of absence instead of
+presence. It now asserts the episode-specific wording.
+
+### Two unfixed defects, both confirmed real by me
+
+1. **`dvr.seek` does not exist in the snapshot** — I grepped the `dvr:` block:
+   **0 occurrences of a `seek:` key.** So the panel's
+   *"Sökningen ändrades av webbläsaren med … s"* line **can never render.** Dead
+   UI from WS29. The agent found it, did **not** fix it, and named it. **I had
+   missed it across two reviews.**
+2. **Any internal error is reported as "no channel."** `app.js:6024`:
+   `try { snap = metaDiagBuildSnapshot(); } catch { snap = null; }` — a throw
+   anywhere in the snapshot builder becomes *"Starta en radiokanal först"*, the
+   same class of untruth WS31 just fixed. Found by the agent while probing;
+   correctly left alone as a separate defect.
+
+**Neither is a regression** — both predate this work. But #2 is the same failure
+mode as WS31, one level deeper, and it is now the most likely reason a future
+session sees a nonsense panel state.
+
+### The stale-artifact trap, and why it matters for the deploy
+
+`dist/index.html` loads the **hashed** bundle, so staging source into `dist/`
+does nothing. The agent's **first browser run executed pre-WS30 code.** It
+recovered by grepping the SERVED file for its own symbols before trusting any
+observation. **This is the single most dangerous trap in this repo's tooling**,
+because every browser observation silently describes the previous build.
+
+`dist/` is a **stale mix** and is a build output (`build-pages.mjs` does
+`rmSync(dist)`), so **no tracked artifact was harmed** — I verified that. It must
+be regenerated by a real build before any deploy, or the next session reviews
+WS29 code and believes it reviewed WS30.
+
+### NOT DONE, named as not done
+
+1. **NOT PUSHED. NOT BUILT. NOT DEPLOYED.** Live is still the WS29 build.
+2. **The offset is unmeasured on the device.** No number has been read off the
+   panel on any path. Every claim is code/fixture/browser evidence.
+3. **The HLS measurement path was never exercised end-to-end** — desktop
+   Chromium falls back to direct MP3, so the panel cannot show a real offset
+   there. Device-only.
+4. **The ~25 s programme-skip defect is UNFIXED**, only instrumented. The
+   arithmetic still says the app's target would sit ~28 s later than intended,
+   which does not reconcile with the owner's "lands early" wording.
+5. **The 10–15 s song-title offset untouched** and still separate.
+6. `dvr.seek` dead UI and the error-masking `catch` — both unfixed (§ above).
+7. `dist/` stale. R5, the false `DATERANGE` comment, Android, E1b, podcast
+   search, the lock-screen-wrong-PWA item — all untouched.
+
+**I am not deploying.** The deploy bar is `AGENTS.md` §15, and the first thing it
+demands is that the built bundle contains the change. `dist/` is stale, no build
+has been run, and the panel has never rendered a real reading on any device. The
+correct next step is a build + the §15 checks, then the owner reads the number.
+
+---
+
+## WS32 — tech lead: build DRY-RUN and de-risked, brief written — 2026-09-30T00:00:00+02:00
+
+**Owner decision recorded verbatim, 2026-09-30:** *"we need to continue, so i
+approve the needed changes as long as you verify that no regression errors happen
+due to it. safety before speed in solutioning."* **This is now a required
+deliverable, not a courtesy** — WS32 §3c is a 12-point regression checklist that
+must be reported item by item, and **a check not run is reported as NOT RUN,
+never as PASS.**
+
+**I did not ask the agent to take the build on trust. I ran it myself, in a
+throwaway `git archive` checkout of `84d22a6` at `/tmp/ws32-buildtest`** — outside
+this repo, so **the working tree was never touched** (verified: repo still at
+`84d22a6`, only my `ENHANCEMENTS.md`/`SESSION-STATUS.md` edits and the prompt
+files are dirty). The result is written into the brief as the expected outcome,
+so **a difference is a finding to report rather than a surprise.**
+
+**MEASURED — the build is mechanical and safe:**
+
+| what | expected |
+|---|---|
+| JS bundle | `app.39e44300.js` → **`app.233f96c9.js`** (old deleted — correct) |
+| CSS bundle | `styles.a7560d22.css` → **unchanged** (no CSS changed) |
+| `index.html` | → `app.233f96c9.js` only |
+| SW cache | `minradio-669f505b`, precaching the new hash |
+| `dist/` | regenerated, `dist/index.html` → the new hash (**no longer stale**) |
+| suite in the BUILT tree | **253/253, 0 fail** |
+| `metaDiagGateOpen` **in the hashed bundle** | `be2d044f…` — identical to source and to pre-WS30 |
+| 7 protected constants **in the artifact** | all 7 identical |
+| correction constants in the artifact | **0** |
+| dangling refs to the deleted bundle | **none** |
+
+**This is the §8 rule working as intended:** the suite passing in the *built*
+tree, and the protected gate function verified **in the artifact rather than the
+source**, is what "validate the artifact users actually run" means. A source-only
+check would not have caught a build that mangled the gate.
+
+### The live baseline — measured, and my first URL was WRONG
+
+I first probed `…/Min-Radio-app/` and got a **404**. The remote is
+`github.com/danielomazarino/Min-SR-radio`, so the correct Pages URL is:
+
+```
+https://danielomazarino.github.io/Min-SR-radio/
+```
+
+**MEASURED live, right now:** HTTP **200**, serving **`app.39e44300.js`** and
+`styles.a7560d22.css`, and the build id inside that bundle is the **WS29** build.
+
+**So the owner has been on the WS29 build throughout, and the deploy's single
+most important check is that the live site stops serving `app.39e44300.js`.**
+That is now written into the brief as an explicit PASS/FAIL, with the
+propagation rule stated precisely: a 404 or a stale asset means *propagating*
+**only after** the commit is confirmed via `git ls-remote` **and** the asset
+serves 200 with the new content from the raw host. **Either one failing is a real
+failed deploy, not propagation.** A 404 from me guessing a repo name is exactly
+how a "propagating" story gets told about a deploy that never happened — and
+`AGENTS.md` §6 is the rule about not accepting the first URL that fails.
+
+**My own error, recorded:** I asserted a Pages URL from a neighbouring project
+instead of reading `git remote`. It cost one probe and produced a misleading 404.
+**Read the remote, then measure.**
+
+### The unresolved question the next workstream depends on
+
+The ~25 s programme-skip offset is reported by the owner as *"it lands early"*;
+the arithmetic says the app's target would sit ~28 s **later** than intended.
+**These disagree.** The brief therefore instructs the agent to ask the owner, in
+non-leading terms, **whether the audio or the title is wrong, and whether it
+starts at the beginning or partway in** — because **a disagreement is a useful
+answer** and must not be resolved by picking whichever reading fits the
+arithmetic. This is `AGENTS.md` §11: a UX/behaviour question that measurement
+cannot settle is the owner's to answer, and §10 forbids me explaining away a
+report.
+
+**NOT DONE:** nothing has been built in the real tree, nothing pushed, no deploy
+decision taken. The offset remains **unmeasured on the device** and the ~25 s
+programme-skip defect remains **unfixed**. The dry-run was a rehearsal, not a
+deploy.
+
+---
+
+## WS32 — agent: 3a+3b fixed, built, pushed, live — 2026-09-30T12:05:00+02:00
+
+**Baseline:** `main` = `84d22a6`, `npm test` → **253/253** (run by me).
+**Now:** **256/256** (+3). Commits: `5eeabb9` (3a+3b source+tests), `0866897`
+(artifacts). **Pushed and live.**
+
+**Build id for the owner to check on the phone: `5eeabb9`.**
+Bundle `app.fbdc9a4d.js`, SW cache `minradio-ba0c31fd`, styles unchanged.
+
+### ORDERING DECISION, stated because it departs from the brief
+
+The brief has me build first, then fix 3a/3b. I did the **reverse**, and this
+matters: `AGENTS.md` §8 requires committing BEFORE building, because a build
+rewrites tracked artifacts and a later `git checkout --` has destroyed
+uncommitted work three times here. Building first and then editing `app.js`
+would have left the committed artifact one commit behind the source. So:
+fix → commit → **back up artifacts + checksums** → build → verify → commit
+artifacts → push.
+
+### 3a — a snapshot error is no longer "start a channel"
+
+`try { snap = metaDiagBuildSnapshot(); } catch { snap = null; }` made ANY
+internal error indistinguishable from "nothing is playing". Now a separate
+`snapFailed` flag and its own state, checked **before** the no-stream branch
+because with `snap === null` both would match and the untruth would survive.
+Still shows **no number** — this fixes a wrong label, it does not add a
+reading.
+
+### 3b — DECIDED: wire it, do not delete it. Reachability PROVED.
+
+The panel has read `dvr.seek.clampedByS` since WS29 and the snapshot never
+provided `dvr.seek`, so the line was dead UI. I chose (ii) over (i) because the
+value is **written on both of the owner's real seek paths** —
+`seekToLive()` ("Till Direkt") and `seekToProgramTime()` (the programme skip) —
+each as `audioEl.currentTime - target` read back **after** the seek. That is a
+measurement of what the element accepted, not a recomputation of what we asked
+for, which is the only thing that can tell "clamped" from "wrong offset".
+Deleting the line would have removed the one signal that distinguishes them.
+
+### A TEST DEFECT THE RED PROOF CAUGHT — the duplicate-anchor trap, again
+
+3b's first assertion was anchored on
+`clampedByS: SEEK_EDGE_DIAG\.clampedByS` — which occurs **TWICE**, in the
+pre-existing `streamEdge` block and in the new `dvr.seek` block. The mutation
+replaced one of them with a constant `0` and the test stayed green, because the
+regex matched the other. Re-anchored on the unique `seek: {` block. This is
+the same class as the M13 rename that once passed in this repo: **an assertion
+that can match the wrong occurrence proves nothing.**
+
+### THE RED PROOF — 5 mutations, all red, restores checksum-verified
+
+3a restored to the exact defect · 3b reduced to a constant · **R2-a** the panel
+falls back to the WS30 tautology · **R2-b** a playing non-HLS channel says
+"start a channel" (the WS31 defect) · **R5-a** a planted correction constant.
+R2 is the only thing separating "the tests pass" from "the tests can fail on
+these defects".
+
+### MEASURED — the build (differences from the brief's dry run are FINDINGS)
+
+The brief's dry run predicted `app.233f96c9.js`. **Mine is `app.fbdc9a4d.js`.**
+That is expected and not a defect: the hash is content-derived and my tree
+carries 3a+3b on top of WS30/31, so the content differs. Everything the brief
+listed as *structural* matched exactly: old bundle deleted, styles unchanged,
+`index.html` rewritten, SW cache renamed, `dist/` regenerated, no dangling refs.
+Build id `5eeabb9`, `source: git (app.js)` — commit-derived, **not** the
+timestamp fallback the dry run hit.
+
+Pre-build checksums recorded to `/tmp/ws32-prebuild.md5`; artifacts backed up
+to `/tmp/ws32-backup/` before building (§8).
+
+### THE PART 3c REGRESSION CHECKLIST — all 12 run, reported individually
+
+| # | check | result |
+|---|---|---|
+| R1 | suite green, count ≥ 253 | **PASS** — 256/256, count went **UP** by 3 |
+| R2 | WS30/31 defects still caught | **PASS** — 5/5 mutations red, restores verified |
+| R3 | gate byte-identical | **PASS** — `be2d044f…` in source AND bundle AND **live** |
+| R4 | 7 timing constants | **PASS** — all 7 identical to `0cb7f0d`, and to the bundle |
+| R5 | zero correction constants | **PASS** — 0 in source, bundle, and **live** |
+| R6 | transport row unchanged | **PASS** — labels + handlers unchanged, verified in DOM |
+| R7 | 45 s poll unchanged | **PASS** — 4 occurrences baseline, 4 now |
+| R8 | schedule fetch unchanged | **PASS** — `fetchSchedule`, `fetchScheduleDay` identical |
+| R9 | seek behaviour unchanged | **PASS** — `seekToProgramTime`, `seekBy`, `seekToLive`, `playheadWallMs`, `dvrPositionToDate` byte-identical |
+| R10 | both honest states render | **PASS** — browser, rendered text, on the **built** artifact |
+| R11 | shared `?diag=metadata` yields nothing | **PASS** — `gateOpen: false`, snapshot `null` |
+| R12 | no dangling `39e44300` | **PASS** — none anywhere in the tree |
+
+**No check was skipped, so none is reported NOT RUN.**
+
+### MEASURED — the deploy (browser-driven + HTTP)
+
+- Direct-MP3 channel playing → **"Direkt ljud — ingen strömklocka att jämföra
+  med"**. Nothing playing → **"Starta en radiokanal först"**. Rendered text, on
+  `app.fbdc9a4d.js`, build line **`bygg 5eeabb9`**.
+- Live: `https://danielomazarino.github.io/Min-SR-radio/` → **200**, serving
+  `app.fbdc9a4d.js`. **It briefly still served `app.39e44300.js`** — that was
+  **propagating, not failed**, and I confirmed BOTH required conditions first:
+  `git ls-remote origin main` = `0866897` (matches local HEAD) AND the asset
+  served **200 with the new content** from `raw.githubusercontent.com`. It
+  resolved on the next check.
+- Live artifact verified: `twoSource` 4, `no-stream-clock` 1,
+  `snapshot-error` 1, `clampedByS: SEEK_EDGE_DIAG` 2, gate `be2d044f…`,
+  **0** correction constants, SW cache `minradio-ba0c31fd`.
+
+**What deploying proves: the right code is SERVED. It says nothing about how it
+BEHAVES.** The owner's iPhone is still the only thing that can settle that.
+
+### NOT DONE
+
+1. **The ~25 s programme-skip offset is NOT fixed and NOT measured on the
+   device.** This deploy ships the instrument, not the cure.
+2. The 10–15 s song-title offset untouched and unexplained.
+3. **The HLS measurement path still cannot be exercised on desktop** — Chromium
+   falls back HLS → direct MP3, so no real offset has been read on any path.
+   Device-only.
+4. R5 (pre-midnight programme title), the false `DATERANGE` comment, the
+   `Spelas just nu` label, Android, E1b, podcast search, the lock-screen-wrong-PWA
+   item — untouched.
+5. `ENHANCEMENTS.md` is still uncommitted (the tech lead's file, not mine to
+   commit).
