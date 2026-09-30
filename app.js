@@ -1821,13 +1821,34 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   //   'failed'    — network/CORS/parse error. NEVER renders as a number, and
   //                 never falls back to a previous reading, because a stale
   //                 number presented as current is the defect being fixed.
+  //                 ---- WS33: 'no-seekable-range' is GONE ----
+  //                 It described a guard that existed only because the app's
+  //                 operand was built from `seekableEnd`. The comparison no
+  //                 longer reads it, so the state was reporting a reason that
+  //                 could no longer be true. It is not replaced by any other
+  //                 no-reading state: a stream clock with no playlist clock to
+  //                 compare against is not reachable any more, because there
+  //                 is only one operand and it is the device's own clock.
   //   'ok'        — a real two-source reading, with both raw clocks and the age.
   const STREAM_EDGE_PROBE = {
     status: 'idle',
     sampledAtMs: null,      // this device's clock, taken with the sample
-    appEdgeWallMs: null,    // the app's belief (from streamEdgeWallMs)
+    // WS33: the ACTUAL operand of offsetS. The device's wall clock, read in the
+    // same breath as the stream's clock. The reported offset is
+    // (deviceNowMs - trueEdgeWallMs) / 1000 — a difference of two clocks, and
+    // the guaranteed absence of `currentTime` is what this field exists to
+    // make checkable rather than assumed.
+    deviceNowMs: null,
+    // The app's BELIEF about which clock time the buffer edge represents.
+    // Still sampled, still playhead-dependent (it is `Date.now() - (seekableEnd
+    // - currentTime) * 1000`), and NOT an operand of offsetS. It is retained
+    // because WS23 and older sessions read it and its difference from
+    // `deviceNowMs` is the playhead's distance from the edge. Read the
+    // `twoSource.note` before using it — a session that subtracts these two
+    // fields is reconstructing WS33's defect.
+    appEdgeWallMs: null,
     trueEdgeWallMs: null,   // the STREAM's own clock (from the playlist)
-    offsetS: null,          // (appEdge - trueEdge)/1000. Signed. No constant.
+    offsetS: null,          // (deviceNow - trueEdge)/1000. Signed. No constant.
     segmentCount: null,
     mediaSequence: null,
     variantUrl: null,
@@ -1891,23 +1912,49 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       const parsed = parseVariantEdge(variantText);
       if (!parsed) throw new Error('variant unparseable as a single-clock playlist');
       const trueEdge = trueEdgeWallMs(parsed);
-      // The app's belief is sampled HERE, in the same breath as the stream's
+      // The device's clock is read HERE, in the same breath as the stream's
       // clock, so the two numbers describe the same instant rather than two
       // moments a round trip apart. This is the one place both clocks are
-      // read, which is what makes the subtraction a real comparison.
-      const appEdge = streamEdgeWallMs();
-      if (!Number.isFinite(appEdge)) {
-        // The app has no seekable range yet (or just lost it). The stream's
-        // clock is still real, but there is nothing to compare it against, so
-        // this is NOT a zero offset — it is no reading.
-        STREAM_EDGE_PROBE.status = 'failed';
-        STREAM_EDGE_PROBE.error = 'no-seekable-range';
-        return null;
-      }
-      STREAM_EDGE_PROBE.sampledAtMs = Date.now();
-      STREAM_EDGE_PROBE.appEdgeWallMs = appEdge;
+      // read, which is what makes the subtraction a real comparison. That
+      // property is kept deliberately and must not be traded away.
+      //
+      // ---- WS33: BOTH OPERANDS ARE WALL CLOCKS, AND NEITHER MAY CONTAIN
+      // `currentTime`. ----
+      //
+      // The previous operand was `streamEdgeWallMs()`, which is
+      // `Date.now() - (end - currentTime) * 1000`. Substituting it into the
+      // subtraction did NOT cancel the playhead term; it survived as
+      // `-distanceFromLiveEdge`. So the panel reported
+      //     clockBias - distanceFromLiveEdge
+      // i.e. the playhead's own distance from the live edge, wearing the
+      // label "offset". With a PERFECT device clock it read -1800 s while
+      // 30 minutes behind live, and the true bias was invisible underneath.
+      // WS30 removed the `Date.now()` half of the same tautology; this
+      // removes the `currentTime` half, so what is left is a difference of two
+      // clocks and nothing else.
+      //
+      // CONSEQUENCE, and it is deliberate: the old code needed a finite
+      // `seekableEnd` and reported `error: 'no-seekable-range'` without one.
+      // That guard existed ONLY because the app's operand was built from
+      // `seekableEnd`. The comparison no longer reads it, so keeping the guard
+      // would report a reason that is no longer true — a panel saying "could
+      // not read the stream's clock" while holding a perfectly good one, which
+      // is the same untruth WS31 fixed one level up. It is removed, and the
+      // stream clock is measured wherever it can be measured.
+      const deviceNow = Date.now();
+      STREAM_EDGE_PROBE.sampledAtMs = deviceNow;
+      // The real operand. Kept as its own field so the subtraction is
+      // checkable by hand from the snapshot: offsetS = (deviceNowMs -
+      // trueEdgeWallMs) / 1000, and neither term involves the playhead.
+      STREAM_EDGE_PROBE.deviceNowMs = deviceNow;
+      // KEPT for WS23 continuity, and it is still the app's honest belief
+      // about which clock time the buffer edge represents. It is NOT an
+      // operand of offsetS and it is PLAYHEAD-DEPENDENT — see the `note` on
+      // `twoSource`, which says so explicitly so the WS33 bug is not
+      // "re-derived" by a future session reading the two clocks side by side.
+      STREAM_EDGE_PROBE.appEdgeWallMs = streamEdgeWallMs();
       STREAM_EDGE_PROBE.trueEdgeWallMs = trueEdge;
-      STREAM_EDGE_PROBE.offsetS = (appEdge - trueEdge) / 1000;
+      STREAM_EDGE_PROBE.offsetS = (deviceNow - trueEdge) / 1000;
       STREAM_EDGE_PROBE.segmentCount = parsed.segmentCount;
       STREAM_EDGE_PROBE.mediaSequence = parsed.mediaSequence;
       STREAM_EDGE_PROBE.variantUrl = best.url;
@@ -6171,6 +6218,39 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     if (clamp !== null && Math.abs(clamp) > 0.5) {
       parts.push(`Sökningen ändrades av webbläsaren med ${clamp.toFixed(1)} s`);
     }
+    // ---- WS33: the playhead distance, shown SEPARATELY and under its OWN
+    // label. The tech lead asked for a decision and a reason; this is mine. ----
+    //
+    // YES, keep it, because `distanceFromLiveEdge` is real information the
+    // owner legitimately wants: "where am I on the timeline" is a different
+    // question from "is my clock wrong", and this panel is the only place the
+    // two can be told apart.
+    //
+    // It goes in the SECONDARY line, joined by ' · ', and never inside the
+    // primary sentence. That placement is the whole decision: WS30's defect was
+    // a real quantity wearing the wrong label, and putting it in the same
+    // string as the clock offset is how that happened. On its own, with
+    // `dvrOffsetLabel` — the SAME formatter the player's own pill uses — it
+    // cannot be misread as a clock: it reads "−30 min", the pill's own words.
+    //
+    // It is READ, never computed here: `dvr.distanceFromLiveEdge` is written
+    // by `updateSeekableState` and by nothing else (AGENTS.md §3), so this
+    // adds a reader and not a writer. Omitted entirely when absent or at the
+    // live edge, so it can never render a "−0 min" that reads like an offset.
+    const behindS = dvr && Number.isFinite(dvr.distanceFromLiveEdge)
+      ? dvr.distanceFromLiveEdge : null;
+    if (behindS !== null && behindS >= 60) {
+      // `dvrOffsetLabel` is the app's existing formatter for exactly this
+      // quantity, so the panel and the player pill cannot drift apart. It is
+      // called directly, NOT guarded by a typeof: a guard would be dead code
+      // here, and the test harness EXTRACTS this function rather than
+      // reimplementing it (AGENTS.md §7), so there is no absent case to
+      // defend against.
+      const where = dvrOffsetLabel(behindS);
+      if (where !== 'LIVE') {
+        parts.push(`Spelar ${where} från direktsändningen`);
+      }
+    }
     return { ok: true, state: 'ok', primary, secondary: parts.join(' · ') || null, seconds: secs };
   }
 
@@ -6457,10 +6537,11 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
             + 'size of that error is NOT known and is NOT corrected for.',
         },
         // ---- WS30: the genuine TWO-SOURCE comparison. ----
-        // `appEdgeWallMs` comes from the app's own clock and `seekableEnd`.
-        // `trueEdgeWallMs` comes from the STREAM's own clock: the head
-        // #EXT-X-PROGRAM-DATE-TIME plus the sum of every #EXTINF, fetched from
-        // SR's own CDN. `offsetS` is their signed difference.
+        // `deviceNowMs` is THIS DEVICE'S wall clock. `trueEdgeWallMs` is the
+        // STREAM's own clock: the head #EXT-X-PROGRAM-DATE-TIME plus the sum of
+        // every #EXTINF, fetched from SR's own CDN. `offsetS` is their signed
+        // difference. Neither operand contains `currentTime`, which is what
+        // makes it a CLOCK offset (WS33).
         //
         // Three numbers from two sources, not one derived number, so a reader
         // can check the arithmetic and either clock can be shown to be wrong
@@ -6500,12 +6581,20 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         twoSource: {
           status: STREAM_EDGE_PROBE.status,
           // BOTH raw clocks, so the difference is checkable by hand.
-          appEdgeWallMs: STREAM_EDGE_PROBE.appEdgeWallMs,
+          // The OPERAND (WS33). Neither involves the playhead.
+          deviceNowMs: STREAM_EDGE_PROBE.deviceNowMs,
+          deviceNowIso: Number.isFinite(STREAM_EDGE_PROBE.deviceNowMs)
+            ? new Date(STREAM_EDGE_PROBE.deviceNowMs).toISOString() : null,
           trueEdgeWallMs: STREAM_EDGE_PROBE.trueEdgeWallMs,
-          appEdgeIso: Number.isFinite(STREAM_EDGE_PROBE.appEdgeWallMs)
-            ? new Date(STREAM_EDGE_PROBE.appEdgeWallMs).toISOString() : null,
           trueEdgeIso: Number.isFinite(STREAM_EDGE_PROBE.trueEdgeWallMs)
             ? new Date(STREAM_EDGE_PROBE.trueEdgeWallMs).toISOString() : null,
+          // The app's BELIEF about the buffer edge, NOT an operand. It is
+          // playhead-dependent, so `deviceNowMs - appEdgeWallMs` equals the
+          // playhead's distance from the live edge. WS33 shipped a panel whose
+          // "offset" was exactly that quantity; see `note` before using it.
+          appEdgeWallMs: STREAM_EDGE_PROBE.appEdgeWallMs,
+          appEdgeIso: Number.isFinite(STREAM_EDGE_PROBE.appEdgeWallMs)
+            ? new Date(STREAM_EDGE_PROBE.appEdgeWallMs).toISOString() : null,
           // Signed seconds. The ONE number the panel shows.
           offsetS: Number.isFinite(STREAM_EDGE_PROBE.offsetS)
             ? STREAM_EDGE_PROBE.offsetS : null,
@@ -6523,10 +6612,16 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
           masterUrl: STREAM_EDGE_PROBE.masterUrl,
           variantUrl: STREAM_EDGE_PROBE.variantUrl,
           error: STREAM_EDGE_PROBE.error,
-          note: 'appEdgeWallMs is the app\'s belief; trueEdgeWallMs is the '
-            + 'stream\'s own clock (head PROGRAM-DATE-TIME + sum of EXTINF). '
-            + 'offsetS = (appEdge - trueEdge)/1000. No correction constant is '
-            + 'applied anywhere, and none should be added from one sample.',
+          note: 'deviceNowMs is this device\'s wall clock, read in the same '
+            + 'breath as the stream\'s own clock (head PROGRAM-DATE-TIME + sum '
+            + 'of EXTINF). offsetS = (deviceNow - trueEdge)/1000 — a difference '
+            + 'of two clocks, and independent of where the playhead sits. '
+            + 'appEdgeWallMs is NOT an operand: it is the app\'s belief about '
+            + 'the buffer edge and it MOVES with the playhead, so subtracting '
+            + 'it from deviceNowMs would rebuild the WS33 defect (a "offset" '
+            + 'that was really the distance behind live). No correction '
+            + 'constant is applied anywhere, and none should be added from one '
+            + 'sample.',
         },
         seekableDuration: cur?.seekableDuration ?? null,
         positionWallClockIso: positionWallClock,

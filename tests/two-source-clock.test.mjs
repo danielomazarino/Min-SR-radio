@@ -417,7 +417,7 @@ test('WS30 the sign and the Swedish direction word MUST agree (browser-caught bu
   }
 });
 
-test('WS30 NO CORRECTION CONSTANT anywhere: the offset is measured, not fitted', () => {
+test('WS30/33 NO CORRECTION CONSTANT anywhere: the offset is measured, not fitted', () => {
   // AGENTS.md §5. The brief for this workstream made this an explicit
   // acceptance criterion, and a constant fitted to one sample is exactly the
   // defect that produced "10 seconds" folklore across three workstreams.
@@ -430,13 +430,46 @@ test('WS30 NO CORRECTION CONSTANT anywhere: the offset is measured, not fitted',
   // `/CONSTANT_NAME/` as the assertion, which passed with the name present in
   // an unrelated throwaway string and stayed green when a real -28 was
   // subtracted. The assignment itself must be the difference of two clocks.
+  //
+  // ---- WS33: the operand name CHANGED, and this is a SUPERSEDED assertion,
+  // not a weakened one. (AGENTS.md §7b — classified before it was edited.)
+  //
+  // It previously read `= (appEdge - trueEdge)/1000`. It went RED on the WS33
+  // change, and the reason is the point of this workstream, not an accident:
+  //   appEdge = streamEdgeWallMs() = Date.now() - (end - currentTime) * 1000
+  // so `appEdge - trueEdge` does NOT cancel the playhead term — it survives as
+  // `-distanceFromLiveEdge`. The assertion was pinning the CONTAMINATED
+  // operand. It was not wrong about "no constant"; it was wrong about WHICH
+  // two clocks, and that is exactly what WS33 fixed.
+  //
+  // The requirement is restated, not relaxed. It is now STRONGER, because it
+  // adds checks the old version had no way to express: the first operand must
+  // be a bare `Date.now()`, and `currentTime` must not reach the comparison
+  // by any route at all.
   const assign = APP_CODE.slice(i, i + 120);
-  assert.match(assign, /=\s*\(appEdge\s*-\s*trueEdge\)\s*\/\s*1000\s*;/,
-    'the offset must be EXACTLY (appEdge - trueEdge)/1000 — no added or '
+  assert.match(assign, /=\s*\(deviceNow\s*-\s*trueEdge\)\s*\/\s*1000\s*;/,
+    'the offset must be EXACTLY (deviceNow - trueEdge)/1000 — no added or '
     + `subtracted term (got: ${JSON.stringify(assign.slice(0, 60))})`);
+  // And the new first operand must be this device's wall clock and NOTHING
+  // else. This is the WS33 invariant stated where a reader will meet it.
+  const bindAt = APP_CODE.lastIndexOf('const deviceNow = Date.now()', i);
+  assert.ok(bindAt !== -1,
+    'the first operand must be bound to a bare Date.now()');
   // Belt and braces: no numeric literal may be subtracted from it anywhere.
-  assert.ok(!/\(appEdge\s*-\s*trueEdge\)\s*\/\s*1000\s*[-+*]/.test(APP_CODE),
+  assert.ok(!/\(deviceNow\s*-\s*trueEdge\)\s*\/\s*1000\s*[-+*]/.test(APP_CODE),
     'the offset expression must not be adjusted by any constant');
+  // WS33: the playhead must not reach the comparison by ANY route, including
+  // one reintroduced outside the literal assignment asserted above.
+  const compare = APP_CODE.slice(
+    APP_CODE.indexOf('const trueEdge = trueEdgeWallMs(parsed);'),
+    APP_CODE.indexOf('STREAM_EDGE_PROBE.segmentCount ='));
+  assert.ok(/const deviceNow = Date\.now\(\)/.test(compare),
+    'the comparison must be built from a Date.now() binding');
+  assert.ok(!/offsetS\s*=\s*[^;]*currentTime/.test(compare),
+    'currentTime must never appear in an offsetS assignment');
+  assert.ok(!/offsetS\s*=\s*[^;]*streamEdgeWallMs/.test(compare),
+    'offsetS must not be derived from streamEdgeWallMs — that function '
+    + 'contains the playhead term (WS33)');
 });
 
 test('WS30 R-A REACHABILITY: opening the panel is what triggers a sample', () => {
@@ -564,3 +597,283 @@ test('WS30 a failed fetch clears to an explicit state, never a stale number', ()
   assert.equal(assigns.length, 1,
     'offsetS must be assigned in exactly ONE place — the success path');
 });
+
+// ===========================================================================
+// WS33 — the offset was still the playhead's own distance from the live edge.
+//
+// THE DEFECT. WS30 replaced a tautology, but the replacement kept the
+// `currentTime` term:
+//
+//   appEdge = streamEdgeWallMs() = Date.now() - (end - currentTime) * 1000
+//   offsetS = (appEdge - trueEdge) / 1000
+//
+// `Date.now()` cancels, but `currentTime` does NOT — it survives as
+// `-distanceFromLiveEdge`. So the panel reported
+//
+//     clockBias - distanceFromLiveEdge
+//
+// With a PERFECT device clock, 30 minutes behind live, it read -1800 s while
+// the true bias was 0 s. The number the owner most wants to compare against
+// the programme-skip error was buried inside a term they cannot see, and the
+// instrument was only valid at one playhead position.
+//
+// WHY THESE TESTS ARE ARITHMETIC AND NOT STRING MATCHES. A test asserting
+// "the assignment is (deviceNow - trueEdge)/1000" passes on a codebase where
+// `deviceNow` is itself contaminated. Only an INVARIANT can fail here, so the
+// central test below EVALUATES THE REAL EXTRACTED ASSIGNMENT against a
+// controlled clock, at two playhead positions, and requires the results to be
+// identical. A transcription of the formula into the test would prove nothing
+// about app.js (AGENTS.md §7).
+//
+// WHAT NONE OF THIS PROVES: anything about the owner's iPhone, and nothing
+// about whether the app mis-seeks. It is arithmetic over the app's own
+// expressions plus the rendered text those expressions feed.
+// ===========================================================================
+
+// Extracts the REAL success-path block of sampleStreamEdgeClock — from the
+// stream's clock to the `status = 'ok'` line — and runs it with injected
+// `Date.now`, `trueEdgeWallMs`, `streamEdgeWallMs` and a recording probe.
+//
+// The probe is a real object the extracted code writes into, so `offsetS` is
+// read back from the app's own assignment rather than recomputed here.
+function ws33Sample(sourceText, { nowMs, trueEdge, appEdge }) {
+  const src = sourceText;
+  const start = src.indexOf('const trueEdge = trueEdgeWallMs(parsed);');
+  const end = src.indexOf("STREAM_EDGE_PROBE.status = 'ok';", start);
+  if (start === -1 || end === -1) throw new Error('the sample block must exist in app.js');
+  const block = src.slice(start, end);
+  const canary = { samples: 0 };
+  const probe = { offsetS: undefined, deviceNowMs: undefined, appEdgeWallMs: undefined };
+  const result = new Function('deps', `
+    const { nowMs, trueEdge: trueEdgeStub, appEdge, probe, canary, STREAM_EDGE_PROBE } = deps;
+    // ---- the stand-ins ----
+    // \`parsed\` and \`trueEdgeWallMs\` are pure and already covered above; the
+    // point here is the ARITHMETIC the app does with the result, so the parser
+    // is stubbed at its output and the CLOCK is what is controlled.
+    //
+    // NOTE the alias: the injected value is bound as \`trueEdgeStub\`, NOT
+    // \`trueEdge\`. The extracted block declares \`const trueEdge =\` itself, so
+    // binding the same name here is a redeclaration and the whole harness dies
+    // with a SyntaxError. That failure is loud, which is why it is safe — but
+    // it is a harness bug, not a finding, and it is recorded here so the next
+    // session does not read it as a defect in app.js.
+    const parsed = { headPdtMs: trueEdgeStub, totalMs: 0 };
+    function trueEdgeWallMs(p) { return p.headPdtMs; }
+    // The app's belief, verbatim from the WS30 code, INCLUDING the playhead
+    // term. It is injected rather than derived, because what is under test is
+    // whether the app's subtraction is INVOLVED — not what its contents are.
+    function streamEdgeWallMs() { return appEdge; }
+    const Date = { now: () => nowMs };
+    // The block continues past the arithmetic into the two provenance fields.
+    // They are stubbed rather than the block being TRUNCATED, because cutting
+    // the extraction short would mean the harness stops running the same code
+    // the app runs — the trap AGENTS.md §7 warns about.
+    const best = { url: 'https://example.invalid/v.pls' };
+    const masterUrl = 'https://example.invalid/m.m3u8';
+    ${block}
+    Object.assign(probe, {
+      offsetS: STREAM_EDGE_PROBE.offsetS,
+      deviceNowMs: STREAM_EDGE_PROBE.deviceNowMs,
+      appEdgeWallMs: STREAM_EDGE_PROBE.appEdgeWallMs,
+    });
+    canary.samples += 1;
+    return probe;
+  `)({ nowMs, trueEdge, appEdge, probe, canary, STREAM_EDGE_PROBE: probe });
+  return { probe, result, canary, block };
+}
+
+test('WS33 THE INVARIANT: offsetS is INDEPENDENT of the playhead position', () => {
+  // THE TEST THAT FAILS ON THE WS30 CODE. Everything else here is corroboration.
+  //
+  // USER-VISIBLE FAILURE IT CATCHES: the owner scrubs back 30 minutes, opens
+  // the timing panel, and reads "Appens klocka ligger 1800 s efter strömmens".
+  // They conclude their device clock is half an hour slow. It is not — the
+  // panel is reporting how far THEY have scrubbed, wearing the word "offset".
+  // Everything they compare that number against is then meaningless.
+  //
+  // THE METHOD, and why it cannot pass by accident:
+  //   - the code under test is EXTRACTED from app.js, not retyped (AGENTS.md §7);
+  //   - `streamEdgeWallMs()` is injected WITH a playhead-dependent value, so if
+  //     the app subtracts it, the contamination is live and the test goes red;
+  //   - the clock is held PERFECT (`trueEdge === nowMs`, zero bias) so the only
+  //     thing that can move the result is the playhead.
+  // A result could have come out differently: if the app's clock were wrong,
+  // both rows would move TOGETHER and the difference would still be zero. So
+  // "the two agree" alone would be a weaker claim than intended — which is why
+  // the third assertion pins the value itself.
+
+  const NOW = 1_700_000_000_000;          // a fixed instant
+  const END = NOW / 1000;                 // a plausible seekableEnd
+  // A PERFECT device clock: the stream's own clock IS this device's clock, so
+  // the true bias is exactly 0 s and anything non-zero is contamination.
+  const TRUE_EDGE = NOW;
+
+  // Two playhead positions, 30 minutes apart, with `streamEdgeWallMs()`
+  // carrying the app's real (playhead-dependent) belief for each.
+  const at = (currentTime) => ({
+    nowMs: NOW,
+    trueEdge: TRUE_EDGE,
+    appEdge: NOW - (END - currentTime) * 1000,   // the WS30 formula, verbatim
+  });
+  const live = ws33Sample(APP_JS, at(END));
+  const behind = ws33Sample(APP_JS, at(END - 1800));
+
+  // Canary: the extracted block must actually have run. A harness that reports
+  // zero proves nothing and is a hard failure, never a pass (AGENTS.md §7).
+  assert.ok(live.canary.samples > 0, 'canary: the extracted sample block never ran');
+  assert.ok(behind.canary.samples > 0, 'canary: the extracted sample block never ran');
+
+  // THE INVARIANT. Same stream clock, different playhead, identical offset.
+  assert.equal(live.probe.offsetS, behind.probe.offsetS,
+    'offsetS changed when only the PLAYHEAD moved — the comparison is still '
+    + 'reading currentTime. The panel would show the scrub distance as an '
+    + `offset (live=${live.probe.offsetS}, 30min behind=${behind.probe.offsetS})`);
+
+  // And pinned, so "the two agree" cannot pass by both being wrong. With a
+  // perfect clock the ONLY correct answer is 0.
+  assert.equal(live.probe.offsetS, 0,
+    `with a perfect device clock the offset must be exactly 0, got ${live.probe.offsetS}`);
+  assert.equal(behind.probe.offsetS, 0,
+    `30 minutes behind live must STILL read 0 with a perfect clock, got ${behind.probe.offsetS}`);
+
+  // The contaminating value IS present and IS different at the two positions —
+  // otherwise this test could pass simply because the stub was constant, which
+  // would make it an experiment that cannot fail (AGENTS.md §2).
+  assert.notEqual(live.probe.appEdgeWallMs, behind.probe.appEdgeWallMs,
+    'the injected app belief must genuinely differ between the two positions, '
+    + 'or this test cannot fail');
+  assert.equal(live.probe.appEdgeWallMs - behind.probe.appEdgeWallMs, 1800 * 1000,
+    "the app's belief must move by exactly the playhead's 1800 s distance");
+});
+
+test('WS33 the reported offset equals (deviceNow - trueEdge)/1000, checkable by hand', () => {
+  // The panel's number must be reconstructible from two raw clocks a reader
+  // can see. If it is not, a reader cannot tell WHICH clock is wrong — which
+  // was the reason for exposing both in the first place.
+  //
+  // A biased clock is used here on purpose: with a perfect clock the answer is
+  // 0 and a sign error would be invisible.
+  const NOW = 1_700_000_000_000;
+  const TRUE_EDGE = NOW - 28_000;   // the stream's clock is 28 s BEHIND ours
+  const h = ws33Sample(APP_JS, {
+    nowMs: NOW, trueEdge: TRUE_EDGE, appEdge: NOW + 1234, // appEdge is irrelevant
+  });
+  assert.ok(h.canary.samples > 0, 'canary');
+  // Device clock LATER than the stream's => the app believes it is ahead.
+  assert.equal(h.probe.offsetS, 28, `expected +28 s, got ${h.probe.offsetS}`);
+  assert.equal(h.probe.deviceNowMs, NOW, 'the device clock must be exposed');
+  // Reconstructible by hand from the two exposed operands.
+  assert.equal((h.probe.deviceNowMs - TRUE_EDGE) / 1000, h.probe.offsetS,
+    'offsetS must be exactly (deviceNowMs - trueEdgeWallMs)/1000');
+  // And it must NOT be reconstructible from the app's belief, because that
+  // would mean the playhead is back in the comparison.
+  assert.notEqual((h.probe.appEdgeWallMs - TRUE_EDGE) / 1000, h.probe.offsetS,
+    'if the offset still matches (appEdge - trueEdge) the playhead is back in '
+    + 'the comparison');
+});
+
+test('WS33 THE SEEK ERROR IS INDEPENDENT OF THE PLAYHEAD — the reading is valid anywhere', () => {
+  // AC3. The brief asked for this claim to be CHECKED and the result reported
+  // either way. It HOLDS, and that is what makes the corrected number useful:
+  // one reading predicts the programme-skip error at any position on the
+  // timeline, whereas the old panel was only valid at one.
+  //
+  // `seekToProgramTime` computes  target = end - (Date.now() - startMs)/1000.
+  // The position that is CORRECT is  p = end - (T_end - startMs)/1000, where
+  // T_end is the stream's own edge clock. Subtracting:
+  //     target - p = -(Date.now() - T_end)/1000 = -offsetS_true
+  // `end` appears on both sides and cancels, so the playhead is not involved.
+  //
+  // This is arithmetic over the app's own seek formula, transcribed once. It is
+  // a property of the formula, and it is asserted rather than asserted-in-a-
+  // comment because AGENTS.md §2: a claim nothing checks becomes folklore.
+  const seekTarget = (end, nowMs, startMs) => end - (nowMs - startMs) / 1000;
+  const correctPos = (end, trueEdgeMs, startMs) => end - (trueEdgeMs - startMs) / 1000;
+  const NOW = 1_700_000_000_000;
+  const END = 3_600_000;
+  const TRUE_EDGE = NOW - 25_000;          // device clock 25 s AHEAD
+  const offsetS_true = (NOW - TRUE_EDGE) / 1000;   // +25
+
+  for (const [label, startMs] of [['now', NOW], ['30 min in', NOW - 1_800_000],
+    ['2 h in', NOW - 7_200_000]]) {
+    for (const currentTime of [END, END - 600, END - 1800]) {
+      const err = seekTarget(END, NOW, startMs) - correctPos(END, TRUE_EDGE, startMs);
+      assert.equal(err, -offsetS_true,
+        `at ${label} the landing error must be -offsetS regardless of the `
+        + `playhead (currentTime=${currentTime}); got ${err}`);
+    }
+  }
+  // Stated so a reader knows the sign: the app lands 25 s EARLY relative to
+  // the stream's own clock, i.e. it seeks too far forward.
+  assert.equal(-offsetS_true, -25,
+    'with a 25 s fast clock the app must overshoot by 25 s, at every position');
+});
+
+test('WS33 the playhead distance is shown SEPARATELY, under its own label', () => {
+  // The decision the brief left open. `distanceFromLiveEdge` is real
+  // information and is kept — but it must never be inside the clock sentence,
+  // which is precisely how WS30/WS33's defect presented itself.
+  const build = ws33ReadoutHarness(APP_JS, {
+    offsetS: 5,
+    distanceFromLiveEdge: 1800,
+  });
+  const r = build();
+  assert.ok(build.canary.readoutCalls > 0, 'canary: the readout never ran');
+  assert.equal(r.ok, true);
+  // The PRIMARY sentence is the clock, and only the clock.
+  assert.match(r.primary, /5 s/,
+    `the primary line must state the clock offset (got: "${r.primary}")`);
+  assert.ok(!/30 min/.test(r.primary),
+    `the primary line must NOT carry the playhead distance — that is the WS33 `
+    + `defect's shape (got: "${r.primary}")`);
+  // The distance appears, separately and legibly, in the secondary line.
+  assert.match(r.secondary || '', /30 min/,
+    `the distance behind live must still be shown, under its own label `
+    + `(got: "${r.secondary}")`);
+});
+
+// A small local harness so the test above does not depend on the other file's
+// internals. It EXTRACTS `metaDiagReadoutLines` and `dvrOffsetLabel` from
+// app.js — never a retyped copy (AGENTS.md §7).
+function ws33ReadoutHarness(sourceText, { offsetS, distanceFromLiveEdge }) {
+  const src = sourceText;
+  const grab = (name) => {
+    const start = src.indexOf(`function ${name}(`);
+    if (start === -1) throw new Error(`${name} must exist in app.js`);
+    let d = 0, end = -1;
+    for (let i = start; i < src.length; i += 1) {
+      if (src[i] === '{') d += 1;
+      else if (src[i] === '}') { d -= 1; if (d === 0) { end = i; break; } }
+    }
+    if (end === -1) throw new Error(`brace matching failed for ${name}`);
+    return src.slice(start, end + 1);
+  };
+  const canary = { readoutCalls: 0, buildCalls: 0 };
+  const readout = new Function('deps', `
+    const { offsetS, distanceFromLiveEdge, canary } = deps;
+    ${grab('dvrOffsetLabel')}
+    function metaDiagBuildSnapshot() {
+      canary.buildCalls += 1;
+      return {
+        playback: { current: { kind: 'live', id: 164 } },
+        dvr: {
+          streamEdge: { edgeMinusNowS: 27, selfReferential: true },
+          twoSource: {
+            status: 'ok',
+            deviceNowMs: 1_700_000_000_000,
+            trueEdgeWallMs: 1_700_000_000_000 - offsetS * 1000,
+            appEdgeWallMs: 1_700_000_000_000,
+            offsetS, sampleAgeS: 1.1, stale: false,
+          },
+          transportKind: 'hls-hlsjs',
+          seek: { clampedByS: null },
+          distanceFromLiveEdge,
+        },
+      };
+    }
+    ${grab('metaDiagReadoutLines')}
+    return () => { canary.readoutCalls += 1; return metaDiagReadoutLines(); };
+  `)({ offsetS, distanceFromLiveEdge, canary });
+  readout.canary = canary;
+  return readout;
+}

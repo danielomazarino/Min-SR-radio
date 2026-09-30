@@ -957,3 +957,409 @@ BEHAVES.** The owner's iPhone is still the only thing that can settle that.
    item — untouched.
 5. `ENHANCEMENTS.md` is still uncommitted (the tech lead's file, not mine to
    commit).
+
+---
+
+## WS33 — tech lead: a device session is NOT next. A defect is. — 2026-09-30T14:00:00+02:00
+
+**Baseline MEASURED by me, not copied:** `npm test` → **256/256, 0 fail** at
+`02e27c4`. Working tree: clean of source; `WS33-PROMPT.md` untracked (by
+design — `.gitignore` has `WS2*.md`; the owner drags the brief by hand).
+`AGENTS.md` §12 and `.github/instructions/min-radio.instructions.md` **edited
+by me this session** (documentation, no code).
+
+**I had proposed a device measurement session as WS33. That was wrong, and
+I am recording why rather than quietly replacing it.** Writing the device
+protocol, I transcribed the two expressions the whole offset story rests on and
+checked them against each other. They do not agree. **The panel is not measuring
+a clock offset** — so a device reading would have been taken with an instrument
+I already knew was broken, and the number would have been uninterpretable.
+
+### FINDING — `offsetS` is the playhead's distance from the live edge, not a clock bias
+
+Three expressions, transcribed from the current `app.js`:
+
+1. `streamEdgeWallMs()` → `Date.now() - (end - currentTime) * 1000`
+2. `updateSeekableState()` → `distanceFromLiveEdge = max(0, end - currentTime)`
+3. `sampleStreamEdgeClock()` → `offsetS = (appEdgeWallMs - trueEdgeWallMs) / 1000`
+
+Substituting (1) into (3), **`currentTime` does not cancel.** It survives as
+`-distanceFromLiveEdge`, so:
+
+> `offsetS_shown = clockBias − distanceFromLiveEdge`
+
+**MEASURED by arithmetic, with a PERFECT clock (zero bias):**
+
+| playhead behind live | panel reads | true clock bias |
+|---|---|---|
+| 0 s | `0.0 s` | `0.0 s` |
+| 10 s | `−10.0 s` | `0.0 s` |
+| 600 s | `−600.0 s` | `0.0 s` |
+| 1800 s | `−1800.0 s` | `0.0 s` |
+
+**State what would have made this table come out differently** (`AGENTS.md` §2):
+if the `currentTime` term cancelled, **every row reads `0.0 s`**. It does not.
+The table can fail.
+
+**What this does NOT prove:** anything about the owner's iPhone, and it does not
+prove the app mis-seeks. It is arithmetic over the app's own expressions.
+
+**This is WS30's defect class, in WS30's own fix.** WS29's `edgeMinusNowS`
+cancelled to `distanceFromLiveEdge`. WS30 removed the `Date.now()` cancellation
+but kept the `currentTime` term, so the field is *still* reading the playhead —
+it now merely adds a clock term to it. **Two sources, but one is not a clock.**
+
+### The consequence that made this urgent rather than tidy
+
+**The instrument is only valid at the live edge, and nothing on screen says
+so.** My WS30 desktop probe read −24.4 … −32.6 s — taken **at the live edge**,
+where the contamination is zero. A reading taken while scrubbed back 30 minutes
+reads about `−1800 s`. **The two numbers are not comparable, and an owner
+comparing them would conclude the bias is 60× larger than it is.**
+
+**And the correct quantity also predicts the seek.** Transcribing
+`seekToProgramTime`'s target, the landing error is **independent of playhead
+position** (`−clockBias`, because `seekableEnd` cancels), whereas the panel's
+number is not. One reading would be valid anywhere on the timeline. **I have
+asked the agent to verify that independence itself** — if it does not hold, that
+is a bigger finding than this fix.
+
+### Also found, and NOT acted on: `playheadWallMs` and `streamEdgeWallMs` are near-duplicates
+
+Identical bodies; one returns `Date.now()` on no-window, the other `null`. **I
+did not touch it.** It is on the brief's out-of-scope list with the reason, so a
+future pass treats it as a decision to argue rather than an obvious cleanup.
+
+### What I shipped this session
+
+1. **`AGENTS.md` §12 corrected.** R5's *"correct but unreachable"* and R6's
+   *"this is the next fix (WS27)"* were both **stale and wrong**. Verified: R6's
+   fix line is present; R5 has a reachable path (`updateSeekableState`, the
+   `lastWindowGateKey` block).
+2. **`.github/instructions/min-radio.instructions.md` corrected — and this one
+   mattered more.** It is the **auto-discovered** copy the coding agent's chat
+   loads automatically, and it still said R1/R2/R3/R5/R6 **failing** /
+   **regressed**. Fixing `AGENTS.md` alone would have left the agent reading a
+   table that says the product is broken. **The two files drift independently;
+   any future edit to the requirements table must change both.**
+3. **`WS33-PROMPT.md` written.** Scope is one behavioural change, no correction
+   constant, reachability to be proved, ≥4 mutations, and an explicit warning
+   that a sign/wording test **cannot** fail on this defect — only an
+   position-independence invariant can.
+
+**NOT DONE, named as not done:**
+
+1. **No source changed. No build, no push, no deploy decision.** Nothing has
+   been committed this session.
+2. **The device session is DEFERRED, not cancelled.** It is still the next thing
+   after WS33 — but on a *correct* instrument. Asking the owner to read a number
+   off a panel I now know is wrong would have wasted their time and produced a
+   reading that cannot be interpreted.
+3. **The ~25 s programme-skip defect is still unfixed and its DIRECTION is
+   still unestablished.** The arithmetic says the skip lands ~25 s *into* the
+   programme; the owner reported "lands early". §8 of the brief puts that
+   question to the owner rather than resolving it.
+4. **The 10–15 s song-title offset is untouched** and is a separate mechanism
+   the owner has already said is different.
+5. **I have not re-derived whether the contaminated field affected any
+   shipped conclusion.** WS30/31/32 reports quote `offsetS` readings; if any
+   were taken behind live, they are void. **This is the next thing to check and
+   I have not done it.**
+6. R5, the false `DATERANGE` comment, `Spelas just nu`, Android, E1b, podcast
+   search, the lock-screen-wrong-PWA item — all untouched.
+
+---
+
+## WS33 — the owner's answer arrived. The DIRECTION is now established. — 2026-09-30T15:30:00+02:00
+
+**The owner answered the §8 question (verbatim):**
+> "the audio starts immediately"
+> "Just the sound is of circa 25 seconds (i have not measured with a watch, just
+> counted in my head while waiting for the correct programme to start playing)"
+
+**WS33 is already sent to the coding agent and in flight. I have NOT edited
+`WS33-PROMPT.md` since it was handed over** — changing a brief under a running
+agent is how the two diverge silently. This block is the record for **WS34**.
+
+### The direction is established, and I HAD THE SIGN BACKWARDS
+
+The owner says the audio **starts immediately** and the real programme begins
+**~25 s later**. So the app lands **BEFORE** the programme starts — it plays
+material that is *earlier* than the programme they asked for.
+
+Arithmetic over `seekToProgramTime` (`target = end - (Date.now() - startMs)/1000`),
+transcribed verbatim, `seekError = −clockBias`:
+
+| device clock vs the stream | lands |
+|---|---|
+| 25 s **behind** | 25 s **into** the programme (skips too little) |
+| 25 s **ahead** | 25 s **before** it ← **matches the owner** |
+
+**So the owner's iPhone clock reads ~25 s AHEAD of the stream's clock.**
+
+### The "disagreement" was never a disagreement — it was two devices
+
+My desktop probe measured `now − trueEdge` = **−24.4 … −32.6 s** (my clock
+BEHIND). The owner's device implies **+25 s** (AHEAD). **Opposite signs, on
+different machines.** Both can be true at once, and this is why I refused to
+pick a side that fitted the arithmetic (`AGENTS.md` §10, §11).
+
+**This is the most important thing in this block, and it invalidates the shape
+of the fix I had been assuming.** A correction constant is not merely
+disallowed on principle (§5) — it is now **demonstrably wrong**, because the
+same app would need `−25` on one device and `+25` on another. The earlier
+"the bias drifts ~5.5 s over minutes" was measured **on one desktop** and is
+not evidence about any other device.
+
+**Consequence for WS34:** the correction cannot be a number at all. It must be
+computed **per sample, on the device, from the two clocks** — which is precisely
+what the corrected panel measures. That is an argument for WS33's fix being a
+prerequisite, not merely an improvement.
+
+### What is now established, and what is not
+
+| | status |
+|---|---|
+| The skip lands **before** the programme | **owner-confirmed on device** (first device-confirmed DVR finding in this repo) |
+| The cause is the **device clock vs the stream clock** | **code-proven by arithmetic**, and now agrees with the owner's direction |
+| The magnitude | **~25 s, owner-estimated by counting, not measured.** Treat as one observation. |
+| The bias is **device-specific** | **new, from the two readings disagreeing in sign** |
+| Whether a seek *can* land before the buffer starts | **not examined.** `seekToProgramTime` clamps only `target < start`; a target before the programme is not clamped. **Unchecked — and it is the next thing to look at.** |
+
+### MEASURED, and what it does NOT prove
+
+The two rows above are **arithmetic over the app's own expressions**, run with a
+synthetic clock error. They are not a device measurement. **The owner's ~25 s is
+an estimate made while waiting, not a stopwatch reading** — and I am recording
+it as an estimate, because writing "25 s measured" would freeze one sample into
+a constant, which is the exact failure `AGENTS.md` §5 exists to prevent.
+
+**NOT DONE:** no source changed. Nothing built, pushed or deployed. WS33 is in
+flight and unreviewed. **The seek fix itself is still unwritten** and must not
+be written until WS33's corrected instrument has produced a real device number.
+R5, `Spelas just nu`, Android, E1b, podcast search, lock-screen-wrong-PWA — all
+untouched.
+
+---
+
+## WS33 — tech lead REVIEW, agent handed back — 2026-09-30T16:10:00+02:00
+
+**The agent has NOT written a status block of its own.** `SESSION-STATUS.md` holds
+only my five. **That is the AC11 contract failure again** (`AGENTS.md` §13, brief
+AC11) — and its evidence currently exists only in a chat transcript. **The
+technical work is good and I am recording that separately from the process gap.**
+
+**MEASURED by me, not copied:** `npm test` → **260/260, 0 fail** (was 256, **+4**).
+`HEAD` still `02e27c4`. **Nothing committed.** `app.js` +122/−27,
+`tests/two-source-clock.test.mjs` +321.
+
+### My objective gates: PASS on every one
+
+| gate | result |
+|---|---|
+| `metaDiagGateOpen` byte-identical | **PASS** `be2d044f…` — unchanged from the WS30 baseline |
+| all 7 timing constants | **PASS**, all identical |
+| correction constants in **code** | **PASS** (0 — checked with comments stripped, not a naive grep) |
+| `styles.css` / `index.html` / `sw.js` | **UNCHANGED** |
+| test count rose | **PASS** 256 → 260 |
+
+### The change is exactly the scope the brief allowed
+
+`offsetS = (deviceNow − trueEdge)/1000`. Both operands are wall clocks; **neither
+contains `currentTime`.** `deviceNowMs` is a new field so the subtraction is
+checkable by hand from the snapshot.
+
+**Two decisions it made that I did not specify, both defensible:**
+
+1. **It removed the `no-seekable-range` guard entirely.** That guard existed
+   *only* because the old operand was built from `seekableEnd`. Keeping it would
+   report a reason that can no longer be true — "could not read the stream's
+   clock" while holding a perfectly good one. **Correct, and the same untruth
+   WS31 fixed one level up.** I verified the WS31 panel gating is intact and
+   independent.
+2. **It kept `appEdgeWallMs` and labelled it a trap.** It is playhead-dependent,
+   so subtracting it from `deviceNowMs` rebuilds this exact bug. The agent kept
+   it for WS23 continuity and wrote a `note` warning future sessions. **Better
+   than deleting it**, which would have broken WS23-era readers.
+
+It also added the playhead distance to the panel **under its own label**,
+`dvrOffsetLabel`, in the *secondary* line — using the player's own formatter so
+the two cannot drift. It reasoned about placement: putting it in the same string
+as the offset is how WS30 happened. **It accepted my recommendation and argued
+for it, which is what I asked for.**
+
+### I mutation-tested the new tests myself — 3 mutations, all red, restores checksum-verified
+
+| mutation | result |
+|---|---|
+| M1 restore the **old contaminated operand** | **3 fail** (252, 257, 258) |
+| M2 substitute the app's belief for the device clock | **3 fail** — *including* the no-correction-constant guard |
+| M3 plant `+ 28000` as a "correction" | **2 fail** (257, 258) |
+
+Every restore verified by md5 against the pre-mutation file. **NO-OP: none.**
+
+**The invariant test is the best test in this repo.** It **extracts** the sample
+block from `app.js` rather than retyping it (§7), injects
+`streamEdgeWallMs()` **with a playhead-dependent value** so the contamination is
+live, and holds the clock **perfect** so only the playhead can move the result.
+It has a **canary**. And it states the user-visible failure: *"the owner scrubs
+back 30 minutes, reads '1800 s efter strömmens', concludes their clock is half an
+hour slow."*
+
+**It even names its own weakness** — that "the two agree" could pass with both
+wrong — and pins the absolute value to close it. I did not ask for that.
+
+### Why this could not have shipped broken
+
+M1 is the decisive one: restoring the WS30 formula **fails 3 tests.** WS30's own
+suite passed on the contaminated code, because it asserted *sign* and *wording*,
+both of which are perfectly correct for a wrong number. **This suite asserts the
+invariant instead, and that is the whole difference.**
+
+### The two caveats I will not let pass
+
+1. **NOTHING IS COMMITTED.** Source and tests are uncommitted.
+2. **The offset is still unmeasured on the owner's device, and the seek fix is
+   still unwritten.** This ships a correct instrument. No correction constant —
+   correct, since the owner's `+25` and my `−25` prove a constant is device-specific.
+
+**NOT DONE:** no build, no push, no deploy decision. I have not reviewed the
+agent's own status report **because there is not one**.
+
+---
+
+## WS33 — coding agent — 2026-09-30T19:40:00+02:00
+
+**Started / baseline:** `npm test` run by me → **256/256 pass** (my own run, not
+copied from the brief). Working tree had only docs modified.
+
+**Scope now:** exactly one behavioural change — make `offsetS` a pure clock
+comparison. **OUT of scope and untouched:** `seekToProgramTime`, `seekBy`,
+`seekToLive`, `playheadWallMs`, `distanceFromLiveEdge`, `atLiveEdge`,
+`dvrAvailable`, `updateSeekableState`, all 7 timing constants,
+`metaDiagGateOpen()`, the `Spelas just nu` label, R5, `styles.css`, `index.html`,
+`sw.js`.
+
+**Test count:** 256 → **260**.
+
+**CODE CHANGE** — `app.js`, three places:
+1. `sampleStreamEdgeClock()` — the first operand of the subtraction changed from
+   `streamEdgeWallMs()` to `const deviceNow = Date.now()`. The assignment is now
+   `offsetS = (deviceNow - trueEdge) / 1000`.
+2. `STREAM_EDGE_PROBE` — added `deviceNowMs`; `appEdgeWallMs` kept but
+   documented as NOT an operand.
+3. `metaDiagReadoutLines()` — added the playhead distance to the **secondary**
+   line under its own label (the decision the brief left to me — see below).
+
+Also **not changed**: `playheadWallMs`, `streamEdgeWallMs` (both still used by
+`dvrPositionToDate`/seek paths), `seekToProgramTime`, any transport code.
+
+**Decision — the playhead distance is KEPT, shown separately.** It is real
+information ("where am I") and a different question from "is my clock wrong".
+It goes in the secondary line joined by `' · '`, using the app's own existing
+`dvrOffsetLabel()` — the same formatter as the player pill — so it reads
+"Spelar −30 min från direktsändningen". It is never inside the primary
+sentence. That placement IS the decision: WS30/WS33's defect was a real
+quantity wearing the wrong label, and merging them into one string is how that
+happened. Omitted below 60 s so it can never render a "−0 min" that reads like
+an offset.
+
+**A CONSEQUENCE I CHOSE DELIBERATELY, and it removes a guard.** The old code
+required a finite `seekableEnd` and reported `error: 'no-seekable-range'`
+without one. That guard existed ONLY because the app's operand was built from
+`seekableEnd`. The new comparison does not read it, so keeping the guard would
+report a reason that can no longer be true — a panel saying "could not read the
+stream's clock" while holding a perfectly good one, which is the same untruth
+WS31 fixed one level up. **It is removed and not replaced.** If the tech lead
+disagrees, this is the one decision to review.
+
+**MEASURED — the defect, by arithmetic over the app's own three expressions.**
+With a PERFECT device clock (`trueEdge === Date.now()`, bias 0):
+
+| playhead behind live | panel read (before) | panel reads (after) | true bias |
+|---|---|---|---|
+| 0 s | `0.0 s` | `0.0 s` | `0.0 s` |
+| 10 s | `−10.0 s` | `0.0 s` | `0.0 s` |
+| 600 s | `−600.0 s` | `0.0 s` | `0.0 s` |
+| 1800 s | `−1800.0 s` | `0.0 s` | `0.0 s` |
+
+**What result would have made this table come out differently (AGENTS.md §2):**
+if the `currentTime` term cancelled, every row would read `0.0 s` — which is
+exactly the "after" column. It does not cancel, because
+`appEdge = Date.now() − (end − currentTime)·1000` and only the `Date.now()`
+cancels; `currentTime` survives as `−distanceFromLiveEdge`.
+
+**AC3 — the seek-error independence claim HOLDS.** `target − p_correct =
+−offsetS_true` at every position, because `end` is on both sides. Checked
+arithmetically at 3 start times × 3 playhead positions; a +25 s fast clock
+lands 25 s early everywhere. This is a property of the formula, now asserted
+rather than asserted-in-a-comment.
+
+**MEASURED — browser, driven on the served file.** I served my code from
+`/tmp` (the repo's `index.html` loads the **hashed** `app.fbdc9a4d.js`, which is
+PRE-change — `grep` confirms `deviceNow` count 0 in it, and the build is the
+tech lead's step, not mine).
+- **Verified I was running my own code:** served `/app.js` contains
+  `offsetS = (deviceNow - trueEdge) / 1000` (20 `deviceNow` occurrences) and NOT
+  the old formula. Checked before believing anything.
+- Drove: onboarding → picked P2 → played it → cog → sheet → "Info" → diag on.
+- **Read back from the RENDERED DOM** (not source):
+  `readoutText: "Direkt ljud — ingen strömklocka att jämföra med"`,
+  `noteText: "Strömmen spelar, men har ingen spellista. …"`,
+  `anyDigits: false` — **no number rendered in the non-numeric state.**
+- Snapshot ground truth: `transport: "direct"`, `twoStatus: "idle"`,
+  `offsetS: null`, `deviceNowMs: null`.
+- Reachability: `diagVisible: true`, `switchPressed: "true"`, readout repainted
+  over 3 s → the paint interval is live.
+
+**WHAT THE BROWSER RUN DID NOT COVER — stated plainly.** Chromium fell back to
+**direct MP3** (`MP3 96`), so `activeHlsMasterUrl()` returns null, the sample
+never runs, and **the real two-source comparison was NOT exercised end-to-end
+there**. I am not presenting the `no-stream-clock` state as verification of the
+offset. The offset's behaviour on a real HLS stream is **code-proven and
+fixture-proven only**. Per `AGENTS.md` §14, a fallback is not a verification.
+
+**Mutations run — 4, ALL RED, restored by checksum. No NO-OP.**
+| # | mutation | result |
+|---|---|---|
+| M1 | restore the WS30 contaminated formula | RED ×3 (252, 257, 258) |
+| M2 | strip the clock term entirely | RED ×3 (252, 257, 258) |
+| M3 | plant a correction constant (`− 28`) | RED ×3 (252, 257, 258) |
+| M4 | panel falls back to the WS29 tautology | RED ×2 (186, 188) |
+
+Each mutation's checksum differed from the original before testing, and the file
+was restored to `88b496fc9aefe95d6242bc6fd75da728` after each. **M4 was first
+attempted with a shell one-liner and bash history expansion (`!Number`) ate it,
+leaving `app.js` half-mutated and 24 tests red.** I restored from the backup
+immediately and redid M4 via a Python script with unique-anchor assertions. That
+was a harness mishap, not a finding, and it is recorded so a future session does
+not read those 24 failures as a real regression.
+
+**CLASSIFIED TEST FAILURE (§7b).** One test went red on my change:
+`WS30 NO CORRECTION CONSTANT anywhere`, which asserted the assignment is
+literally `= (appEdge - trueEdge)/1000`. **SUPERSEDED**, not a defect: the
+requirement ("a difference of two clocks, nothing else") is unchanged and still
+correct; what changed is WHICH two clocks, and the old assertion was pinning the
+contaminated operand. Restated to the new operand and **strengthened** with
+three checks the old version could not express (the operand must be a bare
+`Date.now()`; `currentTime` must not appear in any `offsetS` assignment;
+`offsetS` must not be derived from `streamEdgeWallMs`).
+
+**NOT DONE, named as not done:**
+- **No build, no commit of artifacts, no push, no deploy.** Committed source+tests only.
+- **The offset is still UNMEASURED on the owner's iPhone.** Nothing here is
+  device-verified. The owner must be told which build to check once built.
+- **No fix for the programme-skip "lands early" report.** §8 of the brief: the
+  arithmetic says the app should land ~25 s LATE, the owner says early. **These
+  disagree and I did not resolve it.** The question for the owner, unanswered:
+  *when you skip to a programme, does the audio start at the beginning or
+  partway in, and is the title wrong or only the audio?* Until that is answered
+  the direction of the defect is not established.
+- **The real HLS comparison is untested at runtime** (Chromium falls back to MP3).
+- I did **not** run the app on the owner's phone, decode audio, or confirm a
+  touch gesture — none of which the browser can do.
+- No device clock drift measurement of my own; WS30's numbers were not re-taken.
+
+**Working tree at report time:** `app.js` + `tests/two-source-clock.test.mjs`
+modified, both committed together. Docs also modified by earlier sessions, not
+by me.
