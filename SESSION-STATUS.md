@@ -2400,3 +2400,115 @@ iPhone.
 **WHAT DEPLOYING WOULD PROVE, if it were pushed:** only that the right code is
 **SERVED**. It would say nothing about how it **behaves**, and nothing about the
 four measurements, which require the owner's phone. **It is not being pushed.**
+
+---
+
+## WS38D — coding agent: deploy the instrumentation — 2026-09-30T22:05:00+02:00
+
+**Authorisation:** the owner authorised pushing `f2cb0b1` **solely** to deploy
+the completed WS38 instrumentation, and explicitly **not** to change the seek
+algorithm. Verified before pushing; the seek was not touched.
+
+### ONE FINDING WORTH RECORDING FIRST
+
+**This repository has NO GitHub Actions workflow.** There is no
+`.github/workflows/` directory and no `.yml`/`.yaml` file anywhere in the tree.
+Deployment is by **direct push of built artifacts to the repo root**, which
+GitHub Pages serves from `main` — which is how every prior deploy worked
+(`52429d4`, `0866897`, `c8f1222`, all titled `build: …`).
+
+So "push so GitHub Actions deploys" could not be executed as written: there is
+no workflow to trigger, and adding one would be an unrequested architectural
+change (forbidden by this authorisation). **I used the established two-commit
+pattern instead** — source+tests at `f2cb0b1`, artifacts separately — which
+produces the same production result on the same site. **The tech lead should
+correct the mental model: this project does not use CI to deploy.**
+
+### Preconditions (all verified before any push)
+
+| check | result |
+|---|---|
+| HEAD is `f2cb0b1` | **PASS** |
+| `app.js` / `tests/` clean vs the commit | **PASS** (`git diff --name-only HEAD` empty) |
+| `npm test` | **PASS** — **272/272**, 0 fail |
+| commit contains instrumentation + tests | **PASS** — `app.js` +391, `tests/seek-measure.test.mjs` +505 |
+| uncommitted changes altering WS38 | **NONE** — the only dirty files are 3 pre-existing docs and 6 untracked prompt files |
+| seek calculation modified | **NO** — verified byte-identical below |
+| correction / compensation constant added | **NO** — zero correction identifiers in code (comments stripped) |
+| further architectural changes | **NONE** |
+| `styles.css` / `index.html` / `sw.js` edited by me | **NO** — `styles.css` md5 unchanged |
+
+**Pre-build safety (§8):** checksums in `/tmp/ws38d-prebuild.md5` and a full
+backup in `/tmp/ws38d-backup/` (including `app.d6ac07bb.js`), taken **before**
+`npm run build`.
+
+### The four deploy checks — individually
+
+**CHECK 1 — suite green, count unchanged: PASS.** 272/272, 0 fail. WS38 added
+12; this deploy changed no source, so 272 unchanged is correct.
+
+**CHECK 2 — read the whole diff: PASS.** Build touched only
+`app.d6ac07bb.js` → **deleted**, `app.66f55486.js` → **added**, `index.html`,
+`sw.js`. `app.js` and `tests/` untouched.
+
+**CHECK 3 — the served artifact contains the WS38 instrumentation: PASS.**
+- `seekMeasureRecordText`: **2** · `seekableEndWrittenAtMs`: **3** · `seekMeasure`: **5**
+- `const APP_BUILD = 'f2cb0b1'` — **commit-derived, matches HEAD**
+- `index.html` loads `app.66f55486.js`; `sw.js` references it
+- dangling references to `d6ac07bb` anywhere in the tree: **none**
+
+**CHECK 4 — the seek was NOT changed: PASS.**
+`seekToProgramTime`, `seekBy`, `seekToLive`, `playheadWallMs`,
+`dvrPositionToDate` and `updateSeekableState` are all **byte-identical to
+`f2cb0b1`**, and `app.js` as a whole is identical to the commit. All 7 timing
+constants intact. `styles.css` md5 `c16fb729a99b6d0787dd35132ec8d227`, unchanged.
+
+### Deployment result
+
+**Commits (two):** `f2cb0b1` (source + tests) → `621ae5a` (artifacts).
+**Pushed:** `57614f4..621ae5a main -> main`.
+**`git ls-remote origin main`** = `621ae5ac2e3e0ebceda4ebefaf3bd5d0cbaab7b1`.
+
+**Build identity:** build id **`f2cb0b1`**, bundle **`app.66f55486.js`**,
+service worker cache **`minradio-4a2d80b9`**, artifact commit `621ae5a`.
+
+**Live verification (run against the LIVE CDN file, not the local one):**
+| check | result |
+|---|---|
+| live `index.html` asset | `app.66f55486.js` |
+| CDN bundle size | 363,928 bytes |
+| CDN `APP_BUILD` | **`f2cb0b1`** |
+| CDN `seekMeasureRecordText` | **2** |
+| CDN `seekableEndWrittenAtMs` | **3** |
+| live `sw.js` cache | `minradio-4a2d80b9` |
+| old asset `app.d6ac07bb.js` | **404** |
+
+**Propagation rule applied with BOTH conditions confirmed:** `git ls-remote`
+showed `621ae5a` **and** the raw host served the new asset HTTP 200. Only then
+was the intermediate state classified as propagating rather than failed.
+
+**RESULT: DEPLOYED.** The WS38 instrumentation is live on the production
+GitHub Pages site.
+
+### What deploying proves, and what it does not
+
+It proves the right code is **SERVED**. It says nothing about how it
+**behaves**, and it produced **no measurements**. The four measurements are
+`null` in production until the owner runs them on a phone playing HLS —
+`seekableEnd` does not exist on the desktop, and the seek never ran here.
+
+### NOT DONE, named as not done
+
+- **NO INTERPRETATION.** No measurement was read, and none should be inferred
+  from this deploy. Deploying an instrument is not using it.
+- **NO CODE CHANGES** were made in response to the deployment. The seek
+  algorithm, the record, and every constant are exactly as committed.
+- **No GitHub Actions workflow was created**, despite the authorisation naming
+  one — it would have been an unrequested architectural change. Recorded above
+  as a finding for the tech lead.
+- **The programme-skip fix is still unwritten**, and still depends on the
+  device readings this deploy enables.
+- **Nothing is device-verified.** The owner must confirm the build id reads
+  `f2cb0b1` on the main screen before any result is valid.
+- **A stale service worker will still serve the old bundle** until the app is
+  fully closed and reopened; the owner must be told this.
