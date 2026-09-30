@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '5da241e';
+  const APP_BUILD = 'f2cb0b1';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -811,6 +811,10 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       cur.dvrAvailable = false;
       cur.seekableStart = null;
       cur.seekableEnd = null;
+      // Cleared WITH the value it describes. Leaving a timestamp beside a null
+      // seekableEnd would let an age be computed against a value that no
+      // longer exists.
+      cur.seekableEndWrittenAtMs = null;
       cur.seekableDuration = null;
       cur.distanceFromLiveEdge = null;
       cur.atLiveEdge = true;
@@ -822,6 +826,16 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       cur.dvrAvailable = usable;
       cur.seekableStart = usable ? start : null;
       cur.seekableEnd = usable ? end : null;
+      // ---- WS38: WHEN this cached seekableEnd was written. ----
+      // ONE writer, at the assignment it describes (AGENTS.md §3). If this
+      // timestamp is ever written anywhere else it stops describing this value
+      // and every age derived from it becomes fiction.
+      //
+      // It exists because `seekToProgramTime()` reads `cur.seekableEnd` — a
+      // CACHED value — and nothing could previously say how old that value was
+      // at the moment the seek used it. That is the basis of measurement 1.
+      // Plain value read; no frame conversion, so it cannot be circular.
+      cur.seekableEndWrittenAtMs = usable ? Date.now() : null;
       cur.seekableDuration = usable ? size : null;
       cur.currentTime = audioEl.currentTime;
       cur.distanceFromLiveEdge = usable ? Math.max(0, end - audioEl.currentTime) : 0;
@@ -2214,6 +2228,11 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     renderPlayer();
     if (track.kind === 'live') {
       startNowPlayingPoll();
+      // WS38: the rate sampler rides the SAME lifecycle as the live channel —
+      // started here, stopped with the poll. It is deliberately NOT tied to the
+      // Info panel, because the owner must not have to hold the panel open for
+      // a rate to exist (§3.2).
+      startSeekRateSampling();
       resolveProgramTitle(track); // Pågår nu-programmet som undertitel
     } else {
       // Archived episode: load its music playlist (cached per episode).
@@ -2299,6 +2318,10 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     if (audioEl._srStuckGuard) { clearInterval(audioEl._srStuckGuard); audioEl._srStuckGuard = null; }
     hlsDetach(); // no HLS instance may outlive the player
     stopNowPlayingPoll(); // metadata loop must not outlive the player
+    // WS38: same rule for the rate sampler — a 10 s timer that outlives the
+    // player would keep sampling a closed stream for as long as the tab is
+    // open, which is a battery bug and produces rates nobody asked for.
+    stopSeekRateSampling();
     stopEpisodeTracks(); // archived-track state must not leak into next session
     audioEl.pause();
     diagLog(`audio-src-cleared (stopAndClosePlayer)`);
@@ -2941,6 +2964,295 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     return sample;
   }
 
+  // ===================== WS38: MEASURE THE SEEK. NO INTERPRETATION. =====
+  //
+  // WHY THIS BLOCK IS SO CAUTIOUS. Three explanations for the programme-skip
+  // error have already been raised and withdrawn in this project, and the
+  // fourth risk is a confident claim built on a number that cannot see what it
+  // claims to measure. So the rules below are not stylistic:
+  //
+  // 1. NO ABSOLUTE DIFFERENCE between `seekableEnd` and the stream clock. The
+  //    only media->wall mapping in the codebase is
+  //        wall(m) = Date.now() - (seekableEnd - m) * 1000
+  //    and at m = seekableEnd it collapses to Date.now() for ANY seekableEnd.
+  //    So "seekableEnd vs the stream clock" is just `Date.now() - trueEdge`
+  //    restated: it cannot see seekableEnd at all. Forbidden here.
+  // 2. THE ONLY PERMITTED CROSS-FRAME COMPARISON IS A RATE between two samples
+  //    taken at two different TIMES. A rate needs no absolute alignment between
+  //    frames, so it cannot smuggle the assumption back in.
+  // 3. Anything not measurable is `null`, never `0`. A `0` reads as "measured
+  //    and zero"; `null` reads as "not measured". Conflating those has already
+  //    produced one wrong conclusion in this repo.
+  //
+  // READ-ONLY with respect to playback: nothing here seeks, pauses, loads, or
+  // writes any field the seek algorithm reads. The seek keeps using the CACHED
+  // `cur.seekableEnd` exactly as before — that is deliberate, because
+  // measurement 3 compares fresh against cached, and that comparison is only
+  // meaningful if the cached value really is still the one in use.
+
+  const SEEK_MEASURE = {
+    // ---- measurement 1: how stale is the cached value the seek uses? ----
+    // Every field is a raw reading or a subtraction of two raw readings.
+    nowMs: null,                  // ms, this device's clock
+    cachedWrittenAtMs: null,      // ms, when cur.seekableEnd was last written
+    cachedAgeMs: null,            // ms, nowMs - cachedWrittenAtMs
+    cachedSeekableEnd: null,      // MEDIA SECONDS (not ms) — the algorithm's value
+    freshSeekableEnd: null,       // MEDIA SECONDS, read at this instant
+
+    // ---- measurement 3: fresh vs cached, RECORDED AND NOT INTERPRETED ----
+    freshMinusCachedMs: null,     // ms. Recorded. No conclusion drawn from it.
+
+    // ---- measurement 4: what was asked for, and what the player did ----
+    startMs: null,                // ms, absolute wall clock of the programme start
+    behindMs: null,               // ms, Date.now() - startMs
+    target: null,                 // MEDIA SECONDS, the computed seek target
+    requestedTarget: null,        // MEDIA SECONDS, what the element was told
+    acceptedPosition: null,       // MEDIA SECONDS, where it ended up
+    clampedByS: null,             // MEDIA SECONDS, accepted - requested
+
+    // ---- measurement 2: advancement RATE, two timed samples ----
+    rate: null,                   // null until two samples exist
+    lastSampleAtMs: null,         // internal: when sample 1 was taken
+    samples: 0,                   // internal: how many rate samples taken
+  };
+
+  // Pure arithmetic, so it can be tested WITHOUT a media element (AGENTS.md §7
+  // — never retype logic into a test; extract it and call it).
+  // Returns null for any input it cannot measure. It NEVER returns 0 to mean
+  // "unknown".
+  function seekMeasurement1(reading) {
+    if (!reading) return null;
+    const { nowMs, cachedWrittenAtMs } = reading;
+    if (!Number.isFinite(nowMs) || !Number.isFinite(cachedWrittenAtMs)) return null;
+    return nowMs - cachedWrittenAtMs;
+  }
+
+  // The ONLY cross-frame comparison permitted in this workstream (§0 rule 2).
+  // Both samples must exist and both frames must actually ADVANCE, otherwise
+  // the rate is not measurable — and a confident 1.000 from two identical
+  // samples would be the "sweep that cannot fail" this repo has been bitten by.
+  function seekRateFromSamples(s1, s2) {
+    if (!s1 || !s2) return null;
+    const { nowMs: n1, seekableEnd: e1, trueEdgeWallMs: t1 } = s1;
+    const { nowMs: n2, seekableEnd: e2, trueEdgeWallMs: t2 } = s2;
+    if (![n1, e1, t1, n2, e2, t2].every(Number.isFinite)) return null;
+    const wallElapsedMs = n2 - n1;                    // MILLISECONDS
+    // `seekableEnd` is a MEDIA-TIME position in SECONDS, so its elapsed figure
+    // is in seconds. It is converted to ms HERE, and only here, because the
+    // rate below divides it by a millisecond figure — the WS38 test caught this
+    // exact 1000x unit error when the rate came out as 0.0009 instead of 0.9.
+    // Both units are kept in the returned record so a reader can see the
+    // conversion rather than take it on trust.
+    const seekableEndElapsedS = e2 - e1;              // MEDIA SECONDS
+    const seekableEndElapsedMs = seekableEndElapsedS * 1000;  // MILLISECONDS
+    // `trueEdgeWallMs` is on a ~1.7e12 ms scale, so its difference must be
+    // allowed to be tiny in absolute terms; the guard is on the STREAM clock
+    // not advancing at all, which means the sample is not usable.
+    const streamElapsedMs = t2 - t1;                  // MILLISECONDS
+    if (!(wallElapsedMs > 0)) return null;          // degenerate window
+    if (!(seekableEndElapsedMs > 0)) return null;   // buffered end did not move
+    if (!(streamElapsedMs > 0)) return null;        // stream clock did not move
+    return {
+      sample1: s1,
+      sample2: s2,
+      wallElapsedMs,
+      streamElapsedMs,
+      seekableEndElapsedMs,
+      seekableEndElapsedS,
+      // Rates are dimensionless ratios. 1.000 = this frame advances exactly as
+      // fast as the reference frame.
+      streamRateVsWall: streamElapsedMs / wallElapsedMs,
+      seekableRateVsStream: seekableEndElapsedMs / streamElapsedMs,
+    };
+  }
+
+  // Read the buffered end FRESH from the element. Media seconds. `null` when
+  // there is no seekable range (direct MP3, or nothing buffered yet) — and
+  // `null`, never 0, so "no range" cannot read as "range of zero length".
+  function readFreshSeekableEnd() {
+    try {
+      const s = audioEl.seekable;
+      if (!s || !s.length) return null;
+      const end = s.end(s.length - 1);
+      return Number.isFinite(end) ? end : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // True while the Info panel's paint interval is running. Read by the rate
+  // sampler to decide whether IT must refresh the stream clock (see below).
+  // NOT `readoutTimer !== null`: that variable is a LOCAL of openAbout(), so a
+  // module-scope function cannot see it and referencing it would throw a
+  // ReferenceError on the first rate sample. This flag is the honest way to
+  // publish that state, and openAbout() is its only writer.
+  let metaDiagReadoutActive = false;
+  function isMetaDiagReadoutActive() {
+    return metaDiagReadoutActive;
+  }
+
+  // Take one RATE sample. Called on a timer, never from a UI interaction: the
+  // owner must not have to keep the panel open and touch anything.
+  //
+  // WHY THE CONDITIONAL FETCH, and it is a real trade-off rather than a
+  // convenience. `sampleStreamEdgeClock()` sets `status = 'loading'` the moment
+  // it is called, and the panel repaints every 2 s off that status. So calling
+  // it unconditionally on a 10 s loop would make the owner's offset number
+  // flicker to "Mäter…" every 10 seconds — a regression in the very readout WS29
+  // to WS33 existed to fix.
+  //
+  // But if this sampler NEVER fetched, `STREAM_EDGE_PROBE.trueEdgeWallMs` would
+  // only ever be populated while the panel is open (the panel owns the only
+  // other caller), and the rate could not exist unless the owner sat and
+  // watched it — which §3.2 explicitly forbids.
+  //
+  // So: the panel refreshes the stream clock itself while it is open, and this
+  // sampler refreshes it only while the panel is CLOSED. One fetch path is
+  // reused either way; no second fetcher was written.
+  function maybeRefreshStreamClockForRate() {
+    if (isMetaDiagReadoutActive()) return;      // the panel is doing it
+    const age = streamEdgeSampleAgeS();
+    if (age === null || age * 1000 > SEEK_RATE_INTERVAL_MS) {
+      try { sampleStreamEdgeClock(); } catch { /* the record shows null */ }
+    }
+  }
+
+  function takeSeekRateSample() {
+    const cur = state.current;
+    if (!cur || cur.kind !== 'live') return null;
+    maybeRefreshStreamClockForRate();
+    const nowMs = Date.now();
+    const seekableEnd = readFreshSeekableEnd();
+    // The stream clock is whatever sampleStreamEdgeClock() last fetched —
+    // reused, NOT re-fetched here, so there is only ONE fetch path in the app.
+    const trueEdgeWallMs = STREAM_EDGE_PROBE.trueEdgeWallMs;
+    const sample = { nowMs, seekableEnd, trueEdgeWallMs };
+    if (!Number.isFinite(SEEK_MEASURE.lastSampleAtMs)) {
+      SEEK_MEASURE.lastSampleAtMs = nowMs;
+      SEEK_MEASURE.samples = 1;
+      SEEK_MEASURE.rate = null;   // one sample is not a rate
+      return sample;
+    }
+    const previous = {
+      nowMs: SEEK_MEASURE.lastSampleAtMs,
+      seekableEnd: SEEK_MEASURE.lastSeekableEnd,
+      trueEdgeWallMs: SEEK_MEASURE.lastTrueEdgeWallMs,
+    };
+    SEEK_MEASURE.rate = seekRateFromSamples(previous, sample);
+    SEEK_MEASURE.lastSampleAtMs = nowMs;
+    SEEK_MEASURE.lastSeekableEnd = seekableEnd;
+    SEEK_MEASURE.lastTrueEdgeWallMs = trueEdgeWallMs;
+    SEEK_MEASURE.samples += 1;
+    return sample;
+  }
+
+  // Populate the record AT THE SEEK. Called from seekToProgramTime() at the
+  // exact moment it reads `cur.seekableEnd` — which is the whole point: the
+  // age is of the value the algorithm is about to use, not of some later read.
+  function recordSeekMeasurement(cur, startMs, end) {
+    const nowMs = Date.now();
+    const cachedWrittenAtMs = cur.seekableEndWrittenAtMs;
+    const freshSeekableEnd = readFreshSeekableEnd();
+    // MEASUREMENT 1 — arithmetic from two raw readings, via the extracted fn.
+    SEEK_MEASURE.nowMs = nowMs;
+    SEEK_MEASURE.cachedWrittenAtMs = cachedWrittenAtMs;
+    SEEK_MEASURE.cachedAgeMs = seekMeasurement1({ nowMs, cachedWrittenAtMs });
+    SEEK_MEASURE.cachedSeekableEnd = Number.isFinite(end) ? end : null;
+    SEEK_MEASURE.freshSeekableEnd = freshSeekableEnd;
+    // MEASUREMENT 3 — recorded, NOT interpreted. Present even when 0, because
+    // "measured, and the two agree" and "not measured" are different facts.
+    SEEK_MEASURE.freshMinusCachedMs =
+      (Number.isFinite(freshSeekableEnd) && Number.isFinite(end))
+        ? (freshSeekableEnd - end) * 1000
+        : null;
+    // MEASUREMENT 4 inputs. `behindMs` and `target` are the algorithm's OWN
+    // arithmetic, recorded as it computes them.
+    SEEK_MEASURE.startMs = Number.isFinite(startMs) ? startMs : null;
+    SEEK_MEASURE.behindMs = Number.isFinite(startMs) ? nowMs - startMs : null;
+    return SEEK_MEASURE;
+  }
+
+  // The rate sampler's lifetime follows the LIVE CHANNEL, not the panel: the
+  // owner is not required to have the Info sheet open for a rate to exist.
+  let seekRateTimer = null;
+  const SEEK_RATE_INTERVAL_MS = 10000;
+  function startSeekRateSampling() {
+    if (seekRateTimer) return;
+    // Reset the window so a channel switch cannot pair samples from two
+    // different streams — a rate across a switch would be meaningless.
+    SEEK_MEASURE.lastSampleAtMs = null;
+    SEEK_MEASURE.lastSeekableEnd = null;
+    SEEK_MEASURE.lastTrueEdgeWallMs = null;
+    SEEK_MEASURE.rate = null;
+    SEEK_MEASURE.samples = 0;
+    takeSeekRateSample();
+    seekRateTimer = setInterval(() => { takeSeekRateSample(); },
+      SEEK_RATE_INTERVAL_MS);
+  }
+  function stopSeekRateSampling() {
+    if (seekRateTimer) { clearInterval(seekRateTimer); seekRateTimer = null; }
+  }
+
+  // Render the record as text the owner can check BY EYE (§4: the arithmetic must
+// be redoable by hand). Every line is `label: value unit`, and every unit and
+// frame is stated, because the owner asked for that explicitly and a future
+// reader must not confuse ms with media seconds.
+//
+// `null` is rendered as the word "okänd" (unknown) — NEVER as 0. A 0 would read
+// as "measured, and it is zero", which is the confusion this repo has already
+// paid for once.
+//
+// Pure and total: it never throws, and it returns a non-empty string for every
+// input, so a reader always sees the shape even before anything is measured.
+function seekMeasureRecordText() {
+  const m = SEEK_MEASURE;
+  const n = (v) => (Number.isFinite(v) ? v : null);
+  const ms = (v) => (Number.isFinite(v) ? `${Math.round(v)} ms` : 'okänd');
+  const sec = (v) => (Number.isFinite(v) ? `${v.toFixed(2)} s` : 'okänd');
+  const ratio = (v) => (Number.isFinite(v) ? v.toFixed(4) : 'okänd');
+  const lines = [];
+  // A measured value, or an explicit statement that nothing is measured yet.
+  const anySeek = Number.isFinite(m.nowMs);
+  lines.push('MÄTNING (WS38) — råvärden, ingen tolkning');
+  if (!anySeek) lines.push('Ingen sökning mätt ännu.');
+  if (anySeek) {
+    lines.push('');
+    lines.push('1) Ålder på det cachade värdet');
+    lines.push(`   nu (ms): ${n(m.nowMs)}`);
+    lines.push(`   seekableEnd skrevs (ms): ${n(m.cachedWrittenAtMs)}`);
+    lines.push(`   ålder = nu − skrevs: ${ms(n(m.cachedAgeMs))}`);
+    lines.push(`   cachad seekableEnd (media-s): ${sec(n(m.cachedSeekableEnd))}`);
+    lines.push(`   färsk seekableEnd (media-s): ${sec(n(m.freshSeekableEnd))}`);
+    lines.push('');
+    lines.push('3) Färsk − cachad');
+    lines.push(`   färsk minus cachad: ${ms(n(m.freshMinusCachedMs))}`);
+    lines.push('');
+    lines.push('4) Beställd position');
+    lines.push(`   startMs (ms): ${n(m.startMs)}`);
+    lines.push(`   behindMs (ms): ${n(m.behindMs)}`);
+    lines.push(`   target (media-s): ${sec(n(m.target))}`);
+    lines.push(`   beställd (media-s): ${sec(n(m.requestedTarget))}`);
+    lines.push(`   accepterad (media-s): ${sec(n(m.acceptedPosition))}`);
+    lines.push(`   klippt av (media-s): ${sec(n(m.clampedByS))}`);
+  }
+  // ---- measurement 2: the rate. Independent of any seek. ----
+  lines.push('');
+  lines.push('2) Framryckningshastighet (hastighet, ej absolut läge)');
+  const r = m.rate;
+  if (!r) {
+    lines.push(`   Fler än en punkt saknas. Samples: ${m.samples}`);
+  } else {
+    lines.push(`   vägg förfluten: ${ms(r.wallElapsedMs)}`);
+    lines.push(`   strömklocka förfluten: ${ms(r.streamElapsedMs)}`);
+    lines.push(`   buffert slut förfluten: ${(r.seekableEndElapsedS).toFixed(2)} media-s `
+      + `(${Math.round(r.seekableEndElapsedMs)} ms)`);
+    lines.push(`   ström/vägg: ${ratio(r.streamRateVsWall)}`);
+    lines.push(`   buffert/ström: ${ratio(r.seekableRateVsStream)}`);
+    lines.push(`   1.0000 = denna ram avancerar lika fort som referensramen.`);
+  }
+  return lines.join('\n');
+}
+
   function seekToLive() {
     const cur = state.current;
     const d = SEEK_LIVE_DIAG;
@@ -3316,6 +3628,16 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     recordStreamEdge('before');
     if (!cur || !cur.dvrAvailable) return;
     const end = cur.seekableEnd;
+    // ---- WS38: MEASURE AT THE SEEK, at the exact moment `end` is read. ----
+    // Placed HERE, immediately after the read, because the whole point is the
+    // age of the value THIS call is about to use. Reading it earlier would
+    // measure a different value; reading it later would miss the moment.
+    //
+    // Read-only: it records, it does not change `end` or anything else. The
+    // seek below still uses the CACHED `end` exactly as before (§5) — that is
+    // deliberate, because measurement 3 compares fresh against cached, and the
+    // comparison is only meaningful if the cached one really is still in use.
+    recordSeekMeasurement(cur, startMs, end);
     if (!Number.isFinite(end)) return;
     const behindMs = Date.now() - startMs;
     if (behindMs < 0) return; // future programme — nothing to seek to yet
@@ -3336,6 +3658,15 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     SEEK_EDGE_DIAG.acceptedPosition = audioEl.currentTime;
     SEEK_EDGE_DIAG.clampedByS = Number.isFinite(audioEl.currentTime)
       ? audioEl.currentTime - target : null;
+    // ---- WS38: measurement 4, completed. ----
+    // These three values are ALREADY computed above by SEEK_EDGE_DIAG (§2:
+    // reuse, do not add a parallel mechanism). They are copied into the
+    // record rather than recomputed, so the panel and the snapshot can never
+    // disagree about what the player was told.
+    SEEK_MEASURE.target = target;
+    SEEK_MEASURE.requestedTarget = SEEK_EDGE_DIAG.requestedTarget;
+    SEEK_MEASURE.acceptedPosition = SEEK_EDGE_DIAG.acceptedPosition;
+    SEEK_MEASURE.clampedByS = SEEK_EDGE_DIAG.clampedByS;
     recordStreamEdge('after');
   }
 
@@ -5281,6 +5612,13 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
 
     const readout = el('p', { class: 'about-diag-readout', text: '' });
     const readoutNote = el('p', { class: 'about-diag-note', text: '' });
+    // ---- WS38: the raw measurement record, visible on the phone. ----
+    // The owner is the only one who can produce the HLS conditions, so anything
+    // not visible HERE will not be measured. Built with the existing 'p' and
+    // 'div' helpers and the existing CSS classes — no stylesheet or markup
+    // change (§5). `white-space: pre-line` is already the behaviour of these
+    // text nodes, so one field per line costs no CSS.
+    const seekRecordBox = el('p', { class: 'about-diag-note', text: '' });
 
     // Built BEFORE the handlers below are wired, because the click handler
     // toggles `is-off` on it. Declaring it after the handler would be a
@@ -5289,7 +5627,8 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       el('h3', { class: 'about-heading', text: 'Felsökning' }),
       diagSwitch,
       readout,
-      readoutNote);
+      readoutNote,
+      seekRecordBox);
     // Inert until switched on: hidden, but present in the DOM.
     if (diagFlagRead() !== 'on') diagSection.classList.add('is-off');
     body.appendChild(diagSection);
@@ -5310,15 +5649,26 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     const stopReadout = () => {
       if (readoutTimer) { clearInterval(readoutTimer); readoutTimer = null; }
       if (sampleTimer) { clearInterval(sampleTimer); sampleTimer = null; }
+      // WS38: publish the panel's running state at module scope so the rate
+      // sampler can tell whether the stream clock is being refreshed by the
+      // panel (open) or has to refresh it itself (closed). Written HERE, in
+      // the function that owns the timer — one writer, with the timer.
+      metaDiagReadoutActive = false;
     };
     const paintReadout = () => {
       if (readoutTimer === null) return; // switched off: do not poll at all
       const r = metaDiagReadoutLines();
       readout.textContent = r.primary;
       readoutNote.textContent = r.secondary || '';
+      // WS38: the raw record, painted on the SAME interval as everything else
+      // so it cannot drift out of step with the readout above it.
+      seekRecordBox.textContent = seekMeasureRecordText();
     };
     const startReadout = () => {
       stopReadout();
+      // WS38: paired with the reset in stopReadout(). Set BEFORE the first
+      // paint so the rate sampler never races the panel's own fetch.
+      metaDiagReadoutActive = true;
       // The interval must exist BEFORE the first paint: paintReadout returns
       // early when there is no timer, so painting first left the readout blank
       // on open. The suite could not see this — the text assertion passed while
@@ -6622,6 +6972,45 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
             + 'that was really the distance behind live). No correction '
             + 'constant is applied anywhere, and none should be added from one '
             + 'sample.',
+        },
+        // ---- WS38: the raw seek-measurement record. ----
+        // Every field is a raw reading or a subtraction of two raw readings.
+        // `null` means NOT MEASURED and must never be rendered as 0.
+        //
+        // There is deliberately NO field here that differences `seekableEnd`
+        // against the stream clock. That quantity is arithmetically
+        // incapable of seeing `seekableEnd` (the only media->wall mapping
+        // collapses to `Date.now()` at m = seekableEnd), so it would be the
+        // clock bias restated. The ONLY cross-frame comparison is `rate`,
+        // which compares two samples taken at two different TIMES.
+        seekMeasure: {
+          // --- measurement 1: age of the cached value the seek used ---
+          nowMs: SEEK_MEASURE.nowMs,
+          cachedWrittenAtMs: SEEK_MEASURE.cachedWrittenAtMs,
+          cachedAgeMs: SEEK_MEASURE.cachedAgeMs,
+          cachedSeekableEnd: SEEK_MEASURE.cachedSeekableEnd,
+          freshSeekableEnd: SEEK_MEASURE.freshSeekableEnd,
+          // --- measurement 3: recorded, NOT interpreted ---
+          freshMinusCachedMs: SEEK_MEASURE.freshMinusCachedMs,
+          // --- measurement 4: requested vs accepted ---
+          startMs: SEEK_MEASURE.startMs,
+          behindMs: SEEK_MEASURE.behindMs,
+          target: SEEK_MEASURE.target,
+          requestedTarget: SEEK_MEASURE.requestedTarget,
+          acceptedPosition: SEEK_MEASURE.acceptedPosition,
+          clampedByS: SEEK_MEASURE.clampedByS,
+          // --- measurement 2: the rate window ---
+          rate: SEEK_MEASURE.rate,
+          rateSamples: SEEK_MEASURE.samples,
+          note: 'Raw readings. Units: nowMs/cachedWrittenAtMs/cachedAgeMs/'
+            + 'behindMs/startMs/freshMinusCachedMs are MILLISECONDS; '
+            + 'cachedSeekableEnd/freshSeekableEnd/target/requestedTarget/'
+            + 'acceptedPosition/clampedByS are MEDIA SECONDS, not ms. A rate of '
+            + '1.0000 means that frame advanced exactly as fast as its '
+            + 'reference. There is intentionally NO absolute difference '
+            + 'between seekableEnd and the stream clock anywhere in this '
+            + 'record: that quantity cannot see seekableEnd and would be the '
+            + 'clock bias restated.',
         },
         seekableDuration: cur?.seekableDuration ?? null,
         positionWallClockIso: positionWallClock,
