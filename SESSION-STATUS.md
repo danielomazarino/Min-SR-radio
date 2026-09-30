@@ -2637,3 +2637,88 @@ nonsense.
   media↔wall-clock conversion, no new offset calculation.
 - The `2.34` edge-growth ratio from the previous analysis remains **unexplained**
   and is untouched by this workstream.
+
+---
+
+## WS38-FIX-D — coding agent: deploy the corrected instrumentation — 2026-10-01T10:05:00+02:00
+
+**Authorisation:** deploy `4d189cd` to production so measurements can be
+collected on Edge/Linux and iPhone Safari. No seek change authorised.
+
+**DEPLOY MECHANISM (repeated, because it is still wrong in the briefs):** this
+repository has **no GitHub Actions workflow** — no `.github/workflows/`, no yml
+anywhere. Pages deploys from built artifacts pushed to the repo root. Used the
+established two-commit pattern. There was no Actions run to verify because none
+exists.
+
+### Pre-push checks (all four requested, all PASS)
+
+| check | result |
+|---|---|
+| tree contains only the WS38 correction | **PASS** — `app.js`/`tests/` byte-identical to `4d189cd`; only 3 pre-existing modified docs + 6 untracked prompt files |
+| 279 tests pass | **PASS** — **279/279**, 0 fail |
+| seek implementation unchanged | **PASS** — byte-identical to the last deployed `cf53acd` for `seekToProgramTime`, `seekBy`, `seekToLive`, `playheadWallMs`, `dvrPositionToDate`, `updateSeekableState`, `readFreshSeekableEnd`, `seekRateFromSamples`, `recordSeekMeasurement`, `startSeekRateSampling` |
+| no correction / offset / remap / seek change | **PASS** — full code diff is 6 lines, all inside the sampler; **zero** correction/offset/remap identifiers in code (comments stripped) |
+
+**A NOTE ON A FALSE ALARM:** the session reported `app.js` as modified after my
+commit. It was not — `git diff HEAD -- app.js` was empty. That was my own commit
+being detected, not an external edit. Verified rather than assumed.
+
+### Build
+
+Pre-build checksums + backup in `/tmp/w38fx-bk/` taken before `npm run build`.
+Build id **`4d189cd`** (commit-derived, matches HEAD), bundle
+**`app.697fcc04.js`**, sw cache `minradio-a6709bdc`, artifact commit `e0c1564`.
+**Built-bundle verification:** `await sampleStreamEdgeClock` = 1,
+`async function takeSeekRateSample` = 1, old gate `maybeRefreshStreamClockForRate`
+= **0**, `const target = end - behindMs / 1000;` present, no dangling
+`66f55486` references.
+
+### Deployment result: DEPLOYED
+
+Commits: `4d189cd` (source+tests) → `e0c1564` (artifacts).
+Pushed `cf53acd..e0c1564`. `git ls-remote origin main` = `e0c1564`.
+
+**Live verification, run against the LIVE CDN file:**
+| check | result |
+|---|---|
+| live `index.html` asset | `app.697fcc04.js` |
+| CDN bundle size | 366,070 bytes |
+| CDN `APP_BUILD` | **`4d189cd`** |
+| CDN `await sampleStreamEdgeClock` | **1** |
+| CDN old panel gate | **0** (removed) |
+| live `sw.js` cache | `minradio-a6709bdc` |
+| old asset `app.66f55486.js` | **404** |
+
+**Propagation rule: both conditions confirmed** — `ls-remote` showed `e0c1564`
+**and** the raw host served the new asset HTTP 200 — before the intermediate
+state was classified as propagating rather than failed.
+
+### The owner must do this before any measurement counts
+
+1. **Confirm the build id reads `4d189cd`** on the main screen. If it does not,
+   the app is old code and any measurement is void.
+2. **Fully close and reopen the app** — the service worker cache changed to
+   `minradio-a6709bdc`, and a stale worker keeps serving the old bundle.
+3. Collect on **both** platforms. The rate needs the panel open OR closed — it
+   no longer depends on either — but it needs **two samples ~10 s apart**, so
+   leave a channel playing for at least ~30 s before reading the panel.
+4. Perform a programme skip with the **back-to-previous-programme button**, then
+   read the record back verbatim.
+
+**What a rate means, restated so it is not over-read:** `1.0000` shows only that
+two timelines **advance together**. It does **not** show their absolute positions
+are aligned, and it does **not** eliminate a constant timeline-origin
+difference. A constant cancels perfectly in an elapsed figure.
+
+### NOT DONE, named as not done
+
+- **No seek change, no correction, no compensation constant, no timeline
+  remapping** — verified byte-identical, not merely un-mentioned.
+- **No measurements collected.** This deploy makes them collectable; it produces
+  none.
+- **No hypothesis tested and no conclusion offered** about where the offset lives.
+- **No GitHub Actions run exists to verify** — recorded above as a standing
+  correction to the briefs.
+- The `2.34` edge-growth ratio noted in the previous analysis remains
+  **unexplained** and untouched.
