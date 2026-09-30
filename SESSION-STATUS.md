@@ -1654,3 +1654,749 @@ proves nothing about how it **BEHAVES**.
   reading exists.
 - **The `deviceNowMs` branch is code-proven only.** It has never rendered a
   number on any device.
+
+---
+
+## WS34 — the FIRST device reading. It CONTRADICTS the hypothesis. — 2026-09-30T19:52:00+02:00
+
+**Owner device result, verbatim from three screenshots (19:49 and 19:50), build
+`5da241e` confirmed live:**
+
+```
+Appens klocka ligger −30 s efter strömmens
+Mätt 8 s sedan · Spelar −49 min från direktsändningen
+```
+```
+Appens klocka ligger −29 s efter strömmens
+Mätt nyss · Spelar −49 min från direktsändningen
+```
+
+**This is the first number ever read off this instrument on a real device.** The
+WS33 fix did what it was built to do, and the panel is now telling the truth:
+**the number no longer changes with the playhead.** Both readings were taken at
+**−49 min behind live**, where the old code would have read about **−2940 s**.
+
+### THE FINDING: the sign is the OPPOSITE of what the skip symptom predicted
+
+`offsetS = (Date.now() − trueEdgeWallMs)/1000`, so `−29 s` means the **device
+clock reads 29 s BEHIND the stream's clock.** The AC3 identity gives
+`seekError = −offsetS`, so:
+
+| | value |
+|---|---|
+| device clock vs stream | **29 s BEHIND** |
+| predicted seek error | **+29 s** → lands **INTO** the programme, **missing the first 29 s** |
+| what the owner reported | audio starts **immediately**, programme begins **~25 s later** → lands **BEFORE** the programme |
+
+**These contradict. The measurement says "skips too little"; the symptom says
+"skips too much".** Magnitudes agree (~25–30 s); **signs do not.**
+
+**State what would have made this come out differently:** had the panel read
+`+29 s före`, the sign would have matched the symptom and the clock would have
+been the confirmed cause. **It reads `−29 s efter`, twice, a minute apart.** I am
+not going to explain that away, and I am not going to pick the reading that fits
+the arithmetic (`AGENTS.md` §10, §11).
+
+### What this RULES OUT, which is real progress
+
+- **It is not a constant.** Two readings a minute apart differ by 1 s, and the
+  earlier desktop drift was ~5.5 s. `AGENTS.md` §5's warning is vindicated: any
+  fitted number would already be wrong.
+- **It is not the playhead.** Proven by construction now, and the two readings at
+  the same −49 min position agree to 1 s.
+- **It is not device-specific in the way I assumed.** I predicted the owner's
+  phone would read `+25` (ahead) because that was the only way to explain
+  "lands early". **It reads −29, the same sign as my desktop.** I was wrong
+  about the sign, and therefore wrong about the fix's shape.
+
+### What remains OPEN, and it is now the whole defect
+
+**The clock bias is real, measured, device-confirmed — and it is not the cause of
+the reported symptom.** Something else moves the seek by the same magnitude in
+the *opposite* direction. Candidates I have **not** examined, named so they are
+not lost:
+
+1. **`prevEv.startMs` vs the true programme start.** `seekToProgramTime` is
+   called with the *schedule entry's* start, not the broadcast's. If SR's
+   schedule start is systematically earlier than the actual audio, that is a
+   **data** offset with the opposite sign — and it would be a fix in how the
+   schedule is interpreted, not in the clock.
+2. **`dvrPositionToDate` uses `Date.now()` too** (`app.js`), so anything that
+   reads a position back as a *date* inherits the same bias in the opposite
+   direction. **Round-tripping wall-clock → media → wall-clock is a candidate
+   mechanism, and it has not been tested.**
+3. **The drag-seek path** (`dvrPositionToDate` consumers) versus the
+   programme-skip path. The owner has not said which control they used.
+
+**Which control did you use?** The circular programme arrows, or dragging the
+seek bar? That single answer separates candidate 3 from 1 and 2, and it costs
+one sentence.
+
+### NOT DONE, named as not done
+
+1. **The seek fix is still unwritten, and it is now obvious it must not be a
+   clock correction** — that would fix the wrong direction.
+2. **Nothing built or pushed this session.** `origin/main` = `57614f4`, live
+   build `5da241e`.
+3. **The `metaDiagGateOpen` hash `be2d044f…` in WS32-PROMPT.md and three places
+   in this file is stale** (the agent measured `8a852b76…`, stable across 12
+   revisions). Not corrected — flagged only.
+4. The 10–15 s song-title offset, R5, `Spelas just nu`, Android, E1b, podcast
+   search, lock-screen-wrong-PWA — all untouched.
+
+---
+
+## WS34 — TWO MORE readings, P1 at LIVE, and they CONFIRM the drift — 2026-09-30T19:55:00+02:00
+
+**Owner device result, verbatim, build `5da241e`, P1 Kultur, playing LIVE (not
+skipped to an older programme):**
+
+```
+19:50   Appens klocka ligger −29 s efter strömmens   · Spelar −49 min
+19:53   Appens klocka ligger −34 s efter strömmens   · Mätt 10 s sedan
+```
+
+**Note what the second line does NOT contain: `Spelar −49 min`.** That is the
+playhead-distance line, correctly **omitted at the live edge** — the agent's
+`>= 60 s` rule working as designed on a real device, on the first read that
+exercised it. **A rule behaving correctly off a real reading, not a test.**
+
+### Three readings, and what they establish
+
+| time | offsetS | playhead |
+|---|---|---|
+| 19:49 | −30 s | −49 min |
+| 19:50 | −29 s | −49 min |
+| 19:53 | **−34 s** | live edge |
+
+**1. The fix is confirmed on device.** Two readings at the *same* −49 min
+position differ by 1 s. Under the old code they would have been identical
+*because both were contaminated by the same playhead distance* — but they now
+track the clock drift instead. **The number moves only when the clock moves.**
+
+**2. The bias DRIFTS, on the owner's phone, and faster than my desktop showed.**
+−29 → −34 s over ~3 minutes, **~1.7 s/min**. My desktop measured ~5.5 s spread
+over 40 s. **A correction constant is not merely forbidden (`AGENTS.md` §5) — it
+is arithmetically impossible here.** A number fitted today is 5 s wrong within
+three minutes. **This is the strongest evidence in the repo against the "10
+seconds" folklore that already cost three workstreams.**
+
+**3. It is NOT device-specific.** My desktop read **−24…−33 s**; the owner's
+phone reads **−29…−34 s**. **Same sign, same magnitude.** I had predicted the
+owner's phone would read `+25` (ahead) — **wrong sign, wrong shape.** The bias
+appears to be a property of the **stream/CDN edge**, not of any one device's
+clock, which is a cleaner and more plausible explanation.
+
+### The seek defect is therefore NOT a clock problem
+
+`seekError = −offsetS = +29…+34 s` → the app lands **INTO** the programme,
+missing the first ~30 s. **The owner reports landing BEFORE it, by ~25 s.**
+**Still opposite. The drift does not reconcile them — it widens the gap.**
+
+So the measured clock bias is **real, device-confirmed, and NOT the cause of the
+reported symptom.** Whatever moves the skip by ~25 s in the *other* direction
+remains unidentified, and no clock correction can fix it. **Writing one would
+make the symptom worse**, not better.
+
+### What would settle it, and it is one action on the phone
+
+**The app already records this and the owner can read it off the same panel.**
+`SEEK_EDGE_DIAG` captures `requestedTarget` and `acceptedPosition` on **both**
+real seek paths, and WS32 wired `clampedByS` into the readout so it renders.
+So immediately after a programme skip, the panel can show what was *asked for*
+versus what the element *accepted*.
+
+**Ask the owner to do one skip, then read the whole timing block verbatim** —
+including the `Sökningen ändrades av webbläsaren med … s` line if it appears.
+That single reading separates:
+- **target accepted unchanged** → the arithmetic in `seekToProgramTime` is wrong
+  (a `startMs`/schedule interpretation problem), or
+- **target clamped by the browser** → the transport refused the seek, which is a
+  completely different defect and would explain a landing *before* the intent.
+
+**Which control was used also still matters** — the circular programme arrows
+call `seekToProgramTime(prevEv.startMs)` directly, while dragging the seek bar
+goes through `dvrPositionToDate`. **I asked and have not been answered.**
+
+### NOT DONE, named as not done
+
+1. **The seek fix is still unwritten**, and it is now established that it must
+   **not** be a clock correction.
+2. **Nothing built or pushed.** `origin/main` = `57614f4`, live `5da241e`.
+3. **The stale `be2d044f…` hash** in WS32-PROMPT.md and three places here is
+   still uncorrected.
+4. **The owner's ~25 s remains an estimate** counted while waiting, not a
+   stopwatch reading, and it has never been re-checked now that the clock
+   question is answered.
+5. The 10–15 s song-title offset, R5, `Spelas just nu`, Android, E1b, podcast
+   search, lock-screen-wrong-PWA — all untouched.
+
+---
+
+## WS34 — WHICH control, answered. My question was badly framed. — 2026-09-30T20:05:00+02:00
+
+**Owner, verbatim:** *"Neither of course, i use the back skip button that is
+built for the purpose"*
+
+**I owe a correction here.** I asked "circular arrows, or drag the seek bar?" as
+if those were the options. **They were not.** The app has a dedicated
+back-to-previous-programme button, it is the obvious control for this job, and
+listing two others was a question I should have answered myself by reading the
+code. **The owner had to correct the frame, which is the failure mode `AGENTS.md`
+§11 warns about** — a UX/behaviour question I could have settled by reading
+`app.js`, put back to the owner as if it were theirs.
+
+**Read from the source, unprompted, so it is not asked again:** the button is
+`prevProgramBtn` (`app.js`), wired at `onclick = () =>
+seekToProgramTime(prevEv.startMs)`. **So it is the programme-skip path, the
+same one already analysed** — candidate 3 from my previous block is **eliminated
+by the answer**, not by more theory.
+
+### Re-derived with correct units — and MY EARLIER TABLE WAS WRONG
+
+My first pass at this arithmetic had a units bug (I compared wall-clock seconds
+against media seconds) and printed a constant `+100 s` in every row. **A table
+whose rows are all identical is a broken table (`AGENTS.md` §2)** — I caught it
+because the reproduction check said NO while the prose said YES. Corrected:
+
+`behindMs = Date.now() − startMs` (wall ms), `target = seekableEnd −
+behindMs/1000` (media s). Against the **measured** clock (30 s behind):
+
+| scenario | lands |
+|---|---|
+| clock perfect, schedule exact | **0 s** — correct |
+| **clock 30 s BEHIND (measured)**, schedule exact | **+30 s INTO** the programme |
+| clock 30 s BEHIND, schedule 25 s EARLY | +5 s INTO |
+| **clock perfect, schedule 25 s EARLY** | **−25 s BEFORE it** |
+| clock 30 s AHEAD, schedule exact | −30 s BEFORE |
+
+**Two independent things push in OPPOSITE directions, and they very nearly
+cancel** — which is why this looked like a mystery for three workstreams.
+
+### The finding: the owner's symptom needs the SCHEDULE to be early, not the clock
+
+- **The clock alone cannot produce it.** A 30 s-behind clock predicts landing
+  **+30 s INTO** the programme. The owner reports **~25 s BEFORE**.
+- **A schedule that lists the programme ~25 s EARLY reproduces it exactly**, and
+  it does so *even with a perfect clock*.
+
+So the residual is **not** the clock, and **not** the playhead, and **not** the
+control. **It is `prevEv.startMs` — SR's own schedule start — being earlier than
+the programme's actual audio.** `seekToProgramTime` is handed an absolute
+schedule timestamp and treats it as the true moment the programme begins.
+
+**This is the first hypothesis in this workstream that reproduces the owner's
+words with a plausible, checkable cause.** It is **not** established: it is
+arithmetic over transcribed expressions, and I have **not** verified any SR
+schedule entry against its actual audio.
+
+### What would test it — cheap, and the app may already hold the answer
+
+1. **Compare the schedule's start against the panel's own clock reading.** After
+   a back-skip, the timing block should show `Sökningen ändrades av webbläsaren
+   med … s` **only if the transport clamped the seek.** Its **absence** means the
+   app sought exactly where it intended — which, if the schedule is early, is the
+   *programme start minus 25 s*. **Absence is the expected reading and is itself
+   informative.**
+2. **One direct check, no app change needed:** compare an SR schedule entry's
+   start time against the actual song/programme change in the Ekot news feed for
+   the same minute. SR's own news timestamps are independent of the playlist
+   schedule.
+
+**Do not write a correction constant.** If the schedule is genuinely early, the
+fix is in how that timestamp is interpreted — a −25 s constant would be a guess
+frozen into permanent behaviour, and `AGENTS.md` §5 exists because exactly that
+already happened here.
+
+### NOT DONE, named as not done
+
+1. **The cause is NOT established.** A reproducing hypothesis is not a verified
+   cause; no SR schedule entry has been compared against real audio.
+2. **The seek fix is still unwritten**, correctly.
+3. **Nothing built or pushed.** `origin/main` = `57614f4`, live `5da241e`.
+4. **The stale `be2d044f…` hash** in WS32-PROMPT.md and three places here is
+   still uncorrected.
+5. The 10–15 s song-title offset, R5, `Spelas just nu`, Android, E1b, podcast
+   search, lock-screen-wrong-PWA — all untouched.
+
+---
+
+## WS35 — the owner's challenge, ACCEPTED. And it corrected MY hypothesis. — 2026-09-30T20:20:00+02:00
+
+**The owner's challenge, and it is correct on both counts:**
+
+1. *"I want to stop short of accepting 'the SR schedule is ~25 seconds early' as
+   the explanation."* — **Agreed. I over-claimed.** I wrote "this is the first
+   hypothesis that reproduces the owner's words" and reasoned forward from it.
+   Reproducing a symptom is not evidence of a cause.
+2. *"That is circular if the landing calculation itself uses the schedule
+   timestamp."* — **Agreed, and it invalidates my own supporting argument.** I
+   offered "the app lands ~25 s before the programme, therefore the schedule is
+   ~25 s early." The landing *is* computed from the schedule, so that inference
+   is circular. **Struck.**
+
+**Nothing was changed and nothing will be.** The owner is explicit: no `-25` or
+`+25` constant until the authoritative timestamp is identified.
+
+### WHAT THE CHALLENGE DID TO MY OWN ARITHMETIC — and it was wrong AGAIN
+
+Re-derived from the deployed expression, every variable held but the clock.
+**Verbatim from `app.js` (`target = end - (Date.now() - startMs)/1000`):**
+
+| device clock | lands |
+|---|---|
+| correct | **0 s** |
+| **30 s BEHIND** (measured) | **+30 s AFTER the true start** — misses the first 30 s |
+| 10 s BEHIND | +10 s |
+| 30 s AHEAD | −30 s |
+
+**A clock that is BEHIND lands LATER — it misses the start.** That is the
+**opposite** of what I wrote in the two previous blocks, where I had the
+direction wrong *twice* — once from a units bug, once from the sign. **Recorded
+plainly: three sign/units errors this workstream, all mine, and every one was
+caught only because a table or a reproduction check disagreed with my prose.**
+
+**Decisive for the hypothesis.** With the clock measured at ~29–34 s behind, the
+app should land **~30 s INTO** the programme. The owner reports landing **~25 s
+BEFORE** it. **The gap is ~55 s**, and:
+
+> **No schedule-timestamp error can explain a 55 s residual — it is
+> arithmetically impossible.** Shifting `startMs` by any amount moves the landing
+> **one-for-one**, so it can absorb at most the ~30 s the clock already
+> contributes. **A "schedule is ~25 s early" story cannot reconcile a −30 s
+> observation with a +30 s expectation.**
+
+**So the owner's refusal is vindicated and my headline claim is WITHDRAWN.** The
+cause is **not** established, and the two effects I said "nearly cancel" do not
+cancel — they are the same sign once the direction is derived correctly.
+
+### The trace the owner asked for — ANSWERED, and it is short
+
+**user taps back-skip → `seekToProgramTime(prevEv.startMs)` →
+`behindMs = Date.now() − startMs` → `target = seekableEnd − behindMs/1000` →
+`audioEl.currentTime = target`.**
+
+**Every wall-clock ↔ media-time conversion in the chain — exactly two:**
+
+| # | conversion | reference | note |
+|---|---|---|---|
+| 1 | `behindMs = Date.now() − startMs` | **device wall clock** vs **SR schedule absolute UTC** | the only place the device clock enters |
+| 2 | `target = seekableEnd − behindMs/1000` | **`seekableEnd`**, an HLS **buffered-range end** | the only place the HLS player enters |
+
+**This answers "which timestamp is authoritative":** *neither* the HLS
+`PROGRAM-DATE-TIME` nor a media sequence number is used **anywhere** in the seek
+path. The stream's own clock — which the panel measures and which WS30–33 made
+trustworthy — **is not consulted at all when seeking.** The seek is
+`device clock → SR schedule → browser-reported buffered end`.
+
+**Which is exactly where a hidden fixed offset can live: `seekableEnd`.** It is
+browser-reported and the app treats it as the live edge. The panel measures the
+true edge independently and finds the device clock 30 s behind — but conversion 2
+uses the *buffered end*, not the true edge, and **nothing in the seek path
+compares the two.** That is the gap the owner is pointing at, and I had not named
+it.
+
+### The experiment the owner specified — and its blocker, stated honestly
+
+Their five-point seek ladder (schedule −30 / −10 / / +10 / +30) is **the right
+experiment** and I support it. **It cannot be run on the desktop browser**, for a
+reason established and re-confirmed three times today: Chromium falls back
+HLS → direct MP3, `seekableEnd` is `null`, no real seek is possible.
+**Audio-boundary observation is device-only.**
+
+**What already exists — the missing piece is genuinely available:** the panel
+exposes `requestedTarget`, `acceptedPosition` and `clampedByS`
+(`SEEK_EDGE_DIAG`), and WS32 wired the clamp into the visible readout. So the
+app can already be asked *"what did you seek to, and what did the player
+accept?"* — **no new instrumentation required**, which is what the owner asked
+for.
+
+**What is genuinely missing, and named rather than assumed:** nothing records
+**when the audible programme boundary actually passed**. The app has no audio
+content detection and **I am not proposing one unasked.**
+
+### NOT DONE, named as not done
+
+1. **The cause is NOT established.** The "SR schedule is ~25 s early" hypothesis
+   is **WITHDRAWN** — it does not survive the arithmetic once the direction is
+   derived correctly, and its only supporting argument was circular.
+2. **No fix, no constant, no code change.** Nothing built, nothing pushed;
+   `origin/main` = `57614f4`, live `5da241e`.
+3. **The five-point seek ladder has NOT been run.** It needs the owner's phone.
+4. **The stale `be2d044f…` hash** in WS32-PROMPT.md and three places here is
+   still uncorrected.
+5. The 10–15 s song-title offset, R5, `Spelas just nu`, Android, E1b, podcast
+   search, lock-screen-wrong-PWA — all untouched.
+
+---
+
+## WS36 — the owner's precision, ACCEPTED. `seekableEnd` provenance answered. — 2026-09-30T20:35:00+02:00
+
+**Owner instruction, and it is a correction of my language:** *"Do not yet call
+`seekableEnd` 'wrong.' The question is whether the `seekableEnd` used by the seek
+calculation represents the same temporal live edge as the independently measured
+stream edge."*
+
+**Accepted. I had already written "the unexamined hidden offset" as a verdict.**
+A value being unexamined is not a value being wrong. **The word is withdrawn.**
+Nothing has been called faulty in this block.
+
+### The factual question, answered from the source
+
+**What `seekableEnd` is:** `audioEl.seekable.end(s.length - 1)` — the last entry
+of the **`HTMLMediaElement.seekable` TimeRanges**, read in
+`updateSeekableState()`. It is written in exactly two places, both there.
+
+**Which engine produces it — and this is the part that matters:**
+
+| platform | engine | flag |
+|---|---|---|
+| **iOS / iPadOS / macOS Safari** | **native HLS** (`nativeHls: IS_SAFARI`) | **the owner's phone is here** |
+| Chromium / Firefox | hls.js (`'MediaSource' in window`) | desktop only |
+
+**So the owner's readings came from Safari's own media engine with no hls.js
+involved** — `transportKind` reads `hls-native`, not `hls-hlsjs`. Every desktop
+probe in this workstream took the *hls.js* branch. **Desktop and phone numbers
+came from different code paths**, which is a confound to name before comparing
+them.
+
+**Coordinate system — the distinction the owner asked for, stated exactly:**
+
+`seekable.end()` is a **position on the media timeline, in seconds** — the same
+coordinate system as `currentTime`. **It is NOT a wall-clock measurement, and the
+app never treats it as one directly.**
+
+**But `seekToProgramTime` converts it into one**, and that conversion is the whole
+issue:
+
+```js
+const behindMs = Date.now() - startMs;   // a WALL-CLOCK duration
+const target   = end - behindMs / 1000; // subtracted from a MEDIA position
+```
+
+The subtraction is only valid **if `seekableEnd` corresponds to the same instant
+that `Date.now()` does.** That correspondence is an **assumption, never checked.**
+`seekableEnd` means "the last byte the player has buffered", which for a sliding
+DVR window is a **moving target** whose lag against the true edge is unknown and
+varying.
+
+**So the honest statement: `seekableEnd` is a media position being used as a proxy
+for "now", and the size of its lag against the true live edge has never been
+measured on any device.** That is the gap, stated without calling anything wrong.
+
+### One more measured fact that sharpens it
+
+`updateSeekableState()` is **not** called before the target is computed.
+`seekToProgramTime` reads `cur.seekableEnd` — a value last written whenever
+`timeupdate` last fired. **So the seek uses a buffered-range end that was true at
+some earlier moment**, and the window has been advancing since. **Its lag is
+therefore neither constant nor zero.**
+
+### The error budget the owner asked for — SET UP, NOT YET MEASURED
+
+The owner is right that the residual must stay explicit. With the sign settled
+(`behindMs` too small ⇒ target too small ⇒ **lands early**):
+
+```
+landingError ≈ clockError + seekableEndError + otherMappingError
+```
+
+| quantity | value | status |
+|---|---|---|
+| clockError (device clock behind true edge) | **+30 s** → lands late | **MEASURED on device** (−29…−34) |
+| seekableEndError (buffered end behind true edge) | **unknown** | **NOT MEASURED** |
+| otherMappingError | **unknown — must not be assumed zero** | **NOT MEASURED** |
+| observed landingError | **≈ −25 s** → lands early | **owner-estimated by counting, once** |
+
+**The reconciliation the owner identified is arithmetically sound and is exactly
+what the next reading tests:** if `seekableEndDeltaMs` ≈ **−55 s**, then
+`+30 + (−55) = −25` and the budget closes. **If it is only −5…−10 s, the budget
+leaves a ≈ −45 s residual and `seekableEnd` is not the whole story.**
+
+**What would make this close by accident: nothing** — each term is independently
+observable and the prediction is stated in advance. **But a closed budget would
+still not prove the *mechanism*, only that the arithmetic adds up** — which is
+precisely why the five-point ladder remains the independent check and is not
+optional.
+
+### `seekableEndDeltaMs` — the new measurement, specified
+
+The owner's proposed field. **Eight of the nine requested values already exist or
+are one line away**, and the panel already renders `clampedByS` (WS32):
+
+| # | requested | exists today | note |
+|---|---|---|---|
+| 1 | `Date.now()` | **yes** — `deviceNowMs` (WS33) | the device clock |
+| 2 | selected `startMs` | **no** | one field on `SEEK_EDGE_DIAG` |
+| 3 | `behindMs` | **no** | derivable from 1 − 2 |
+| 4 | `seekableEnd` used | **yes** — `dvr.seekableEnd` | the value actually used |
+| 5 | true live edge | **yes** — `twoSource.trueEdgeWallMs` | the stream's own clock |
+| 6 | **`seekableEndDeltaMs`** | **NO — this is the new one** | needs a common frame, see below |
+| 7 | requested target | **yes** — `requestedTarget` | |
+| 8 | accepted position | **yes** — `acceptedPosition` / `clampedByS` | |
+| 9 | resulting DVR timestamp | **partial** — `dvrPositionToDate` exists | |
+
+**The one genuine difficulty, stated rather than glossed:** items 4 and 5 are in
+**different coordinate systems** — 4 is media seconds, 5 is wall-clock ms. **A
+delta between them is meaningless unless both are expressed in the same frame**,
+and converting 4 requires the very quantity being tested. **Any implementation
+must state which frame it uses, or it will silently assume the answer.** That is
+the single most important implementation note in this block, and it is the direct
+answer to the owner's "establish whether it is a media position or implicitly a
+wall-clock live-edge measurement": **it is a media position, and the code
+implicitly treats it as a wall-clock live edge.**
+
+### NOT DONE, named as not done
+
+1. **`seekableEndDeltaMs` is NOT implemented.** No code written; the brief for it
+   is not yet written.
+2. **No fix, no constant, no change to `seekableEnd`, no clock correction.**
+   Nothing built, nothing pushed; `origin/main` = `57614f4`, live `5da241e`.
+3. **The five-point seek ladder has NOT been run** — device-only.
+4. **The owner's ~25 s is still one estimate made while waiting**, not a
+   stopwatch reading, and a budget cannot close on one sample.
+5. **The confound is named but not resolved:** desktop measurements came from the
+   hls.js path, the owner's from native HLS. **They are not directly comparable
+   and must not be pooled.**
+6. The stale `be2d044f…` hash; the 10–15 s song-title offset, R5,
+   `Spelas just nu`, Android, E1b, podcast search, lock-screen-wrong-PWA — all
+   untouched.
+
+---
+
+## WS37 — FRAMES DEFINED, and `seekableEndDeltaMs` is PROVEN UNMEASURABLE — 2026-09-30T20:50:00+02:00
+
+**The owner asked for explicit frames and a conversion that does not assume the
+answer. Doing exactly that produced a result neither of us expected: the
+proposed field cannot be measured at all, and the reason is structural.**
+
+### The four frames, as the code actually defines them
+
+| frame | unit | members | where it comes from |
+|---|---|---|---|
+| **A — device wall clock** | Unix ms | `Date.now()` | the phone's own clock |
+| **B — SR schedule** | Unix ms | `startMs` (`prevEv.startMs`) | `scheduledepisodes`, absolute UTC |
+| **C — media timeline** | seconds | `currentTime`, `seekable.start()`, `seekable.end()` | `HTMLMediaElement` |
+| **D — stream clock** | Unix ms | `trueEdgeWallMs` | `headPdtMs + sum(EXTINF)`, from the HLS playlist |
+
+**A, B and D are all wall-clock milliseconds — directly subtractable. C is
+seconds on the media timeline — a DIFFERENT axis, and the only bridge between
+them is `seekableEnd`.**
+
+### Why `seekableEndDeltaMs` cannot be computed — a tautology, proven
+
+The sole mapping in the codebase from C to A is the app's own:
+
+```js
+wall(m) = Date.now() - (seekableEnd - m) * 1000
+```
+
+**Evaluate it at `m = seekableEnd`:**
+
+```
+wall(seekableEnd) = Date.now() - (seekableEnd - seekableEnd) * 1000 = Date.now()
+```
+
+**Always. For any value of `seekableEnd`.** So a "delta between `seekableEnd`
+and the true edge", once both are put in one frame, is **always**
+`Date.now() − trueEdgeWallMs` — which is **exactly the negation of the offset
+WS33 already measures**, and is **independent of `seekableEnd` entirely**.
+
+**MEASURED, by sweeping `seekableEnd` over 1700 / 1000 / 400 / 42.5 with the
+true edge fixed: the naive delta reads `−300 s` in EVERY row.** A table whose
+rows are all identical is a broken table (`AGENTS.md` §2) — and it is broken
+here *by construction*, not by a typo.
+
+> **This is WS29's defect class again, in the owner's proposed field.** The
+> mapping that would let us compare `seekableEnd` to the true edge is *defined in
+> terms of* `seekableEnd`, so any such comparison restates the clock error and
+> can never see the thing being tested.
+
+**The owner explicitly warned against a conversion that assumes the answer.
+This is that failure mode, and it is unavoidable for this particular quantity.**
+Any implementation that reports a clean `seekableEndDeltaMs` would be reporting
+`−offsetS` under a new name — and would look like the confirmation the owner
+hoped for. **I am flagging this rather than shipping it, because shipping it
+would have produced a convincing wrong number, which is the single worst
+outcome available here.**
+
+### What CAN be measured, and it covers the owner's three failure modes
+
+The owner asked for three things be kept distinct. They are separable **without**
+any media↔wall conversion:
+
+| failure mode | measurable by | tautology-free because |
+|---|---|---|
+| **1. `seekableEnd` is STALE** | `Date.now()` **immediately before** `seekToProgramTime` reads it, minus the timestamp `updateSeekableState` last wrote it | both terms are Frame A; no media conversion involved |
+| **2. `seekableEnd` is SYSTEMATICALLY OFFSET from the live edge** | **not directly measurable** — see above. But *observable indirectly*: sample `seekable.end()` fresh twice, ~10 s apart, and compare its advance against the **stream's** own advance over the same interval (both Frame A/D) | uses the stream's rate, not the app's assumption |
+| **3. the media↔wall CONVERSION is wrong** | the same two-sample rate test, plus `clampedByS` — what the **player** accepted versus what was requested | the player is an independent witness |
+
+**The rate test is the key idea and it needs no offset.** If fresh
+`seekable.end()` advances by 10.0 s while the stream's clock advances 10.0 s,
+the buffered end is tracking the live edge and its lag is not growing — which
+would largely exonerate failure mode 2. If it advances 10.0 s while the stream
+advances 10.4 s, **a lag is accumulating at 0.4 s per 10 s**, and the
+extrapolated drift plus the current sample age gives a defensible size for it.
+
+**Stated plainly what would falsify each:** age ≈ 0.2 s rules out failure mode 1;
+equal advance rates rule out mode 2; `clampedByS ≈ 0` with a visibly wrong
+landing implicates mode 3.
+
+### NOT DONE, named as not done
+
+1. **`seekableEndDeltaMs` will NOT be implemented as specified** — it is
+   unmeasurable by construction. **A replacement four-field measurement is
+   specified above and awaits the owner's approval**, because it is not the same
+   thing and must not be adopted silently.
+2. **No code written.** No fix, no constant, no architectural change.
+   Nothing built, nothing pushed; `origin/main` = `57614f4`, live `5da241e`.
+3. **The audible-boundary observation is still missing**, so even a clean budget
+   would not yet establish the *mechanism*. The five-point ladder needs the
+   owner's phone.
+4. **The owner's ~25 s remains a single estimate**, not a stopwatch reading.
+5. The stale `be2d044f…` hash; the 10–15 s song-title offset, R5,
+   `Spelas just nu`, Android, E1b, podcast search, lock-screen-wrong-PWA — all
+   untouched.
+
+---
+
+## WS38 — coding agent: instrument the seek — 2026-09-30T21:35:00+02:00
+
+**Baseline (my own run):** `npm test` → **260/260 pass**, 0 fail. HEAD = `57614f4`,
+`app.js` and `tests/` byte-identical to the commit (nothing had moved under me).
+
+**Test count: 260 → 272** (+12, all new, in `tests/seek-measure.test.mjs`).
+
+**CODE CHANGE — `app.js` only, plus one new test file. NOT PUSHED, NOT BUILT.**
+
+| what | where | note |
+|---|---|---|
+| `cur.seekableEndWrittenAtMs` | `updateSeekableState()`, **2 syntactic sites, 1 function** | the value branch and the no-window branch. One writer, at the assignment it describes. Cleared in the null branch too — a timestamp surviving beside a null `seekableEnd` would let an age be computed against a value that no longer exists |
+| `SEEK_MEASURE` record | new module block next to `SEEK_EDGE_DIAG` | every field initialised to `null`, never `0` |
+| `seekMeasurement1()` | pure | measurement 1's arithmetic |
+| `seekRateFromSamples()` | pure | measurement 2's rates — the ONLY cross-frame comparison |
+| `readFreshSeekableEnd()` | pure-ish, try/catch | reads the element, **never** the cache |
+| `takeSeekRateSample()` / `start`/`stopSeekRateSampling()` | timer, 10 s | lifecycle tied to the LIVE CHANNEL, not the panel |
+| `recordSeekMeasurement()` | called inside `seekToProgramTime()` | at the exact moment `cur.seekableEnd` is read |
+| `seekMeasureRecordText()` | pure | the panel rendering |
+| `metaDiagReadoutActive` | one writer, in `stopReadout`/`startReadout` | publishes panel-running state to module scope |
+| `dvr.seekMeasure` | in `metaDiagBuildSnapshot()` | the record, for the console |
+
+**NOT changed:** `seekToProgramTime`'s target formula, `seekBy`, `seekToLive`,
+`playheadWallMs`, `dvrPositionToDate`, `distanceFromLiveEdge`, `atLiveEdge`,
+all 7 timing constants, `metaDiagGateOpen()` (byte-identical, md5
+`8a852b76801b8b1c23c45a5b56da7108`), `Spelas just nu`, `styles.css`,
+`index.html`, `sw.js`. **No correction constant — zero.** Verified by grep.
+
+### A REAL BUG THE TEST CAUGHT, and it is the exact trap the brief warns about
+
+My first implementation computed `seekableRateVsStream = seekableEndElapsed /
+streamElapsedMs` where the numerator is in **MEDIA SECONDS** and the denominator
+in **MILLISECONDS**. The WS38 test failed with `0.0009` where `0.9` was correct —
+a **1000× unit error**. `seekableEnd` is a media-time position, so its elapsed
+figure is seconds and must be converted before being divided by a millisecond
+figure.
+
+Fixed by converting once, explicitly, and returning BOTH figures
+(`seekableEndElapsedS` and `seekableEndElapsedMs`) so the conversion is visible
+rather than assumed. A test now asserts the two are consistent. **This would have
+put a wrong number on the owner's panel with a confident-looking `0.0000`-class
+value**, and it was caught by arithmetic, not by review.
+
+### Mutations — 4, ALL RED, restored by checksum, NO NO-OP
+
+| # | mutation | result |
+|---|---|---|
+| M1 | age inverted → `cachedWrittenAtMs - nowMs` | **RED** — WS38 M1 |
+| M2 | rebuilt the forbidden absolute difference (`seekableEndVsStreamMs`) | **RED ×2** — WS38 M2 + the degenerate-sample guard |
+| M3 | "fresh" read made to read the cache instead of the element | **RED** — WS38 M3 |
+| M4 | a `null` initialiser changed to `0` | **RED** — WS38 unmeasurable-fields test |
+
+Every mutation was checksum-verified as applied before testing, and the file was
+restored to `a03b25e6dd66214b232a18c9aeef9fe4` after each. 272/272 green on the
+committed tree.
+
+**PROCESS NOTE, disclosed:** after M3 I ran a combined restore+mutate command
+whose `if/then` guard hit a bash syntax error, so **the restore did not execute**
+and M3 was still in place when I started M4. I caught it by diffing against the
+backup rather than trusting the command's exit, restored explicitly, and redid
+M4 from a Python script with a unique-anchor assertion. **No wrong result was
+recorded** — the M3 red result was genuine — but the near-miss is recorded
+because "the restore ran" is exactly the kind of assumption that destroys work.
+
+### The record, as the owner will read it
+
+Rendered on the Info panel, one field per line, every unit and frame stated
+(§4). Actual shape, captured from the live snapshot:
+
+```
+seekMeasure: {
+  nowMs: null, cachedWrittenAtMs: null, cachedAgeMs: null,      // MILLISECONDS
+  cachedSeekableEnd: null, freshSeekableEnd: null,              // MEDIA SECONDS
+  freshMinusCachedMs: null,                                     // MILLISECONDS
+  startMs: null, behindMs: null,                                // MILLISECONDS
+  target: null, requestedTarget: null,
+  acceptedPosition: null, clampedByS: null,                     // MEDIA SECONDS
+  rate: null, rateSamples: 1,
+  note: 'Raw readings. Units: … There is intentionally NO absolute difference
+         between seekableEnd and the stream clock anywhere in this record: that
+         quantity cannot see seekableEnd and would be the clock bias restated.'
+}
+```
+
+**FALSIFIABILITY, stated in advance (§2 of the brief):** `streamRateVsWall` and
+`seekableRateVsStream` are ratios of elapsed figures. `1.0000` means that frame
+advances exactly as fast as its reference. A `seekableRateVsStream` consistently
+**below** `1.0000` means the buffered end is falling behind at a measurable rate.
+A test asserts the fixture produces `0.9`, i.e. the measurement **can** report
+below 1 — so it is not an experiment that cannot fail. A rate of exactly `1.0000`
+across several samples would mean either a perfectly tracking buffer or a broken
+probe; the record shows `rateSamples` so the owner can tell those apart.
+
+### Browser — what it did and did not cover
+
+Verified I was running **my own code**: served `/app.js` contains
+`seekMeasureRecordText`, `seekMeasure`, `seekableEndWrittenAtMs`. (The repo's
+`index.html` loads the hashed bundle, which is pre-change.)
+
+- **Panel renders the record** (rendered DOM, asserted): with nothing measured
+  it shows `MÄTNING (WS38) — råvärden, ingen tolkning` / `Ingen sökning mätt
+  ännu.` / `Fler än en punkt saknas. Samples: N`. **No invented numbers** — the
+  WS30/31 property survives.
+- **Gate still yields nothing on a shared link:** with `?diag=metadata` but the
+  localStorage flag removed, `window.srMetaDiag()` returned **`null`**.
+- **Rate timer runs without owner interaction:** `rateSamples` went **3 → 5**
+  across 11 s with no interaction, and the panel's own count reached **6**.
+- **The degenerate guard works in the wild:** `rate` stayed **`null`** because
+  direct MP3 has no seekable range — the code refused to report a rate rather
+  than a confident wrong one.
+
+**WHAT THE BROWSER RUN DID NOT COVER — stated plainly.** Chromium fell back to
+**direct MP3** (`transport: "direct"`, `MP3 96`; it briefly showed `AAC 192` then
+downgraded). So `seekableEnd` is `null`, **no real seek happened**, and
+measurements 1, 3 and 4 were **never exercised end-to-end**. They are
+**code-proven only**. The rate sampler ran but could not produce a rate. **A
+fallback is not a verification.** The HLS conditions exist only on the owner's
+iPhone.
+
+### NOT DONE, named as not done
+
+- **NOT PUSHED. NOT BUILT. No deploy.** Committed source + tests only, per the
+  owner's explicit instruction and AC17.
+- **NOTHING IS MEASURED ON THE DEVICE.** Every field is `null` until the owner
+  runs it on a phone playing HLS.
+- **NO CONCLUSION IS OFFERED, and none should be read into the numbers above.**
+  Three explanations have been withdrawn in this workstream; a fourth confident
+  claim is the main risk. The unit bug I shipped and caught is a live example of
+  how a plausible number can be wrong.
+- **The programme-skip fix is still unwritten** and still depends on a device
+  reading this instrument enables.
+- **The owner's §0/§8 question is still unanswered** (does the audio start at
+  the beginning or partway in; is the title wrong or only the audio).
+- I did **not** measure a real HLS rate, decode audio, or perform a real seek.
+- I did **not** add `WS38-PROMPT.md` to git — like WS30–WS33 it is **untracked**,
+  so a separate coding-agent chat could not have read it.
+
+**WHAT DEPLOYING WOULD PROVE, if it were pushed:** only that the right code is
+**SERVED**. It would say nothing about how it **behaves**, and nothing about the
+four measurements, which require the owner's phone. **It is not being pushed.**
