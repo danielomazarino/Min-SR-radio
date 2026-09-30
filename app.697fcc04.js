@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = 'f2cb0b1';
+  const APP_BUILD = '4d189cd';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -3080,55 +3080,89 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     }
   }
 
-  // True while the Info panel's paint interval is running. Read by the rate
-  // sampler to decide whether IT must refresh the stream clock (see below).
-  // NOT `readoutTimer !== null`: that variable is a LOCAL of openAbout(), so a
-  // module-scope function cannot see it and referencing it would throw a
-  // ReferenceError on the first rate sample. This flag is the honest way to
-  // publish that state, and openAbout() is its only writer.
+  // True while the Info panel's paint interval is running. Recorded so a reader
+  // can see whether the panel was open when the samples were taken — the rate
+  // itself does NOT depend on it any more.
   let metaDiagReadoutActive = false;
   function isMetaDiagReadoutActive() {
     return metaDiagReadoutActive;
   }
 
-  // Take one RATE sample. Called on a timer, never from a UI interaction: the
-  // owner must not have to keep the panel open and touch anything.
+  // How old the stream-clock reading may be before the sampler refreshes it.
   //
-  // WHY THE CONDITIONAL FETCH, and it is a real trade-off rather than a
-  // convenience. `sampleStreamEdgeClock()` sets `status = 'loading'` the moment
-  // it is called, and the panel repaints every 2 s off that status. So calling
-  // it unconditionally on a 10 s loop would make the owner's offset number
-  // flicker to "Mäter…" every 10 seconds — a regression in the very readout WS29
-  // to WS33 existed to fix.
+  // Declared BEFORE the sampler that uses it, deliberately: a module-scope
+  // `const` would work either way (the module body runs before any timer
+  // fires), but reading it from above its own declaration is the kind of
+  // latent trap that becomes a real ReferenceError the moment the call site
+  // moves.
   //
-  // But if this sampler NEVER fetched, `STREAM_EDGE_PROBE.trueEdgeWallMs` would
-  // only ever be populated while the panel is open (the panel owns the only
-  // other caller), and the rate could not exist unless the owner sat and
-  // watched it — which §3.2 explicitly forbids.
-  //
-  // So: the panel refreshes the stream clock itself while it is open, and this
-  // sampler refreshes it only while the panel is CLOSED. One fetch path is
-  // reused either way; no second fetcher was written.
-  function maybeRefreshStreamClockForRate() {
-    if (isMetaDiagReadoutActive()) return;      // the panel is doing it
-    const age = streamEdgeSampleAgeS();
-    if (age === null || age * 1000 > SEEK_RATE_INTERVAL_MS) {
-      try { sampleStreamEdgeClock(); } catch { /* the record shows null */ }
-    }
-  }
+  // It is a NEW constant, separate from the panel's `META_DIAG_SAMPLE_INTERVAL_MS`
+  // (20 s): the panel's refresh behaviour is untouched, and this governs only
+  // the sampler's own freshness requirement. It sits BELOW the 10 s sample
+  // interval on purpose — a stream clock up to 5 s old is still a genuinely
+  // time-separated reading, and demanding strict freshness on every sample
+  // would mean a playlist fetch per sample for no measurement benefit.
+  const SEEK_RATE_CLOCK_FRESH_MS = 5000;
 
-  function takeSeekRateSample() {
+  // ---- WS38 fix: the rate sampler owns its own stream-clock sampling. ----
+  //
+  // THE BUG THIS REPLACES, and it was NOT the panel gating.
+  //
+  // The previous version called `sampleStreamEdgeClock()` and then read
+  // `STREAM_EDGE_PROBE.trueEdgeWallMs` on the very next line. That function is
+  // ASYNC: it awaits two network fetches before it writes `trueEdgeWallMs`.
+  // So every sample was built from a value that had not been written yet —
+  // `null` on the first run, or STALE on every run after. The rate could then
+  // never be produced, on either platform, regardless of whether the panel was
+  // open. The panel gating was a second, separate problem; fixing only that
+  // would have left the sampler still broken.
+  //
+  // THE FIX IS TO AWAIT THE EXISTING FETCH. `sampleStreamEdgeClock()` is
+  // reused exactly as it is — same function, same single fetch path, no second
+  // playlist fetcher. The sampler simply waits for it to settle before
+  // reading. That is what makes the two samples INDEPENDENT: each one carries
+  // a stream clock that was fetched at that moment, not one borrowed from a
+  // previous run.
+  //
+  // WHAT THIS DOES NOT DO, and it is the conceptual correction the owner
+  // required be preserved: a rate near 1.0000 establishes only that two
+  // timelines ADVANCE TOGETHER. It does NOT prove their absolute positions are
+  // aligned, and it does NOT eliminate a constant timeline-origin difference.
+  // A constant offset between the two frames survives a perfect rate perfectly
+  // well. Only the ELAPSED figures are compared; no absolute media-to-wall
+  // conversion is introduced anywhere here.
+  //
+  // Data-collection only: no correction, no offset, no change to the seek, and
+  // no new number exposed to the panel beyond the rate already present.
+
+  // Take one RATE sample. Called on a timer, never from a UI interaction.
+  //
+  // ASYNC now, and deliberately so: it must await the playlist fetch so the
+  // stream-clock figure it records belongs to THIS instant rather than to
+  // whatever the previous run happened to leave behind.
+  async function takeSeekRateSample() {
     const cur = state.current;
     if (!cur || cur.kind !== 'live') return null;
-    maybeRefreshStreamClockForRate();
+    // Ensure the stream clock is fresh enough to pair with this sample, then
+    // WAIT for it. Reuses `sampleStreamEdgeClock()`; writes no fetch logic.
+    //
+    // The in-flight guard inside that function makes concurrent calls a no-op,
+    // so calling it here cannot pile up requests on a slow phone.
+    const age = streamEdgeSampleAgeS();
+    const needsFreshClock = age === null || age * 1000 > SEEK_RATE_CLOCK_FRESH_MS;
+    if (needsFreshClock) {
+      try { await sampleStreamEdgeClock(); } catch { /* the record shows null */ }
+    }
     const nowMs = Date.now();
     const seekableEnd = readFreshSeekableEnd();
-    // The stream clock is whatever sampleStreamEdgeClock() last fetched —
-    // reused, NOT re-fetched here, so there is only ONE fetch path in the app.
     const trueEdgeWallMs = STREAM_EDGE_PROBE.trueEdgeWallMs;
     const sample = { nowMs, seekableEnd, trueEdgeWallMs };
     if (!Number.isFinite(SEEK_MEASURE.lastSampleAtMs)) {
+      // First sample. There is nothing to pair it with, so there is no rate —
+      // and `null` is the honest answer, not 1.0000.
       SEEK_MEASURE.lastSampleAtMs = nowMs;
+      SEEK_MEASURE.lastSeekableEnd = seekableEnd;
+      SEEK_MEASURE.lastTrueEdgeWallMs = trueEdgeWallMs;
       SEEK_MEASURE.samples = 1;
       SEEK_MEASURE.rate = null;   // one sample is not a rate
       return sample;
@@ -3138,6 +3172,8 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       seekableEnd: SEEK_MEASURE.lastSeekableEnd,
       trueEdgeWallMs: SEEK_MEASURE.lastTrueEdgeWallMs,
     };
+    // `seekRateFromSamples` returns null unless every input is finite AND every
+    // frame actually advanced, so a stale or missing clock yields no rate.
     SEEK_MEASURE.rate = seekRateFromSamples(previous, sample);
     SEEK_MEASURE.lastSampleAtMs = nowMs;
     SEEK_MEASURE.lastSeekableEnd = seekableEnd;
