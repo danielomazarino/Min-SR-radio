@@ -3080,6 +3080,206 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     }
   }
 
+  // ======================================================================
+  // WS39 — the MEDIA-TIMELINE ORIGIN, measured independently of the seek.
+  // ======================================================================
+  //
+  // WHAT QUESTION THIS ASKS. The seek equation is
+  //
+  //     target = seekableEnd - (Date.now() - startMs) / 1000
+  //
+  // which silently ASSUMES a mapping from media time to wall clock:
+  //
+  //     wallTimeAt(m) = trueEdgeWallMs + (m - seekableEnd) * 1000
+  //
+  // i.e. it assumes the media timeline and SR's UTC timeline have a COMMON
+  // ORIGIN, and it assumes `trueEdgeWallMs` (the WS30 stream clock) is the wall
+  // time of media position `seekableEnd`. Nobody has ever measured whether
+  // either is true. This record exists to make that measurable.
+  //
+  // HOW IT MEASURES IT, WITHOUT THE SEEK EQUATION. hls.js can report the wall
+  // clock of the CURRENT PLAYHEAD: `hls.latency.currentProgramDateTime`, which
+  // it computes as
+  //
+  //     frag.programDateTime + (currentTime - frag.start) * 1000
+  //
+  // `frag.start` is a media position in the SAME timeline as
+  // `audioEl.currentTime`, and `frag.programDateTime` is that fragment's
+  // `#EXT-X-PROGRAM-DATE-TIME` — an absolute UTC instant. So the browser hands
+  // us two values on two different timelines and a subtraction between them
+  // yields the media origin. `Date.now()` is NOT an operand of that
+  // subtraction: the two quantities being subtracted are both already wall
+  // clock, and the device clock would only add the device's own error back in.
+  //
+  //   The equation below, with A the media origin:
+  //       pdt = A + currentTime * 1000        =>  A = pdt - currentTime * 1000
+  //
+  // A CORRECTION TO MY OWN EARLIER WORK. In the WS39 investigation report I
+  // proposed `mediaOriginDeltaMs = pdtForCurrentTimeMs - (nowMs - currentTimeS
+  // * 1000)`. That formula is WRONG: it reintroduces `nowMs`, and it
+  // double-counts the elapsed media time. Checked numerically before it was
+  // written down — it returns 100000 where the true origin is
+  // 1700000000000, because it is really computing `-2*currentTime*1000 + 2A`
+  // under a specific nowMs. The implemented formula is the one above. Anyone
+  // comparing this code against that report should read this comment, not the
+  // report.
+  //
+  // WHY `wallClockDeltaMs` EXISTS. It is the quantity the seek equation
+  // ASSUMES is zero: the difference between the wall time the app's stream
+  // clock claims for media position `seekableEnd`, and the wall time hls.js
+  // says that same media position really is. Zero means the assumption holds
+  // for this stream; non-zero means the assumption is false by that much.
+  //
+  // NOTHING HERE IS INTERPRETED, and nothing here is CORRECTED. There is no
+  // offset constant, no compensation, and no use of any field below by the seek
+  // path. A measured value is recorded; what it means is a separate workstream
+  // and a human decision.
+
+  const ORIGIN_MEASURE = {
+    // ---- common: one measurement instant ----
+    capturedAtMs: null,            // ms, device clock, when the capture ran
+    nowMs: null,                   // ms, Date.now() at that instant
+    currentTimeS: null,            // MEDIA SECONDS
+    seekableEndS: null,            // MEDIA SECONDS
+    trueEdgeWallMs: null,          // ms, from the EXISTING WS30 probe, untouched
+
+    // ---- Chromium / hls.js: the wall clock of the CURRENT PLAYHEAD ----
+    pdtForCurrentTimeMs: null,      // ms, epoch. null if unavailable.
+    pdtSource: 'unavailable',       // which branch produced pdtForCurrentTimeMs
+
+    // ---- Safari / native HLS: getStartDate() ----
+    startDateMs: null,             // ms, epoch. null if absent/throws.
+    startDateSource: 'unavailable',
+
+    // ---- derived, only when every operand is finite ----
+    mediaOriginMs: null,           // ms, epoch: pdt - currentTimeS*1000
+    wallClockDeltaMs: null,        // ms: see function below
+    // Anything the reader needs to judge the above, stated explicitly.
+    wallClockAtSeekableEndMs: null, // ms: hls.js mapping of seekableEnd
+  };
+
+  // Pure arithmetic, extracted and executed by the tests (AGENTS.md §7 — never
+  // retype logic into a test). Returns null for any input it cannot measure,
+  // and NEVER 0 to mean "unknown": null and 0 are different facts.
+  //
+  // `pdt` is the wall clock of `currentTimeS`; the media origin is therefore
+  // `pdt - currentTimeS*1000`. `nowMs` is deliberately NOT a parameter of the
+  // origin, because the device clock has no part in the subtraction.
+  function originFromPdt(pdt, currentTimeS) {
+    if (!Number.isFinite(pdt) || !Number.isFinite(currentTimeS)) return null;
+    return pdt - currentTimeS * 1000;
+  }
+
+  // The wall clock of media position `seekableEndS`, per the hls.js mapping.
+  // Expressed as the playhead's own mapping advanced by the distance between
+  // the two media positions — both on the media timeline, so no device clock
+  // is involved.
+  function wallClockAtMediaPosition(pdt, currentTimeS, seekableEndS) {
+    if (!Number.isFinite(pdt)) return null;
+    if (!Number.isFinite(currentTimeS) || !Number.isFinite(seekableEndS)) return null;
+    return pdt + (seekableEndS - currentTimeS) * 1000;
+  }
+
+  // The quantity the seek equation ASSUMES is zero. Null unless both wall
+  // clocks for `seekableEndS` are known: the app's SR-PDT stream clock, and
+  // the browser's own hls.js-derived one.
+  function wallClockDelta(trueEdgeWallMs, pdt, currentTimeS, seekableEndS) {
+    const atEnd = wallClockAtMediaPosition(pdt, currentTimeS, seekableEndS);
+    if (!Number.isFinite(trueEdgeWallMs) || atEnd === null) return null;
+    return trueEdgeWallMs - atEnd;
+  }
+
+  // Read `hls.latency.currentProgramDateTime` if hls.js is driving playback.
+  //
+  // NO OPTION IS ENABLED to obtain this. `Fragment.programDateTime` is parsed
+  // unconditionally in hls.js 1.7.3 (there is no `useProgramDateTime` in that
+  // version), and `HLS_CONFIG` is NOT touched.
+  //
+  // Every access is guarded: `latency` may be absent, the property may be
+  // absent, `currentFrag` may be unresolved, and it may return null. All four
+  // are "not measured", and all four record `null` rather than a guess.
+  function readPdtForCurrentTime() {
+    try {
+      const inst = hlsInstance;
+      if (!inst) return { pdt: null, source: 'no-hls-instance' };
+      const latency = inst.latency;
+      if (!latency) return { pdt: null, source: 'no-latency-controller' };
+      const value = latency.currentProgramDateTime;
+      if (!value || typeof value.getTime !== 'function') {
+        return { pdt: null, source: 'no-current-fragment' };
+      }
+      const ms = value.getTime();
+      return {
+        pdt: Number.isFinite(ms) ? ms : null,
+        source: Number.isFinite(ms) ? 'hls.latency.currentProgramDateTime' : 'null-instant',
+      };
+    } catch {
+      return { pdt: null, source: 'threw' };
+    }
+  }
+
+  // Safari-only, and NOT polyfilled. `getStartDate()` is a WebKit extension
+  // that appears in no other engine; when it is missing the record says so
+  // rather than guessing. MDN documents its value as the real-world time of the
+  // START of the media, which for a live rolling window is exactly the
+  // question this workstream has not yet been able to answer — so a non-null
+  // reading here is a CANDIDATE origin, recorded and not yet trusted.
+  function readStartDate() {
+    try {
+      const el = audioEl;
+      if (!el || typeof el.getStartDate !== 'function') {
+        return { ms: null, source: 'no-getStartDate' };
+      }
+      const value = el.getStartDate();
+      if (!value || typeof value.getTime !== 'function') {
+        return { ms: null, source: 'returned-null' };
+      }
+      const ms = value.getTime();
+      return {
+        ms: Number.isFinite(ms) ? ms : null,
+        source: Number.isFinite(ms) ? 'getStartDate()' : 'returned-non-finite',
+      };
+    } catch {
+      return { ms: null, source: 'threw' };
+    }
+  }
+
+  // Take ONE measurement. Every field is a raw reading or a subtraction of two
+  // raw readings. READ-ONLY with respect to playback: this function reads the
+  // media element and the hls instance and writes nothing but ORIGIN_MEASURE.
+  //
+  // Called from the seek path (so the playhead is somewhere real) and from the
+  // panel paint, so a value exists even if the owner never seeks.
+  function captureOriginMeasurement() {
+    const nowMs = Date.now();
+
+    const t = Number.isFinite(audioEl.currentTime) ? audioEl.currentTime : null;
+    const s = readFreshSeekableEnd();
+
+    const pdtRead = readPdtForCurrentTime();
+    const sdRead = readStartDate();
+
+    ORIGIN_MEASURE.capturedAtMs = nowMs;
+    ORIGIN_MEASURE.nowMs = nowMs;
+    ORIGIN_MEASURE.currentTimeS = t;
+    ORIGIN_MEASURE.seekableEndS = s;
+    // The EXISTING WS30 probe value, read as-is. This function does not fetch,
+    // recompute, or write it.
+    ORIGIN_MEASURE.trueEdgeWallMs =
+      Number.isFinite(STREAM_EDGE_PROBE.trueEdgeWallMs)
+        ? STREAM_EDGE_PROBE.trueEdgeWallMs : null;
+    ORIGIN_MEASURE.pdtForCurrentTimeMs = pdtRead.pdt;
+    ORIGIN_MEASURE.pdtSource = pdtRead.source;
+    ORIGIN_MEASURE.startDateMs = sdRead.ms;
+    ORIGIN_MEASURE.startDateSource = sdRead.source;
+    ORIGIN_MEASURE.mediaOriginMs = originFromPdt(pdtRead.pdt, t);
+    ORIGIN_MEASURE.wallClockAtSeekableEndMs =
+      wallClockAtMediaPosition(pdtRead.pdt, t, s);
+    ORIGIN_MEASURE.wallClockDeltaMs =
+      wallClockDelta(ORIGIN_MEASURE.trueEdgeWallMs, pdtRead.pdt, t, s);
+    return ORIGIN_MEASURE;
+  }
+
   // True while the Info panel's paint interval is running. Recorded so a reader
   // can see whether the panel was open when the samples were taken — the rate
   // itself does NOT depend on it any more.
@@ -3288,6 +3488,51 @@ function seekMeasureRecordText() {
   }
   return lines.join('\n');
 }
+
+  // ---- WS39: the media-timeline origin, rendered for the owner. ----
+  // Pure and total, like `seekMeasureRecordText`. `null` renders as "okänd"
+  // and NEVER as 0: "measured, and it is zero" and "not measured" are
+  // different facts, and this repo has already paid for confusing them.
+  //
+  // Nothing below is a conclusion. The derived lines are printed so the owner
+  // can read the arithmetic and check it by hand; what they MEAN is a separate
+  // decision that this instrumentation deliberately does not make.
+  function originMeasureRecordText() {
+    const o = ORIGIN_MEASURE;
+    const n = (v) => (Number.isFinite(v) ? v : null);
+    const ms = (v) => (Number.isFinite(v) ? `${Math.round(v)} ms` : 'okänd');
+    const iso = (v) => (Number.isFinite(v) ? new Date(v).toISOString() : 'okänd');
+    const sec = (v) => (Number.isFinite(v) ? `${v.toFixed(2)} media-s` : 'okänd');
+    const lines = [];
+    lines.push('MÄTNING (WS39) — medietimelines ursprung, oberoende av sökningen');
+    const any = Number.isFinite(o.nowMs);
+    if (!any) lines.push('Ingen mätning gjord ännu.');
+    if (any) {
+      lines.push('');
+      lines.push('Gemensamt (ett mätögonblick)');
+      lines.push(`   nu (ms): ${n(o.nowMs)}`);
+      lines.push(`   currentTime (media-s): ${sec(o.currentTimeS)}`);
+      lines.push(`   seekableEnd (media-s): ${sec(o.seekableEndS)}`);
+      lines.push(`   trueEdgeWallMs (ms): ${n(o.trueEdgeWallMs)}`);
+      lines.push('');
+      lines.push('Chromium / hls.js — väggklockan för playHEADEN');
+      lines.push(`   pdt för currentTime (ms): ${n(o.pdtForCurrentTimeMs)}`);
+      lines.push(`   källa: ${o.pdtSource}`);
+      lines.push('');
+      lines.push('Safari / inbyggd HLS — getStartDate()');
+      lines.push(`   startDate (ms): ${n(o.startDateMs)}`);
+      lines.push(`   källa: ${o.startDateSource}`);
+      lines.push('');
+      lines.push('Härlett (bara när varje operand är giltig)');
+      lines.push(`   mediaOrigin = pdt − currentTime×1000: ${ms(o.mediaOriginMs)}`);
+      lines.push(`   mediaOrigin som ISO: ${iso(o.mediaOriginMs)}`);
+      lines.push(`   väggklocka vid seekableEnd (ms): ${n(o.wallClockAtSeekableEndMs)}`);
+      lines.push(`   trueEdge − väggklocka vid seekableEnd: ${ms(o.wallClockDeltaMs)}`);
+      lines.push('');
+      lines.push('Sökformeln ANTA att trueEdge−detta är 0. Mäts, inte antas.');
+    }
+    return lines.join('\n');
+  }
 
   function seekToLive() {
     const cur = state.current;
@@ -5656,6 +5901,12 @@ function seekMeasureRecordText() {
     // text nodes, so one field per line costs no CSS.
     const seekRecordBox = el('p', { class: 'about-diag-note', text: '' });
 
+    // ---- WS39: the media-timeline origin record, on the same panel. ----
+    // A separate node so the WS38 record above it is untouched and still
+    // reviewable on its own. Same `p` helper, same existing CSS class — so no
+    // stylesheet and no markup change (§5).
+    const originRecordBox = el('p', { class: 'about-diag-note', text: '' });
+
     // Built BEFORE the handlers below are wired, because the click handler
     // toggles `is-off` on it. Declaring it after the handler would be a
     // temporal-dead-zone error on the very first click.
@@ -5664,7 +5915,8 @@ function seekMeasureRecordText() {
       diagSwitch,
       readout,
       readoutNote,
-      seekRecordBox);
+      seekRecordBox,
+      originRecordBox);
     // Inert until switched on: hidden, but present in the DOM.
     if (diagFlagRead() !== 'on') diagSection.classList.add('is-off');
     body.appendChild(diagSection);
@@ -5699,6 +5951,17 @@ function seekMeasureRecordText() {
       // WS38: the raw record, painted on the SAME interval as everything else
       // so it cannot drift out of step with the readout above it.
       seekRecordBox.textContent = seekMeasureRecordText();
+      // WS39: the origin record, painted on that same interval. The capture
+      // itself is READ-ONLY — it reads currentTime, seekable and the hls
+      // instance, and writes no playback state. It is taken here so a value
+      // exists even when the owner never seeks, which is the whole point of
+      // measuring something the seek cannot be trusted to report.
+      //
+      // CAPTURE BEFORE PAINT. Rendering first would show the PREVIOUS
+      // capture's values — the same read-before-write ordering that made the
+      // WS38 rate unmeasurable, reappearing in a different function.
+      captureOriginMeasurement();
+      originRecordBox.textContent = originMeasureRecordText();
     };
     const startReadout = () => {
       stopReadout();
@@ -7047,6 +7310,37 @@ function seekMeasureRecordText() {
             + 'between seekableEnd and the stream clock anywhere in this '
             + 'record: that quantity cannot see seekableEnd and would be the '
             + 'clock bias restated.',
+        },
+        // ---- WS39: the media-timeline origin, measured independently. ----
+        // Read-only capture. Nothing in this block is used by the seek path,
+        // and no field here is written by it.
+        originMeasure: {
+          capturedAtMs: ORIGIN_MEASURE.capturedAtMs,
+          nowMs: ORIGIN_MEASURE.nowMs,
+          currentTimeS: ORIGIN_MEASURE.currentTimeS,
+          seekableEndS: ORIGIN_MEASURE.seekableEndS,
+          trueEdgeWallMs: ORIGIN_MEASURE.trueEdgeWallMs,
+          // Chromium / hls.js
+          pdtForCurrentTimeMs: ORIGIN_MEASURE.pdtForCurrentTimeMs,
+          pdtSource: ORIGIN_MEASURE.pdtSource,
+          // Safari / native HLS
+          startDateMs: ORIGIN_MEASURE.startDateMs,
+          startDateSource: ORIGIN_MEASURE.startDateSource,
+          // derived
+          mediaOriginMs: ORIGIN_MEASURE.mediaOriginMs,
+          wallClockAtSeekableEndMs: ORIGIN_MEASURE.wallClockAtSeekableEndMs,
+          wallClockDeltaMs: ORIGIN_MEASURE.wallClockDeltaMs,
+          note: 'Media-timeline origin, measured WITHOUT the seek equation. '
+            + 'mediaOriginMs = pdtForCurrentTimeMs - currentTimeS*1000, where '
+            + 'pdtForCurrentTimeMs is hls.latency.currentProgramDateTime — the '
+            + 'wall clock of the current playhead, which hls.js derives from '
+            + 'fragment.programDateTime + (currentTime - fragment.start)*1000. '
+            + 'Date.now() is NOT an operand of that subtraction; including it '
+            + 'would reintroduce the device clock error. currentTimeS and '
+            + 'seekableEndS are MEDIA SECONDS, not ms; the other values are '
+            + 'epoch MILLISECONDS. wallClockDeltaMs is the quantity the seek '
+            + 'equation assumes is zero. A null means NOT MEASURED and is '
+            + 'never rendered as 0. NO correction is applied anywhere.',
         },
         seekableDuration: cur?.seekableDuration ?? null,
         positionWallClockIso: positionWallClock,

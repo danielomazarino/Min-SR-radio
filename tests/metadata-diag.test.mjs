@@ -431,7 +431,38 @@ test('hook is read-only with respect to playback state', () => {
   // No HLS internals, no playback mutation.
   assert.ok(!/hlsAttach/.test(HOOK), 'hook must not call hlsAttach');
   assert.ok(!/hlsDetach/.test(HOOK), 'hook must not call hlsDetach');
-  assert.ok(!/hls\.js/.test(HOOK), 'hook must not reference hls.js');
+  // ---- WS39, restated. The old assertion here was a blanket
+  // `!/hls\.js/.test(HOOK)`: "the hook must not reference hls.js at all".
+  // The owner authorised WS39, which requires reading
+  // `hls.latency.currentProgramDateTime` from the retained instance, so that
+  // property is SUPERSEDED and cannot be asserted as written. It is replaced
+  // by the property that actually matters, which is STRONGER, not looser:
+  // the hook may READ the timeline, but it must never build, attach, detach or
+  // tear down a stream, and its one read must be total — no throwing path and
+  // no dependence on hls.js being present, since the hook also runs on Safari
+  // (no hls.js at all) and with the player closed.
+  assert.ok(!/new\s+window\.Hls|new\s+Hls\s*\(/.test(HOOK),
+    'hook must never construct an Hls instance');
+  assert.ok(!/\.destroy\s*\(/.test(HOOK),
+    'hook must never destroy a stream');
+  // The single permitted hls.js read must be guarded: a try/catch, and a
+  // null-check on the instance, the latency controller and the value.
+  // Sliced from APP_JS, not HOOK: the WS39 readers are defined alongside the
+  // other module-scope helpers, OUTSIDE the hook region, and `region()` would
+  // fail on a marker that is not in the text it was given. The point of the
+  // assertion is unchanged — the code the hook runs must be total.
+  const pdt = region('function readPdtForCurrentTime()',
+    'function readStartDate()', APP_JS);
+  assert.ok(/try\s*\{/.test(pdt), 'readPdtForCurrentTime must be inside a try');
+  assert.ok(/catch/.test(pdt), 'readPdtForCurrentTime must have a catch');
+  assert.ok(/if\s*\(\s*!inst\s*\)/.test(pdt),
+    'readPdtForCurrentTime must return null when there is no hls instance');
+  assert.ok(/if\s*\(\s*!latency\s*\)/.test(pdt),
+    'readPdtForCurrentTime must return null when there is no latency controller');
+  assert.ok(/!value\s*\|\|/.test(pdt),
+    'readPdtForCurrentTime must return null when currentProgramDateTime is absent');
+  // The hook must not ASSIGN anything on the hls instance it reads.
+  assert.ok(!/inst\.\w+\s*=/.test(pdt), 'readPdtForCurrentTime must not write to hls');
   // state.current must only ever be READ.
   assert.ok(!/state\.current\s*=/.test(HOOK), 'hook must not assign state.current');
   assert.ok(!/state\.current\.\w+\s*=/.test(HOOK),
