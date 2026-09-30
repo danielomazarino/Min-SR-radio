@@ -5914,3 +5914,228 @@ readout itself; the diagnostics gate, verified intact in all four cases.
 2. **Decide the two offsets are one problem or two.** The owner has said
    explicitly they are not the same. Instrument them separately.
 3. **Only then** consider a fix, and never with a constant.
+
+---
+
+## 2026-09-30 (WS30 brief written) — THE TAUTOLOGY IS RESOLVED. A second clock EXISTS, and I measured it.
+
+**This is the most important entry since the tautology correction above. The
+instruction "replace it with a genuine two-source comparison" was written as an
+open question. It is no longer open: the second source is real, it is
+browser-readable, and I have measured it.**
+
+**No source code changed. `main` = `0cb7f0d`, tree clean, 235/235. Brief written
+to `WS30-PROMPT.md` (untracked by design, like `WS26-PROMPT.md`).**
+
+### 1. The tautology is confirmed in the shipped source
+
+`app.js` `streamEdgeWallMs()` (~1695) and the `edgeMinusNowS` IIFE (~6012).
+`Date.now()` cancels between them and the result is identically
+`distanceFromLiveEdge`, which the app computes for itself at ~827. `edgeAsWallClockIso`
+is `new Date(Date.now() - x)` — **also** restated. Every quantity in `streamEdge`
+is the app's clock against itself.
+
+### 2. The independent clock EXISTS, is CORS-open, and I measured it
+
+| probe | result |
+|---|---|
+| `https://ljud1-cdn.sr.se/lc/p2.m3u8` (master) | 200, `application/x-mpegURL` |
+| `access-control-allow-origin` with a github.io `Origin` | **`*`** |
+| `https://ljud1-cdn.sr.se/lc/p2/p2_320.pls` (variant) | 200, 5022 bytes |
+| `#EXT-X-PROGRAM-DATE-TIME` in the variant | **exactly 1**, at the head |
+| `#EXTINF` | **1700** |
+| `sum(#EXTINF)` | **10880.0 s** (3 h 1 m 20 s) |
+| `#EXT-X-DISCONTINUITY-SEQUENCE` | 0 |
+
+```
+trueEdgeWall = headPDT + sum(EXTINF)
+```
+
+All three variants (`p2_32`, `p2_128`, `p2_320`) agree on the sum and the head
+PDT, so **the bitrate choice does not affect the reading** — I verified rather
+than assumed it.
+
+### 3. MEASURED: the true stream edge is ~25–33 s AHEAD of this machine's clock
+
+Repeated samples of `now − trueEdgeWall`: **−25.0, −25.6, −24.4, −28.1, −29.3,
+−30.0, −30.7, −31.3, −32.6 s.**
+
+**It is real, signed, non-zero — and it DRIFTS (~4 s over 40 s of sampling).**
+So it is not a constant, and `AGENTS.md` §5 is vindicated by measurement: a
+fudge factor fitted to this would be wrong within minutes.
+
+**What this does NOT prove:** anything about the owner's iPhone. My clock is not
+their clock, and a large part of −28 s may be *this machine's* clock error or
+Akamai edge behaviour. **Do not record "the offset is 28 s" as a finding.**
+
+### 4. A methodology error of mine, corrected in place
+
+My first sweep reported **`ljud2 = −36.0 s` with a HIGHER media sequence than
+ljud1's `−29.6 s`** — physically impossible, and it was my error: **one shared
+`now` reused across four sequential fetches.** Re-measured with a per-request
+clock: ljud1 −31.1 / ljud2 −30.0, ljud1 −29.3 / ljud2 −28.6 — consistent.
+
+**The rule this earns: every sample takes its own clock reading, immediately
+after its own fetch.** A sweep containing an impossible row is a broken sweep
+(`AGENTS.md` §2), and mine nearly became the evidence for a fix.
+
+### 5. The fix hypothesis — ARITHMETIC ONLY, not implemented, not verified
+
+`seekToProgramTime`: `target = seekableEnd − (now − startMs)/1000`. The true
+media position of that programme start is `seekableEnd − (trueEdgeWall − startMs)/1000`.
+The app's target is therefore **~28 s LATER in the programme than intended** — it
+misses the first ~28 s.
+
+**The direction is NOT reconciled with the owner's "lands early" wording, and
+that is unresolved.** It may be the audio, the title, or a different
+mechanism. I will not let a reading "confirm" a sign until the owner is asked.
+
+### 6. What this changes about the queue
+
+- **The offset is now measurable on ANY device, and partly WITHOUT the iPhone.**
+  The playlist is CORS-open, so the fetch and the panel can be browser-driven.
+  This is the first time the offset question has been answerable offline.
+- **The ~10–15 s song-title offset is still untouched and still separate.** The
+  owner has said they are not the same problem, and nothing here changes that.
+- **WS29's panel is still wrong on the owner's phone.** Until WS30 lands, it
+  shows a meaningless number. **Hiding it is a legitimate outcome** if the
+  two-source comparison proves impossible in-app.
+
+### 7. NOT DONE, named as not done
+
+1. **No code changed.** The brief is written; nothing is implemented.
+2. **The ~25 s programme-skip offset — still unmeasured on the device and
+   unfixed.** §5 is arithmetic, not a measurement.
+3. **The 10–15 s song-title offset — untouched.**
+4. **The tautological readout — still live** on the owner's phone.
+5. R5, the false `DATERANGE` comment, Android, E1b, podcast search — all
+   untouched.
+
+---
+
+## 2026-09-30 (WS32) — DEPLOYED. The instrument is live; the offset is still unmeasured.
+
+**Build id to check on the phone: `5eeabb9`.** Bundle `app.fbdc9a4d.js`, SW cache
+`minradio-ba0c31fd`, styles unchanged (`a7560d22` — no CSS changed).
+**256/256** (was 253). Commits: `5eeabb9` (source+tests), `0866897` (artifacts),
+`d4d3131` (status block). **LIVE and verified by me directly, not only by the
+agent** — see the verification table at the end.
+
+### The one-line summary
+
+WS30/31/32 **shipped the instrument, not the cure.** The tautological readout is
+gone, the panel now tells the truth in every state, and the ~25 s programme-skip
+offset is **still unfixed and still unmeasured on any device.**
+
+### What is now true (verified)
+
+| claim | evidence |
+|---|---|
+| The WS29 "offset" was a **tautology** | `edgeMinusNowS = (now − (now − X))/1000`; `Date.now()` cancels → identically `X` = the playhead's own distance from the buffer edge. The app compared its clock with itself. |
+| A **second, independent clock exists** and is browser-readable | the HLS variant playlist carries **exactly 1** `#EXT-X-PROGRAM-DATE-TIME` + 1700 `#EXTINF` summing to **10880.0 s**; `trueEdgeWall = headPdt + sum(EXTINF)`. SR's CDN sends `access-control-allow-origin: *`. |
+| The bias is **real, signed, non-zero — and DRIFTS** | measured −24.4 … −32.6 s across 9+ samples, **spread 5.50 s**. `AGENTS.md` §5 vindicated by measurement: a constant fitted to this would be wrong within minutes. **This is measured from a desktop, NOT from the owner's iPhone.** |
+| The panel no longer shows a self-referential number | it shows the **two-source** difference, plus both raw clocks and the sample age |
+| The panel no longer lies about a playing channel | direct-MP3 → "Direkt ljud — ingen strömklocka att jämföra med" |
+| A snapshot **error** is no longer reported as "start a channel" | own state, checked before the no-stream branch |
+| The dead clamp line is **live** | `dvr.seek` now exposes `SEEK_EDGE_DIAG.clampedByS`, which is written on **both** real seek paths (`seekToLive`, `seekToProgramTime`) — reachability **proved**, not assumed |
+| The security gate is intact | shared `?diag=metadata` with no flag → `gateOpen:false`, snapshot `null` |
+
+### The state on the phone, in plain Swedish — all four are honest
+
+1. `Starta en radiokanal först` — nothing is playing (unchanged, correct)
+2. `Direkt ljud — ingen strömklocka att jämföra med` — playing, but direct
+   audio, so there is genuinely no playlist to read
+3. `Mäter…` / `Kunde inte läsa strömmens klocka` — sampling, or it failed
+4. a **signed number + `Mätt nyss` / `Mätt N s sedan`** — a real two-source reading
+
+**A non-numeric state is a result, not a failure.** The panel can no longer show a
+`0` that means "unknown" — that was the defect class WS30 exists to eliminate.
+
+### THE QUESTION ONLY THE OWNER CAN ANSWER — it decides the next workstream
+
+The owner reports the programme skip **"lands early"**. The arithmetic says the
+app's target would sit **~28 s LATER** than intended. **These disagree.**
+
+I will not let a number be used to pick a side. Ask, without leading:
+
+> When you skip to a programme, does the audio start **at the beginning**, or
+> **partway in / before the beginning**? And is the **title** wrong, or only the
+> **audio**?
+
+**A disagreement is a useful answer.** Do not resolve it by choosing the reading
+that fits the arithmetic (`AGENTS.md` §10, §11).
+
+### What the next session must NOT do
+
+1. **Do not add a correction constant.** Zero now. The bias drifts ~5.5 s over
+   minutes; a constant is wrong within minutes. "10 seconds" already became
+   folklore across three workstreams in this repo.
+2. **Do not "fix" `!dvr || !dvr.streamEdge`.** I asserted that guard as the cause
+   of the WS31 defect and **I WAS WRONG** — `streamEdge` is a top-level key of the
+   unconditional `dvr:`, so it always exists and the guard cannot fire. The real
+   cause was `status:'idle'` left by an early return. The agent caught this and
+   recorded the correction; do not re-assert my dead claim.
+3. **Do not trust a browser observation without grepping the SERVED file** for
+   your own symbols. `index.html` loads the **hashed** bundle, so staging source
+   into `dist/` does nothing. This agent's *first* WS30 browser run executed
+   **pre-WS30 code** and it nearly invalidated the whole session.
+4. **Do not anchor a test on a field name that occurs twice.** `clampedByS:
+   SEEK_EDGE_DIAG.clampedByS` appears in both `streamEdge` and `dvr.seek`; the
+   mutation replaced one and the test stayed green. Same class as the M13 rename
+   that once passed here.
+5. **Do not treat a green suite as a regression check.** Run the mutations. That
+   is the only thing separating "the tests pass" from "the tests can fail".
+
+### METHOD NOTES worth keeping (three traps, all hit in this session)
+
+- **Every sample takes its own clock reading, immediately after its own fetch.**
+  My first sweep reused one `now` across four sequential fetches and produced a
+  physically impossible row (a CDN host 6 s "behind" a later one). A sweep
+  containing an impossible row is a broken sweep (`AGENTS.md` §2).
+- **The bundle hash is content-derived, so it is NOT comparable across trees.**
+  A dry run on `84d22a6` predicted `app.233f96c9.js`; the real build is
+  `app.fbdc9a4d.js` because the tree then carried 3a+3b on top. **All *structural*
+  predictions matched**; only the hash differed, and that difference is expected.
+- **The Pages URL is `https://danielomazarino.github.io/Min-SR-radio/`.** I probed
+  `/Min-Radio-app/` first and got a **404** by asserting a URL from a neighbouring
+  project instead of reading `git remote`. Read the remote, then measure — a 404
+  from a guessed URL is exactly how a broken deploy gets retold as "propagating".
+
+### The regression bar, for the next change
+
+The owner approved continuing on one condition, verbatim: *"i approve the needed
+changes as long as you verify that no regression errors happen due to it. safety
+before speed in solutioning."* WS32 ran a 12-point checklist, **all 12 PASS, none
+skipped** — including the gate function byte-identical **in the built bundle and
+on the live site**, all 7 timing constants identical, 0 correction constants, and
+`seekToProgramTime`/`seekBy`/`seekToLive`/`playheadWallMs`/`dvrPositionToDate`
+byte-identical. **Keep that bar. A check not run is reported as NOT RUN, never
+as PASS.**
+
+### Verification I ran MYSELF, after the agent's hand-back (not taking its report)
+
+- `npm test` → **256/256, 0 fail** from the committed tree
+- Live `https://danielomazarino.github.io/Min-SR-radio/` → **200**, serving
+  **`app.fbdc9a4d.js`**, and that bundle contains
+  **`APP_BUILD = '5eeabb9'`** — independently confirmed, so the owner can trust
+  the build id in the instructions
+- Working tree clean of source; only `ENHANCEMENTS.md` (this file, mine) and the
+  three `WS3*-PROMPT.md` files are uncommitted
+
+### NOT DONE, named as not done
+
+1. **The ~25 s programme-skip offset is NOT fixed and NOT measured on the
+   device.** Nobody has read a number off the new panel. Every claim is
+   code / fixture / browser evidence.
+2. **The 10–15 s song-title offset is untouched and unexplained**, and the owner
+   has said explicitly it is a *different* mechanism.
+3. **The HLS measurement path has never been exercised end-to-end on desktop.**
+   Chromium falls back HLS → direct MP3, so the panel cannot show a real offset
+   there. Device-only, unavoidably.
+4. **The owner's question above is unanswered**, so the *direction* of the defect
+   is not established.
+5. R5 (pre-midnight programme title), the false `DATERANGE` comment, the
+   `Spelas just nu` label, Android, E1b (tunnel/buffer), global podcast search,
+   the lock-screen-wrong-PWA item — all untouched.
+6. **No device verification of anything.** Deploying proves the right code is
+   **served**; it says nothing about how it **behaves**.
