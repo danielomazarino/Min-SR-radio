@@ -1363,3 +1363,294 @@ three checks the old version could not express (the operand must be a bare
 **Working tree at report time:** `app.js` + `tests/two-source-clock.test.mjs`
 modified, both committed together. Docs also modified by earlier sessions, not
 by me.
+
+---
+
+## WS33 — tech lead: my earlier review was WRONG on two counts — 2026-09-30T20:00:00+02:00
+
+**I must correct my own block above before anything else, because a review that
+is wrong is worse than no review.**
+
+### Correction 1 — it DID commit, and it DID write its status block
+
+My previous block said *"the agent has NOT written a status block"* and
+*"NOTHING IS COMMITTED."* **Both were wrong when written.** The agent appended
+its block at `19:40` and committed at `5da241e`; I had read the tree mid-flight.
+**I reviewed a moving working tree and reported it as a hand-back.** The lesson
+is the one I keep writing for the agent: *read the record, not your snapshot of
+it.* `git log` at the moment I claimed "zero commits" would have contradicted
+me, and I did not run it.
+
+### Correction 2 — its mutation M2 was not mine, and its M4 caught a harness error
+
+It ran **4** mutations, not the 3 I ran, and reported **M4 red ×2 (186, 188)** —
+a path I did not test. It also **recorded a harness mishap of its own**: a
+shell one-liner was eaten by bash history expansion (`!Number`), leaving
+`app.js` half-mutated with 24 tests red; it restored from backup and redid M4
+via Python with unique anchors. **That is exactly the disclosure `AGENTS.md` §2
+wants, and it named the risk that a future session might read those 24 failures
+as a real regression.**
+
+### State, MEASURED by me on the committed tree
+
+`npm test` → **260/260, 0 fail**. `HEAD` = `5da241e`, `origin/main` still
+`02e27c4` (**not pushed — correct, the brief said commit and stop**).
+
+Commit contains **source + tests together** (`app.js`, `tests/…`, and its own
+`SESSION-STATUS.md`). **No hashed artifact, no `sw.js`, no `index.html` in the
+commit** — I checked with a precise pattern after a first grep that falsely
+matched the *source* file `app.js`. **That near-miss was my instrument, not the
+agent's work**, and it is the second time this session a check of mine was wrong
+before it was right.
+
+| my gate | result on the committed tree |
+|---|---|
+| `metaDiagGateOpen` byte-identical | **PASS** `be2d044f…` |
+| 7 timing constants | **PASS** (all 7 present and identical) |
+| correction constants in **code** | **PASS** (0 — comments stripped first) |
+| test count rose | **PASS** 256 → 260 |
+
+### Two things in its report that are better than what I asked for
+
+1. **It restated a WS30 test as SUPERSEDED and made it STRONGER** (`§7b` done
+   correctly and visibly): the old test pinned the *contaminated* operand
+   literally. It kept the requirement and added three checks the old version
+   could not express — the operand must be a bare `Date.now()`, `currentTime`
+   must not appear in any `offsetS` assignment, and `offsetS` must not derive
+   from `streamEdgeWallMs`. **It did not simply relax the test to green.**
+2. **It verified it was running its OWN code before believing the browser** —
+   `grep` confirmed `deviceNow` count **0** in the served hashed bundle, then
+   served its own from `/tmp` and re-checked. **The WS32 lesson, applied
+   unprompted.**
+
+### Its AC3 result settles the direction question — and it agrees with the owner
+
+It confirmed **the seek-error independence claim holds**: `target − p_correct =
+−offsetS_true` at every playhead position, checked at 3 start times × 3
+positions. **A +25 s fast clock lands 25 s early everywhere** — which is exactly
+what the owner reported ("the audio starts immediately", programme ~25 s later).
+
+**So the direction IS established**, and my earlier "unresolved" status was
+superseded by the owner's answer. The agent's block still lists it as
+unanswered because it was working from the brief, which predates the answer.
+**I am recording that as a stale input, not as an agent error.**
+
+### NOT DONE
+
+1. **Not pushed, not built, not deployed.** `origin/main` = `02e27c4`.
+2. **The offset is still unmeasured on the owner's iPhone.** Everything is
+   code/fixture/browser evidence.
+3. **The seek fix is still unwritten** — correctly, until a real device number
+   exists.
+4. **The real HLS path is untested at runtime** (Chromium falls back to MP3).
+   The agent stated this plainly rather than presenting the fallback as proof.
+5. R5, `Spelas just nu`, Android, E1b, podcast search, lock-screen-wrong-PWA —
+   untouched.
+
+---
+
+## WS33D — PROCESS FIX: deploy ownership moved to the coding agent — 2026-09-30T20:45:00+02:00
+
+**Owner instruction, verbatim:** *"i don't understand why you don't make it clear
+in the prompts to the coding agent that you expect a push and deployment. this is
+tedious."*
+
+**This is a standing-process correction, not a one-off.** It is the second time
+the owner has had to ask.
+
+### The cause, and it was MY rule, not the agent's
+
+`AGENTS.md` §13 said the agent **commits and stops** and the **tech lead
+deploys**. WS33's brief said, in those words, *"Do not build, do not deploy, do
+not push."* The agent **obeyed the brief exactly** — and produced a green,
+mutation-proven, reviewed fix that is **not on the owner's phone.**
+
+**The owner then screenshotted their phone showing `bygg 5eeabb9` and asked
+whether it was the latest. It was not.** They were looking at the defective WS32
+panel, unknowingly, while I had already reviewed the fix. **That is the cost of a
+process rule that leaves the owner uninformed: it is a defect in the process,
+not in the code.**
+
+### What changed, in BOTH files (they drift independently — §13)
+
+| file | change |
+|---|---|
+| `AGENTS.md` §13 decision table | **"who builds and pushes?" → the CODING AGENT, when the brief says so.** Tech lead's review is **not** a deploy gate. **Every brief must state explicitly whether to push**, and a brief ending at "commit and stop" must say **why in those words.** |
+| `AGENTS.md` §8 | added: artifacts in a **second** commit; and the "commit and stop MUST say why" rule |
+| `.github/instructions/min-radio.instructions.md` §8 | added: **pushing is the agent's job when the brief says so**; *"if the brief does not say, ask — do not assume it is someone else's step"* |
+
+**The instructions file matters most** — it is the **auto-discovered** copy, so
+it is what the agent's separate chat loads. **Fixing `AGENTS.md` alone would have
+left the agent reading the old rule.** This is the third time these two files have
+drifted apart; it is now a standing check.
+
+### The brief written as a result
+
+**`WS33D-DEPLOY-PROMPT.md`** — build, verify, push, and stop. It opens by naming
+the override explicitly, because a brief that contradicts a standing rule
+without saying so is how the agent ends up obeying the wrong one.
+
+It carries: pre-build checksums and backup (§8), **commit before building**,
+build id must be **commit-derived** (`5da241e`), the four deploy checks reported
+**individually as PASS/FAIL/NOT RUN**, greps against the **served** file, the
+**two-condition** propagation rule, and — the part that would have prevented
+today — **the build id the owner must look for, and what every possible reading
+means.**
+
+**And one prohibition:** *do not fix anything found while building.* The seek fix
+is a separate workstream and must not be written before the device reading this
+deploy enables.
+
+### NOT DONE, named as not done
+
+1. **Nothing built, nothing pushed.** `origin/main` is still `02e27c4`; the live
+   site still serves `app.fbdc9a4d.js` / build `5eeabb9`. **The fix is committed
+   at `5da241e` and NOT on the owner's phone.**
+2. **The offset is still unmeasured on the device.**
+3. **The programme-skip fix is still unwritten**, deliberately.
+4. **No source changed** — docs and one new prompt only; `npm test` still
+   **260/260**.
+
+---
+
+## WS33D — coding agent: build + push — 2026-09-30T20:05:00+02:00
+
+**Baseline (my own run):** `npm test` → **260/260 pass**, 0 fail. Count
+**unchanged** at 260, as expected — this workstream changed no source.
+
+**Pre-build safety (§8), taken BEFORE `npm run build`:**
+`/tmp/ws33d-prebuild.md5` + `/tmp/ws33d-backup/` (app.js, styles.css, sw.js,
+index.html **and** the old hashed artifacts). `app.js` pre-build md5
+`88b496fc9aefe95d6242bc6fd75da728` — the same checksum as after the WS33
+mutations, confirming the restore was exact.
+
+**Tree state on arrival:** `HEAD` = `5da241e`, `app.js`/`tests/` **byte-identical
+to the commit**. Only doc files modified. One thing to note honestly:
+`SESSION-STATUS.md` carried **147 uncommitted lines** — a *tech-lead review block
+written after my commit*, not a source change. It corrects two of the tech lead's
+own earlier claims (that nothing was committed; that I ran 3 mutations). No code
+was affected and nothing of mine was lost.
+
+**BUILD OUTPUT (actual, not predicted):**
+- Build id: **`5da241e`** — source `git (app.js)`, i.e. **commit-derived**.
+  AC3 PASS. It did **not** fall back to a timestamp.
+- Bundle: **`app.d6ac07bb.js`** (was `app.fbdc9a4d.js`).
+- CSS: `styles.a7560d22.css` (**unchanged hash**, as expected — no CSS change).
+- Service worker: `minradio-3f79141b` (was `minradio-ba0c31fd`).
+
+### The four deploy checks — individually
+
+**CHECK 1 — suite green, count went up / unchanged: PASS.**
+260/260, 0 fail. Baseline 256 → 260 was WS33; this deploy changed no source, so
+260 unchanged is the correct outcome, not a missed test.
+
+**CHECK 2 — read the whole diff: PASS.**
+Changed: `app.fbdc9a4d.js` **deleted**, `app.d6ac07bb.js` **added**,
+`index.html`, `sw.js`. Plus pre-existing doc modifications
+(`AGENTS.md`, `ENHANCEMENTS.md`, `SESSION-STATUS.md`,
+`.github/instructions/min-radio.instructions.md`) and untracked prompt files,
+none of which I touched. **Nothing outside the stated scope moved.**
+`app.js` and `tests/` were NOT modified by the build — confirmed by
+`git diff --name-only HEAD -- app.js tests/` (empty) and by a whole-file
+comparison against `5da241e` (**IDENTICAL**).
+
+**CHECK 3 — the SERVED artifact contains the fix: PASS.**
+- `deviceNow` in `app.d6ac07bb.js`: **17**
+- `STREAM_EDGE_PROBE.offsetS = (deviceNow - trueEdge)`: **1**
+- `offsetS = (appEdge - trueEdge) / 1000;`: **0** (old formula **absent**)
+- `const APP_BUILD = '5da241e'` inside the bundle: **confirmed**
+- `index.html` loads `app.d6ac07bb.js`: **confirmed**
+- Dangling references to `fbdc9a4d` anywhere in the tree: **none**
+
+*One nuance worth recording, because a count that surprises you should be
+explained and not waved through:* a naive grep for
+`offsetS = (deviceNow - trueEdge)` returns **2**, not 1. The second occurrence
+is line 6617 — **my own explanatory comment inside the snapshot's `note` string**,
+not a second assignment. Only one assignment exists, and the WS30 test asserting
+"assigned in exactly ONE place" passes.
+
+**CHECK 4 — nothing else moved: PASS, with one discrepancy investigated and
+reported rather than accepted.**
+
+- **7 timing constants in the built bundle — all correct:** `LIVE_EDGE_TOLERANCE_S=10`,
+  `META_DIAG_READOUT_INTERVAL_MS=2000`, `NOW_PLAYING_INTERVAL_MS=45000`,
+  `NOW_PLAYING_TIMELINE_MAX=60`, `SEEK_ARTWORK_DEBOUNCE_MS=400`,
+  `SEEK_LIVE_MARGIN_S=1`, `SEEK_TRACKS_DEBOUNCE_MS=250`.
+- **Correction constants in CODE: zero.** Measured by stripping comments with a
+  string/template-aware scanner before matching (a naive grep fires on 6 prose
+  mentions, all in comments). Result: **zero** identifiers.
+- **`styles.css` unchanged: PASS** — md5 `c16fb729a99b6d0787dd35132ec8d227`,
+  identical to the pre-build checksum.
+- **Seek functions byte-identical to `5da241e`: PASS** —
+  `seekToProgramTime`, `seekBy`, `seekToLive`, `playheadWallMs`,
+  `dvrPositionToDate` — all **IDENTICAL**.
+
+- **`metaDiagGateOpen` — MISMATCH with the brief's expected value, RESOLVED as a
+  bad reference, not a change.** The brief expected
+  `be2d044f40b3b74c4ed68c75229a3c25`. I measured `8a852b76801b8b1c23c45a5b56da710b`
+  and did **not** wave it through. What I established:
+  1. The function is **byte-identical to the committed `5da241e`** (same hash,
+     298 chars) — so *I* did not change it.
+  2. That same hash `8a852b76…` is produced by **all 12 recent revisions**,
+     including pre-WS33 `02e27c4` — so the gate has been stable throughout.
+  3. No extraction convention I tried (brace-matched body, body+trailing newline,
+     body+preceding comment, declaration-to-EOF) reproduces `be2d044f…` in any
+     of the last 25 revisions.
+  **Conclusion:** `be2d044f…` is a stale reference value in the brief, probably
+  copied from a different extraction or an older tree. **The property the check
+  exists to protect — the gate is unchanged — holds**, verified by direct
+  comparison against the commit rather than by trusting either hash.
+  **Action for the tech lead: the value in WS32-PROMPT.md and SESSION-STATUS.md
+  lines 86/135/220 should be corrected to `8a852b76…` or replaced with
+  "byte-identical to the commit", which is convention-independent.**
+
+### Push and live verification
+
+**Commits (two, per §8):** `5da241e` (source+tests) → `c8f1222` (artifacts:
+`app.d6ac07bb.js`, `index.html`, `sw.js`).
+**Pushed:** `02e27c4..c8f1222 main -> main`.
+**`git ls-remote origin main`** = `c8f1222d71b475e18cd29afee8fe71c263a30de9`.
+
+**Live greps run AGAINST THE LIVE FILE (not the local one):**
+| check | result |
+|---|---|
+| live `index.html` asset | `app.d6ac07bb.js` |
+| CDN bundle size | 342,949 bytes |
+| CDN: new formula | **1** |
+| CDN: old formula | **0** |
+| CDN: `APP_BUILD` | **`5da241e`** |
+| live `sw.js` cache | `minradio-3f79141b` |
+| old asset on CDN | **404** |
+
+**Propagation rule applied with BOTH conditions confirmed.** On the first check
+the live `index.html` still pointed at `app.fbdc9a4d.js` while the raw host
+already served the new asset 200. That is **propagating, not failed** — but only
+because **both** conditions were verified: (1) `git ls-remote` showed `c8f1222`,
+**and** (2) the raw host served the new content with HTTP 200. Re-checked after
+~45 s: live `index.html` then served `app.d6ac07bb.js`. **Had either condition
+failed, I would have reported a failed deploy.**
+
+**WHAT DEPLOYING PROVES, PLAINLY.** It proves the right code is **SERVED**. It
+proves nothing about how it **BEHAVES**.
+
+### NOT DONE, named as not done
+
+- **The offset is STILL UNMEASURED on the owner's iPhone.** Nothing in this
+  workstream changed that. The instrument is now correct; nobody has read it.
+- **The programme-skip defect is NOT FIXED.** This ships a correct *measurement*
+  and nothing more. The seek fix is a separate workstream, deliberately
+  unwritten, and it depends on the device reading this deploy enables.
+- **The owner's §8 question is still unanswered:** does the audio start at the
+  beginning or partway in, and is the title wrong or only the audio? Until it is
+  answered the *direction* of the defect is not established, and the arithmetic
+  (≈25 s late) still disagrees with the reported "lands early".
+- **No device testing of any kind.** No audio decoded, no real HLS seek, no
+  touch gesture. Chromium falls back to direct MP3, so the two-source comparison
+  was never exercised end-to-end anywhere in this workstream.
+- **I did not touch the `metaDiagGateOpen` hash discrepancy in the repo** — I
+  reported it. Fixing the stale value in WS32-PROMPT.md / SESSION-STATUS.md is a
+  docs edit I did not make unasked.
+- **No correction constant was added** and none should be, until a device
+  reading exists.
+- **The `deviceNowMs` branch is code-proven only.** It has never rendered a
+  number on any device.
