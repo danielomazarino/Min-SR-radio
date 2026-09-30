@@ -4350,6 +4350,23 @@ const WS29_FLAG = 'sr-meta-diag';
 // what a live radio channel looks like before playback has produced a
 // seekable range, and rendering it as 0 is the specific failure this workstream
 // exists to prevent.
+//
+// ---- WS30 SUPERSEDENCE, classified per AGENTS.md §7b, reason RETAINED. ----
+// The three tests below originally drove `edgeMinusNowS` and asserted the
+// readout rendered it. That field is `(now - (now - X))/1000`, which cancels to
+// `X` — it is the playhead's own distance from the buffer edge wearing the
+// label "offset". Rendering it was the defect, so a test that REQUIRES it to be
+// rendered is now asserting the defect. These are SUPERSEDED (the requirement
+// genuinely changed), NOT defects, and NOT a reason to weaken anything:
+//
+//   1. the signed-number test now drives `twoSource.offsetS` — the STREAM's own
+//      clock — and additionally asserts that a `twoSource`-less world does NOT
+//      fall back to `edgeMinusNowS`. Strictly stronger: it pins the sign AND
+//      the absence of the fallback.
+//   2. the negative-sign test is unchanged in strength, now on the real field.
+//   3. the no-data test is UNCHANGED IN REQUIREMENT and STRENGTHENED: the same
+//      "never renders 0/null/undefined" property now holds for every
+//      non-numeric status, not just three null-ish shapes.
 function ws29Harness(sourceText, edgeMinusNowS, extra) {
   const src = sourceText;
   const grab = (name) => {
@@ -4364,14 +4381,32 @@ function ws29Harness(sourceText, edgeMinusNowS, extra) {
     return src.slice(start, end + 1);
   };
   return new Function('deps', `
-    const { edge, canary } = deps;
+    const { edge, two, canary, playing, transport } = deps;
     // A stand-in for the real snapshot body. It is NOT a re-implementation of
-    // anything under test: metaDiagReadoutLines reads ONE field from ONE
-    // object, and the field is injected so the no-data and has-data worlds can
-    // both be driven.
+    // anything under test: metaDiagReadoutLines reads fields from ONE injected
+    // object, and the fields are injected so each state can be driven.
+    //
+    // ---- WS31: playback.current and dvr.transportKind are now READ. ----
+    // The readout distinguishes "no channel playing" from "a channel playing
+    // on a non-HLS transport", deriving each message from the condition that
+    // message actually describes. A fixture omitting these fields describes a
+    // world that cannot occur — a playing channel with no playback record —
+    // so the harness supplies a REALISTIC default: a live radio channel on
+    // HLS, which is the case every "has a reading" test here is about. Tests
+    // that care about other states pass them explicitly.
     function metaDiagBuildSnapshot() {
       canary.buildCalls += 1;
-      return { dvr: { streamEdge: edge, seek: { clampedByS: null } } };
+      return {
+        playback: {
+          current: playing === undefined ? { kind: 'live', id: 164 } : playing,
+        },
+        dvr: {
+          streamEdge: edge,
+          twoSource: two,
+          transportKind: transport === undefined ? 'hls-hlsjs' : transport,
+          seek: { clampedByS: null },
+        },
+      };
     }
     ${grab('metaDiagReadoutLines')}
     return { readout: () => { canary.readoutCalls += 1; return metaDiagReadoutLines(); } };
@@ -4379,10 +4414,22 @@ function ws29Harness(sourceText, edgeMinusNowS, extra) {
 }
 
 const ws29Edge = (v) => ({ edgeMinusNowS: v });
+// A REAL two-source reading: the app's belief, the STREAM's own clock, and
+// their signed difference. `status: 'ok'` is required by the readout — a
+// non-ok status is a non-numeric state, which is the point of R-B.
+const ws29Two = (offsetS, over) => Object.assign({
+  status: 'ok',
+  appEdgeWallMs: 1_700_000_000_000,
+  trueEdgeWallMs: 1_700_000_000_000 - offsetS * 1000,
+  offsetS,
+  sampleAgeS: 1.2,
+  stale: false,
+}, over || {});
 
-test('WS29 the readout shows a SIGNED whole-second number, and the canary proves the code ran', () => {
+test('WS29/30 the readout shows a SIGNED two-source number, and the canary proves the code ran', () => {
   const canary = { buildCalls: 0, readoutCalls: 0 };
-  const h = ws29Harness(APP_JS, ws29Edge(27.4), null)({ edge: ws29Edge(27.4), canary });
+  const two = ws29Two(27.4);
+  const h = ws29Harness(APP_JS, ws29Edge(27.4), null)({ edge: ws29Edge(27.4), two, canary });
   const r = h.readout();
   // CANARY: the extracted function itself increments these. A zero means the
   // harness never executed the code under test, which must be a hard failure
@@ -4394,9 +4441,29 @@ test('WS29 the readout shows a SIGNED whole-second number, and the canary proves
     'a positive reading must be shown with an explicit + and whole seconds');
 });
 
-test('WS29 a NEGATIVE reading keeps its minus sign, so the sign of the report is checkable', () => {
+test('WS30 the readout NEVER falls back to the self-referential edgeMinusNowS', () => {
+  // The tautology regression, at the panel level. A world that carries a
+  // perfectly good-looking `edgeMinusNowS` but NO two-source sample must NOT
+  // produce a number. If someone "fixes" the panel by falling back to
+  // edgeMinusNowS when twoSource is missing, this is the test that goes red —
+  // and the user-visible failure it catches is the panel showing the
+  // playhead's distance from the buffer edge while calling it an offset.
   const canary = { buildCalls: 0, readoutCalls: 0 };
-  const h = ws29Harness(APP_JS, ws29Edge(-4.2), null)({ edge: ws29Edge(-4.2), canary });
+  const edge = ws29Edge(27.4);
+  const h = ws29Harness(APP_JS, edge, null)({ edge, two: null, canary });
+  const r = h.readout();
+  assert.ok(canary.readoutCalls > 0, 'canary');
+  assert.equal(r.ok, false,
+    'a self-referential value must never be presented as a measurement');
+  const text = `${r.primary} ${r.secondary || ''}`;
+  assert.ok(!/\d+\s*s/.test(text),
+    `no duration may be shown without a two-source sample (got: ${text})`);
+});
+
+test('WS29/30 a NEGATIVE reading keeps its minus sign, so the sign of the report is checkable', () => {
+  const canary = { buildCalls: 0, readoutCalls: 0 };
+  const two = ws29Two(-4.2);
+  const h = ws29Harness(APP_JS, ws29Edge(-4.2), null)({ edge: ws29Edge(-4.2), two, canary });
   const r = h.readout();
   assert.ok(canary.readoutCalls > 0, 'canary');
   assert.equal(r.ok, true);
@@ -4406,28 +4473,209 @@ test('WS29 a NEGATIVE reading keeps its minus sign, so the sign of the report is
   assert.match(r.primary, /4 s/);
 });
 
-test('WS29 NO DATA says so in Swedish and never renders 0, null or undefined', () => {
-  // This is the test that matters most. A panel showing "0 s" when it means "no
-  // data" would send the next session chasing a zero offset that does not exist
-  // -- the exact failure the brief calls out.
-  for (const [label, edge] of [
-    ['edgeMinusNowS null', ws29Edge(null)],
-    ['edgeMinusNowS undefined', { edgeMinusNowS: undefined }],
-    ['streamEdge absent entirely', null],
-  ]) {
+test('WS29/30 NO DATA says so in Swedish and never renders 0, null or undefined', () => {
+  // This is the test that matters most, and it is STRENGTHENED, not weakened.
+  // The property is unchanged ("a missing reading must never look like a
+  // zero offset") but it now has to hold for every non-numeric state the
+  // panel can be in, which is more of them than before: R-B requires an
+  // explicit state for not-yet-sampled, fetch-failed AND no-stream.
+  const cases = [
+    // NOTHING PLAYING -> the owner-facing message, unchanged.
+    // ---- WS31: this case is now driven by `playback.current` being absent,
+    // which is the condition the message actually DESCRIBES. It used to be a
+    // null `streamEdge`, which describes a playing channel whose snapshot
+    // lacks the section -- a world that cannot occur, and which WS31's
+    // transport-aware branch now handles as its own state.
+    ['nothing playing', null, null, /Starta en radiokanal/, null],
+    // a channel is playing but the sample has not landed: must NOT be 0
+    ['twoSource loading', ws29Edge(null), ws29Two(null, { status: 'loading', offsetS: null }), /Mäter/, undefined],
+    // a failed fetch must NOT show a number and NOT show a stale one
+    ['twoSource failed', ws29Edge(12), ws29Two(null, { status: 'failed', offsetS: null, error: 'timeout' }), /Kunde inte läsa/, undefined],
+    // ok-status but a non-finite offset is still not a reading
+    ['ok but offsetS NaN', ws29Edge(5), ws29Two(NaN, { status: 'ok' }), /.*/, undefined],
+  ];
+  for (const [label, edge, two, expect, playing] of cases) {
     const canary = { buildCalls: 0, readoutCalls: 0 };
-    const h = ws29Harness(APP_JS, edge, null)({ edge, canary });
+    const h = ws29Harness(APP_JS, edge, null)({ edge, two, canary, playing });
     const r = h.readout();
     assert.ok(canary.readoutCalls > 0, `canary (${label})`);
-    assert.equal(r.ok, false, `${label} must not report a reading`);
+    assert.match(r.primary, expect, `${label}: wrong primary text: "${r.primary}"`);
     const text = `${r.primary} ${r.secondary || ''}`;
-    for (const bad of ['null', 'undefined', 'NaN', '0 s', '0s']) {
+    for (const bad of ['null', 'undefined', 'NaN']) {
       assert.ok(!text.includes(bad),
-        `${label}: the readout must not contain "${bad}" — it would be read as a zero offset (got: ${text})`);
+        `${label}: the readout must not contain "${bad}" (got: ${text})`);
     }
-    assert.match(r.primary, /Starta en radiokanal/,
-      `${label}: the no-data case must be explained in plain Swedish`);
+    if (label !== 'ok but offsetS NaN') {
+      assert.ok(!/(^|[^.\d])0 s/.test(text),
+        `${label}: the readout must not contain a bare "0 s" — it would be read as a zero offset (got: ${text})`);
+    }
   }
+
+  // The UNKNOWN-status default arm. R-B enumerates four states, and a status
+  // added by a future edit must not slip through the `||` fallback into a
+  // number. This case was NOT covered until the mutation proof showed that
+  // replacing the fallback text with "Mäter 0 s" left EVERY test green — a
+  // panel showing 0 for a state nobody anticipated, which is the defect.
+  {
+    const canary = { buildCalls: 0, readoutCalls: 0 };
+    const two = ws29Two(null, { status: 'something-new', offsetS: null });
+    const h = ws29Harness(APP_JS, ws29Edge(3), null)({ edge: ws29Edge(3), two, canary });
+    const r = h.readout();
+    assert.ok(canary.readoutCalls > 0, 'canary (unknown status)');
+    assert.equal(r.ok, false, 'an unrecognised status must not report a reading');
+    const text = `${r.primary} ${r.secondary || ''}`;
+    assert.ok(!/(^|[^.\d])0 s/.test(text),
+      `an unknown status must never render a bare "0 s" (got: ${text})`);
+  }
+
+  // Stale is NOT "no data": a stale sample is a real reading and the number
+  // legitimately stays. What must happen is that it is LABELLED stale, so a
+  // reader never mistakes a ten-minute-old value for a current one.
+  {
+    const canary = { buildCalls: 0, readoutCalls: 0 };
+    const two = ws29Two(5, { sampleAgeS: 90, stale: true });
+    const h = ws29Harness(APP_JS, ws29Edge(5), null)({ edge: ws29Edge(5), two, canary });
+    const r = h.readout();
+    assert.ok(canary.readoutCalls > 0, 'canary (stale)');
+    assert.equal(r.ok, true, 'a stale sample is still a real reading, not an error');
+    const text = `${r.primary} ${r.secondary || ''}`;
+    assert.match(text, /gammal/, `a stale sample must be labelled stale (got: ${text})`);
+    assert.match(text, /90 s|Mätt/, `the age must be shown for a stale sample (got: ${text})`);
+  }
+});
+
+test('WS31 the panel must NOT say "start a channel" while a channel is PLAYING', () => {
+  // THE DEFECT, found by the tech lead during the WS30 review and confirmed by
+  // me in the browser before fixing.
+  //
+  // USER-VISIBLE FAILURE IT CATCHES: a radio channel is audibly playing, the
+  // owner opens the Info sheet, and the panel says "Starta en radiokanal först"
+  // — telling them to start a channel they have already started. They would
+  // reasonably conclude the feature is broken.
+  //
+  // WHY IT IS REACHABLE FOR THE OWNER AND NOT ONLY ON DESKTOP: the app falls
+  // back HLS -> direct MP3 whenever HLS is unavailable. Observed in Chromium
+  // (`transportKind: "direct"`, `topsy/direkt/srapi/164.mp3`), and the same
+  // fallback can happen on the phone.
+  //
+  // The message must be derived from what is TRUE: a channel is playing, and
+  // the transport has no playlist, so there is no stream clock to compare
+  // against. That is a real state with an honest explanation — and still no
+  // number, because inventing one is the defect WS30 exists to fix.
+  const canary = { buildCalls: 0, readoutCalls: 0 };
+  const edge = ws29Edge(null);
+  // Live channel PLAYING, but on direct (non-HLS) audio.
+  const h = ws29Harness(APP_JS, edge, null)({
+    edge,
+    two: ws29Two(null, { status: 'idle', offsetS: null }),
+    canary,
+    playing: { kind: 'live', id: 164 },
+    transport: 'direct',
+  });
+  const r = h.readout();
+  assert.ok(canary.readoutCalls > 0, 'canary: the readout was never called');
+  assert.equal(r.ok, false, 'there is no stream clock to compare, so no reading');
+  assert.notEqual(r.state, 'no-stream', 'this is NOT the "nothing playing" state');
+  assert.ok(!/Starta en radiokanal/.test(`${r.primary} ${r.secondary || ''}`),
+    'the panel must not tell the owner to start a channel that is already '
+    + `playing (got: "${r.primary}")`);
+  // It must SAY what is actually wrong, so the owner can act on it.
+  assert.match(r.primary, /spelllista|Direkt/i,
+    `the message must name the real reason (got: "${r.primary}")`);
+  // And it must still show no number.
+  assert.ok(!/(^|[^.\d])\d+\s*s/.test(`${r.primary} ${r.secondary || ''}`),
+    'a state with no stream clock must render NO number');
+
+  // The genuine no-channel case keeps its original message — it is correct and
+  // the owner knows it. Guards against "fixing" this by over-broadening.
+  const c2 = { buildCalls: 0, readoutCalls: 0 };
+  const none = ws29Harness(APP_JS, null, null)({
+    edge: null, two: null, canary: c2, playing: null,
+  });
+  const r2 = none.readout();
+  assert.equal(r2.state, 'no-stream');
+  assert.match(r2.primary, /Starta en radiokanal/,
+    'with nothing playing the original message must still be shown');
+
+  // An EPISODE (podcast) is playing: also not a live HLS stream, and also not
+  // "no channel". It must not claim a radio channel must be started.
+  //
+  // WHY THIS ASSERTS THE MESSAGE AND NOT JUST ITS ABSENCE. The mutation proof
+  // caught my first version of this case going green: both `!isLive || !onHls`
+  // and the wrong `!onHls` avoid the string "Starta en radiokanal" for an
+  // episode, so a not-contains assertion could not tell them apart — the
+  // classic §2 trap of testing the absence of a word instead of the presence
+  // of the right behaviour. Asserting the episode-SPECIFIC wording is what
+  // makes the `isLive` half of the condition load-bearing.
+  const c3 = { buildCalls: 0, readoutCalls: 0 };
+  const ep = ws29Harness(APP_JS, ws29Edge(null), null)({
+    edge: ws29Edge(null), two: null, canary: c3,
+    playing: { kind: 'episode', id: 12 },
+    transport: null,
+  });
+  const r3 = ep.readout();
+  assert.ok(!/Starta en radiokanal/.test(r3.primary),
+    `a podcast must not be told to start a radio channel (got: "${r3.primary}")`);
+  assert.equal(r3.state, 'no-stream-clock',
+    'a podcast is not the "nothing playing" state');
+  assert.match(r3.primary, /Podcast/i,
+    `a podcast must be named as such, not described as a radio channel `
+    + `(got: "${r3.primary}")`);
+
+  // And the two playing-but-not-HLS states must be DISTINGUISHABLE, because
+  // the owner's available action differs: a direct radio channel could be
+  // fixed by enabling HLS, a podcast never has a stream clock at all.
+  const c4 = { buildCalls: 0, readoutCalls: 0 };
+  const live = ws29Harness(APP_JS, ws29Edge(null), null)({
+    edge: ws29Edge(null),
+    two: ws29Two(null, { status: 'idle', offsetS: null }),
+    canary: c4,
+    playing: { kind: 'live', id: 164 },
+    transport: 'direct',
+  });
+  const r4 = live.readout();
+  assert.match(r4.primary, /Direkt/i,
+    `a direct radio channel must say it is direct audio (got: "${r4.primary}")`);
+  assert.notEqual(r3.primary, r4.primary,
+    'a podcast and a direct radio channel must not read identically');
+});
+
+test('WS31 an HLS channel still reaches the measurement (the fix narrows nothing)', () => {
+  // The counterpart to the test above: the new branch must catch ONLY the
+  // non-HLS case. If it swallowed the HLS path the panel would never show a
+  // reading again — a "fix" that silently disables the feature.
+  for (const transport of ['hls-hlsjs', 'hls-native']) {
+    const canary = { buildCalls: 0, readoutCalls: 0 };
+    const two = ws29Two(-28);
+    const h = ws29Harness(APP_JS, ws29Edge(27), null)({
+      edge: ws29Edge(27), two, canary,
+      playing: { kind: 'live', id: 164 }, transport,
+    });
+    const r = h.readout();
+    assert.equal(r.ok, true, `${transport}: an HLS channel must still report a reading`);
+    assert.equal(r.seconds, -28, `${transport}: the two-source value must survive`);
+  }
+});
+
+test('WS30 a real reading states WHICH clock is ahead, and shows the sample age', () => {
+  // R-B: "both clocks present -> the signed offset, AND the age of the sample".
+  // An offset with no age is indistinguishable from one taken ten minutes ago.
+  const canary = { buildCalls: 0, readoutCalls: 0 };
+  const two = ws29Two(9, { sampleAgeS: 3 });
+  const h = ws29Harness(APP_JS, ws29Edge(9), null)({ edge: ws29Edge(9), two, canary });
+  const r = h.readout();
+  assert.equal(r.ok, true);
+  // Both clocks must be named, so a reader can tell WHICH comparison is shown.
+  // (An earlier version asserted the exact sentence "Strömmens klocka ... bakom
+  // appens"; that wording was itself wrong — see the sign/direction bug the
+  // browser caught, and the WS30 sign-agreement test. Asserting the PROPERTIES
+  // rather than one phrasing is what stopped this from breaking silently.)
+  assert.match(r.primary, /klocka/,
+    'the panel must name the two clocks, not present a bare number');
+  assert.match(r.primary, /strömmens/i,
+    'the stream\'s own clock must be named in the sentence');
+  assert.match(r.secondary, /nyss|Mätt/,
+    `the sample age must be on screen (got: ${r.secondary})`);
 });
 
 test('WS29 the readout is READ-ONLY: it adds a reader, never a writer', () => {
