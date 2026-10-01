@@ -94,6 +94,20 @@ const REFUSING_ENV = {
   SEEK_MEASURE: { startMs: 0, behindMs: 0, cachedSeekableEnd: 1,
     freshSeekableEnd: 1, rate: null },
   ws40Transport: () => 'native-hls',
+  // WS41: the copy path now also collects metadata fields. Listed here because
+  // the harness is CLOSED — an unlisted name is a ReferenceError, which is the
+  // property under test. It returns the pure collector's shape.
+  ws41CollectMetadata: () => ({
+    metaSource: 'playlists/rightnow', metaEndpoint: 'stub', metaEpisodeId: null,
+    metaTrackCount: 0, metaCapturedAtMs: null, metaTrackKeys: null,
+    metaTrackSample: null, metaEpisodeStartMs: null,
+    metaAnchorSource: 'stub', onAirTitle: null, onAirArtist: null,
+    onAirStartMs: null, onAirStopMs: null, timelineCount: 0,
+    timelinePollCount: 0, timelineSeekCount: 0, playheadWallMs: null,
+    deviceNowMs: null, cachedSeekableEnd: null, seekableEndWrittenAtMs: null,
+    seekableEndAgeMs: null, onAirOffsetS: null, timelineHitOffsetS: null,
+    timelineHitTitle: null, timelineHitStartMs: null, timelineHitSource: null,
+  }),
 };
 
 test('the clipboard FALLBACK path runs without a ReferenceError', async () => {

@@ -4224,6 +4224,7 @@ test('WS26 Part 3: a failed episode lookup leaves the POLLED timeline intact', a
     const { nowPlaying, state, audioEl, scheduleCache, localDateStr, localDateStrOffset,
             paintNowPlaying, repaintExpandPanel, pickByPosition, playheadWallMs,
             episodeTracksById, hmsToSec, SEEK_TRACKS_DEBOUNCE_MS, NOW_PLAYING_TIMELINE_MAX,
+            metaDiagTrackSource,
             log } = deps;
     let seekTracksSeq = 0;
     const fetch = async () => ({ ok: true, json: async () => ({ tracks: log.tracks }) });
@@ -4266,7 +4267,7 @@ test('WS26 Part 3: a failed episode lookup leaves the POLLED timeline intact', a
     relativeEndTime: `00:${String(i * 3 + 2).padStart(2, '0')}:30`,
   }));
   const mkDrive = (tracks) => {
-    const log = { tracks, calls: [] };
+    const log = { tracks, calls: [], diag: [] };
     const nowPlaying = { timeline: polled.map((e) => ({ ...e })), channelId: 164 };
     const deps = {
       log,
@@ -4290,6 +4291,14 @@ test('WS26 Part 3: a failed episode lookup leaves the POLLED timeline intact', a
       },
       SEEK_TRACKS_DEBOUNCE_MS: 250,
       NOW_PLAYING_TIMELINE_MAX: 60,
+      // WS41: the real function records WHICH endpoint produced a track set and
+      // the programme start it was anchored to. Stubbed on a SEPARATE channel
+      // from `log.calls`, because that array is asserted for exact paint/repaint
+      // ORDER by the test above — adding a diagnostic entry to it would change
+      // the behaviour under test rather than observe it.
+      metaDiagTrackSource: (source, episodeId, tracks, episodeStartMs) => {
+        log.diag.push({ source, episodeId, count: Array.isArray(tracks) ? tracks.length : null, episodeStartMs });
+      },
     };
     return { run: driveRunner(deps), nowPlaying, log };
   };
