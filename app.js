@@ -250,6 +250,49 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     return unescapeXml(s).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
   }
 
+  // ---- News audio: the per-item "Lyssna:" clip ----
+  // The Ekot feed already carries a short audio clip for (measured 2026-10-01)
+  // 20 of 20 entries, as a link in the entry's own content HTML:
+  //   <strong>Lyssna:</strong> <a href=".../radio.aspx?type=db&id=10317313&...">
+  // That DBID is the clip's stable id in SR's audio system.
+  //
+  // The link the feed prints is DEAD: radio.aspx?...&metafile=m3u returns an
+  // EMPTY playlist (just "#EXTM3U", 8 bytes, measured on fresh items). So the
+  // feed's own href must not be used as an audio source.
+  //
+  // The working route is SR's Topsy resolver, which takes the DBID and
+  // redirects (302) to a real .m4a on lyssna-cdn.sr.se:
+  //   /topsy/ljudfil/{dbId}?publicationId={articleId}
+  // Both the resolver and the CDN send `access-control-allow-origin: *`, and
+  // the resolver explicitly allows the `range` request header, so a static
+  // host can stream it directly. The CDN URL itself embeds a per-publication
+  // timestamp, so the DBID — not that URL — is the durable identifier.
+  //
+  // The .m4a format is already proven by this app: podcast episodes resolve to
+  // the same lyssna-cdn.sr.se host (e.g. .../ljudit/.../nyheter_p4_jmtland_*.m4a)
+  // and play through the existing player. News clips therefore reuse the
+  // existing player unchanged — no second audio path.
+  const TOPSY_CLIP_BASE = 'https://www.sverigesradio.se/topsy';
+  function newsClipDbId(contentHtml) {
+    // Run on the ALREADY-unescaped content, so the href is plain
+    // `?type=db&id=123`. The optional `&amp;` also covers a feed that leaves
+    // the entity escaped, so a future feed change cannot silently drop every
+    // clip.
+    const m = /radio\.aspx\?type=db&(?:amp;)?id=(\d+)/.exec(contentHtml || '');
+    return m ? m[1] : null;
+  }
+
+  function newsAudioUrl(articleId, dbId) {
+    // BOTH ids are required. The resolver is keyed on the clip, but
+    // `publicationId` is what tells SR which publication the clip belongs to;
+    // without a real article id there is nothing coherent to send. Any
+    // missing or non-numeric part returns null, which leaves the item on the
+    // existing read-the-article path instead of producing a dead play button.
+    if (!Number.isInteger(articleId) || articleId <= 0) return null;
+    if (!/^\d+$/.test(String(dbId || ''))) return null;
+    return `${TOPSY_CLIP_BASE}/ljudfil/${dbId}?publicationId=${articleId}`;
+  }
+
   async function fetchNewsFlashes(count) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
@@ -275,6 +318,8 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       let publishedMs = published ? Date.parse(published.trim()) : NaN;
       if (!Number.isFinite(publishedMs)) publishedMs = null;
       const idMatch = /artikel\/(\d+)/.exec(link);
+      const articleId = idMatch ? Number(idMatch[1]) : null;
+      const audioDbId = newsClipDbId(decoded);
       items.push({
         id: idMatch ? Number(idMatch[1]) : publishedMs ?? items.length,
         title: stripTags(title).slice(0, 160),
@@ -285,7 +330,10 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         url: link.trim(),
         publishDateUtc: publishedMs,
         programName: author ? unescapeXml(author).trim().slice(0, 80) : null,
-        audioUrl: null,
+        // The clip id travels with the item so the resolver URL is derived, not
+        // guessed, and so a bad id can never produce a play button.
+        audioDbId,
+        audioUrl: newsAudioUrl(articleId, audioDbId),
         duration: null,
       });
       if (items.length >= count * 3) break;
