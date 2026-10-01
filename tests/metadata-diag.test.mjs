@@ -2680,8 +2680,17 @@ test('WS11 Part C: MediaSession carries the position-aware programme and song', 
   assert.ok(!/artist: cur\.subtitle \|\|/.test(MEDIA_SESSION),
     'cur.subtitle must no longer be the MediaSession artist');
   // It must read the SAME position-aware values the in-app display uses.
-  assert.ok(/pickByPosition\(nowPlaying\.timeline, playheadWallMs\(\)\)/.test(MEDIA_SESSION),
+  //
+  // WS44 SUPERSEDED the `playheadWallMs()` spelling to `playheadWallMs44()`.
+  // The requirement is "the car screen selects the song by the playhead, from
+  // the same timebase the panel uses"; the experiment changed which timebase
+  // that is. Restated so it now also pins AGREEMENT with the panel — a car
+  // screen and a phone panel describing different songs is R6 again, on a
+  // surface nobody had checked.
+  assert.ok(/pickByPosition\(nowPlaying\.timeline, playheadWallMs44\(\)\)/.test(MEDIA_SESSION),
     'the session song must be selected by the playhead, as the app does');
+  assert.ok(!/pickByPosition\(nowPlaying\.timeline, playheadWallMs\(\)\)/.test(MEDIA_SESSION),
+    'the session song must NOT fall back to the superseded timebase');
   assert.ok(/episodeCurrentTrack/.test(MEDIA_SESSION),
     'podcasts must use the position-aware episode track');
   assert.ok(/_srProgramTitle/.test(MEDIA_SESSION),

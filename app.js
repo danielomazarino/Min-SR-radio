@@ -2140,10 +2140,93 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   //     playhead wall clock = now - (live edge - currentTime)
   // It lives at module scope (not inside renderPlayer) because resolveProgram-
   // Title and the seek paths need it without a player render.
+  //
+  // WS44 EXPERIMENT. This is the model the app has always used: the buffered
+  // EDGE is treated as "now". That assumption is what four workstreams have
+  // been trying to validate and have not. It is kept INTACT below and remains
+  // the fallback — this is an A/B, not a replacement.
   function playheadWallMs() {
     const end = state.current ? state.current.seekableEnd : null;
     if (!Number.isFinite(end)) return Date.now();
     return Date.now() - (end - (audioEl.currentTime || 0)) * 1000;
+  }
+
+  // ---- WS44 EXPERIMENT: the NATIVE getStartDate() timebase. ----
+  //
+  // Test seam for the canary inside ws44PlayheadWallMs(). `null` in
+  // production. Declared here — at the same scope the function is defined in —
+  // because an undeclared identifier would make the canary line throw a
+  // ReferenceError on every call, which is a far worse outcome than the
+  // feature it instruments.
+  const WS44_CANARY = null;
+  //
+  // WHAT QUESTION THIS ASKS. `HTMLMediaElement.getStartDate()` returns the
+  // wall-clock instant that corresponds to media time 0 for a live stream.
+  // If Safari supplies it, then
+  //
+  //     playhead wall clock = getStartDate() + currentTime
+  //
+  // is an INDEPENDENT measurement of the same quantity `playheadWallMs()`
+  // computes by ASSUMPTION. The existing model never asks the platform what
+  // time it thinks the media began; it infers it from a buffered edge and the
+  // system clock. This asks the platform directly, and on the path where only
+  // Safari can answer (native HLS — i.e. the owner's iPhone).
+  //
+  // WHY NATIVE-HLS ONLY. hls.js feeds MSE, and `getStartDate()` reflects what
+  // the SOURCE declared, not the segment timeline hls.js synthesised over a
+  // sliding DVR window. Reading it there would compare a declared presentation
+  // time against a constructed one. It is also unnecessary: the hls.js path is
+  // not where the owner's symptom is reported. Leaving it untouched also means
+  // a desktop measurement still reproduces the OLD behaviour exactly.
+  //
+  // PURE BY CONSTRUCTION. Every input arrives as an argument — the Date
+  // constructor is supplied by the caller, the fallback is supplied by the
+  // caller. Nothing here reads `state`, `audioEl` or the module `Date`. That is
+  // what makes the difference between the two timebases measurable at all
+  // (AGENTS.md §7: a harness must prove it is executing the code under test).
+  //
+  // RETURNS a number, or the fallback. Callers get a usable value either way,
+  // so no caller needs a null check that did not exist before.
+  function ws44PlayheadWallMs(startDateMs, currentTime, transport, fallbackMs) {
+    // ---- POSITIVE CANARY (AGENTS.md §7). ----
+    // The parameter is `null` in production, so this is one branch and one
+    // typeof per call — the function is called on metadata refreshes, not per
+    // audio frame. It exists so a test harness can PROVE it is executing this
+    // function rather than a stand-in: an extracted function that silently
+    // does nothing has produced confident, entirely fictional results in this
+    // repo before. The call is inside the function body, so the counter can
+    // only move if this code actually ran.
+    if (WS44_CANARY) WS44_CANARY();
+    // Only the native-HLS path may use the native timebase. See above.
+    if (transport !== 'native-hls') return fallbackMs;
+    // A missing, non-numeric, zero, negative or non-finite start date is not
+    // a usable timebase. Safari returns 0 for "unknown" and throws on some
+    // paths; treating either as an instant in 1970 would silently move the
+    // playhead by half a century, so every one of them falls back.
+    if (!Number.isFinite(startDateMs) || startDateMs <= 0) return fallbackMs;
+    if (!Number.isFinite(currentTime)) return fallbackMs;
+    return startDateMs + currentTime * 1000;
+  }
+
+  // The production accessor. It asks the element ONCE, decides the transport,
+  // and hands both to the pure function above. The existing implementation is
+  // evaluated EAGERLY as the fallback argument, so the fallback is always the
+  // app's established answer and never depends on whether the native read
+  // happened to be taken.
+  function playheadWallMs44() {
+    const fallback = playheadWallMs();
+    const transport = ws40Transport();
+    let startDateMs = null;
+    if (transport === 'native-hls') {
+      try {
+        // Safari only. Guarded on typeof because the method does not exist on
+        // Chromium at all, and calling it there would throw.
+        if (typeof audioEl.getStartDate === 'function') {
+          startDateMs = audioEl.getStartDate();
+        }
+      } catch { startDateMs = null; }
+    }
+    return ws44PlayheadWallMs(startDateMs, audioEl.currentTime, transport, fallback);
   }
 
   // Select the entry whose [startMs, stopMs) contains the playhead. The same
@@ -2163,7 +2246,11 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   function resolveMetadataForPosition(cur) {
     const track = cur || state.current;
     if (!track || track.kind !== 'live' || !track.id) return;
-    const atMs = playheadWallMs();
+    // WS44 EXPERIMENT: read the playhead through the experimental native
+    // timebase. This is the DVR METADATA lookup, which is the four-day
+    // user-visible problem. The seek equation is NOT switched — see
+    // playheadWallMs44().
+    const atMs = playheadWallMs44();
 
     // Programme title: the event CONTAINING the playhead, not the one on air.
     const schedule = cur._srSchedule;
@@ -2259,7 +2346,10 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
           seekArtworkTimer = null;
           // Re-check at fire time: the playhead may have moved on, and the
           // song resolved then may be a different one (or none).
-          const now = pickByPosition(nowPlaying.timeline, playheadWallMs());
+          // WS44 EXPERIMENT: same native timebase as the text it accompanies.
+          // A cover and a title from different timebases would be a new
+          // disagreement of exactly the kind R6 was about.
+          const now = pickByPosition(nowPlaying.timeline, playheadWallMs44());
           if (!now || !now.title || !now.artist) return;
           refreshNowPlayingArtwork(now, 'playhead');
         }, SEEK_ARTWORK_DEBOUNCE_MS);
@@ -2826,9 +2916,12 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       // live channel and `channel` (cur.title) IS the episode name on an
       // episode object. Both fields therefore held the same string and the car
       // displayed the episode title twice. Measured live on P3 Soul.
+      // WS44 EXPERIMENT: the panel's song line for a live DVR position now
+      // reads through the experimental native timebase. Episodes keep the
+      // existing path untouched — the experiment is native-HLS live only.
       const curSong = cur.kind === 'episode'
         ? episodeCurrentTrack
-        : pickByPosition(nowPlaying.timeline, playheadWallMs());
+        : pickByPosition(nowPlaying.timeline, playheadWallMs44());
       // For an episode, cur.title is the EPISODE name and cur.programName is
       // the PODCAST name -- they are swapped relative to a live channel, where
       // cur.title is the channel and _srProgramTitle is the programme.
@@ -8243,6 +8336,24 @@ function seekMeasureRecordText() {
       // WS9: the playhead's wall-clock position and what it resolves to, so a
       // screenshot shows the title AND the position that produced it.
       playheadWallMs: (cur && cur.kind === 'live') ? playheadWallMs() : null,
+      // WS44 EXPERIMENT. BOTH timebases on the press path too. The delta is
+      // the experiment's result: on the iPhone it is the size of the error the
+      // seekableEnd-derived model was carrying. Recorded whether or not a
+      // native read was available, so "delta 0 because the platform returned
+      // nothing" stays distinguishable from "delta 0 because the two agree".
+      playheadWallMs44: (cur && cur.kind === 'live') ? playheadWallMs44() : null,
+      playheadDelta44Ms: (cur && cur.kind === 'live'
+        && Number.isFinite(playheadWallMs())
+        && Number.isFinite(playheadWallMs44()))
+        ? playheadWallMs44() - playheadWallMs() : null,
+      getStartDateMs: (() => {
+        try {
+          if (typeof audioEl.getStartDate !== 'function') return null;
+          const v = audioEl.getStartDate();
+          return Number.isFinite(v) && v > 0 ? v : null;
+        } catch { return null; }
+      })(),
+      getStartDateAvailable: typeof audioEl.getStartDate === 'function',
       programAtPlayhead: (cur && cur.kind === 'live' && Array.isArray(cur._srSchedule))
         ? (pickByPosition(cur._srSchedule.map((e) => ({
           startMs: e.startMs, stopMs: e.endMs, title: e.title,

@@ -515,8 +515,17 @@ test('WS24: the seek path requests artwork for the song it resolved', () => {
   // And the song it looks up must be re-resolved at fire time, not captured
   // from an earlier frame: the playhead may have moved on while the debounce
   // was pending, and a stale capture would fetch the wrong song's cover.
-  assert.ok(/pickByPosition\(nowPlaying\.timeline, playheadWallMs\(\)\)/.test(RESOLVE),
+  //
+  // WS44 SUPERSEDED the `playheadWallMs()` spelling to `playheadWallMs44()` —
+  // the requirement is "re-resolve the song at fire time, through the app's
+  // current DVR timebase", and the experiment changed WHICH timebase that is.
+  // Restated, not weakened: it still pins the exact call, still forbids a
+  // captured variable, and now also pins that the value comes from the
+  // experimental accessor rather than from a local.
+  assert.ok(/pickByPosition\(nowPlaying\.timeline, playheadWallMs44\(\)\)/.test(RESOLVE),
     'the debounced lookup must re-resolve the song at fire time');
+  assert.ok(!/const (captured|cached|frozen)\w*\s*=\s*pickByPosition/.test(RESOLVE),
+    'the debounced lookup must not capture an earlier pickByPosition result');
   assert.ok(/if \(!now \|\| !now\.title \|\| !now\.artist\) return;/.test(RESOLVE),
     'the debounced lookup must bail if the playhead is no longer inside a song');
 });
