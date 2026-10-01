@@ -3369,6 +3369,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     playlistSampleAgeMs: null,  // age of the playlist fetch
     deviceNowMs: null,          // device clock, for the clock-skew term only
     originSource: 'unavailable', // how A was obtained
+    originReason: null,         // WHY, in words, when A is not available
     mediaOriginMs: null,        // A
     transport: null,            // 'native-hls' | 'hlsjs' | 'direct'
 
@@ -3540,6 +3541,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         ? nowMs - p.sampledAtMs : (Number.isFinite(p.sampledAtMs)
           ? nowMs - p.sampledAtMs : null);
     WS40.originSource = origin.source;
+    WS40.originReason = origin.assumption || null;
     WS40.mediaOriginMs = origin.originMs;
     WS40.transport = ws40Transport();
     // ---- WS40b: the independent cross-check. Recorded ONLY. ----
@@ -3668,6 +3670,9 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     lines.push('Medietidsnollpunkten A');
     lines.push(`   A: ${iso(WS40.mediaOriginMs)}`);
     lines.push(`   källa: ${WS40.originSource}`);
+    if (!Number.isFinite(WS40.mediaOriginMs) && WS40.originReason) {
+      lines.push(`   anledning: ${WS40.originReason}`);
+    }
     lines.push('');
     lines.push('Oberoende kontroll av A (från SR:s spellista)');
     lines.push(`   A ur spellistan: ${iso(WS40.playlistOriginMs)}`);
@@ -3762,6 +3767,246 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   function ws40OriginDelta(originMs, playlistOriginMs) {
     if (!Number.isFinite(originMs) || !Number.isFinite(playlistOriginMs)) return null;
     return (originMs - playlistOriginMs) / 1000;
+  }
+
+  // ======================================================================
+  // WS40c — "Kopiera all diagnostik": ONE atomic snapshot, plain text.
+  // ======================================================================
+  //
+  // WHY. The diagnostics refresh every couple of seconds and the values move
+  // while they are read. Copying them by scraping the rendered DOM, or by
+  // reading one field at a time from live objects, produces a report whose
+  // parts belong to DIFFERENT instants -- and this investigation has already
+  // been burned twice by a number that was internally inconsistent (the
+  // tautological `segmentfel`, and a `getStartDate()` reported as
+  // `unavailable` that had never been read at all).
+  //
+  // So the text is built by a PURE function from ONE already-captured record.
+  // Every value is passed in; the function reads nothing global. If a value
+  // refreshes while the clipboard operation is in flight, the string already
+  // exists and cannot change underneath the user.
+  //
+  // It is DIAGNOSTIC ONLY. It reads the same records the panel displays and
+  // writes nothing at all -- no playback, no seek, no network.
+
+  // Render one value, or the word the owner asked for. A missing value is
+  // NEVER replaced by a derived one and NEVER by 0.
+  function ws40Fmt(v, unit) {
+    if (v === null || v === undefined) return 'unavailable';
+    if (typeof v === 'number' && !Number.isFinite(v)) return 'unavailable';
+    if (typeof v === 'boolean' || typeof v === 'string') return String(v);
+    if (unit === 'ms') return `${Math.round(v)} ms`;
+    if (unit === 'iso') return new Date(v).toISOString();
+    if (unit === 's') return `${v.toFixed(2)} s`;
+    return String(v);
+  }
+
+  // Build the whole report. PURE: every input arrives as an argument, so the
+  // output is a function of one moment and cannot drift.
+  function ws40SnapshotText(d) {
+    const L = [];
+    const push = (k, v, unit) => L.push(`${k}: ${ws40Fmt(v, unit)}`);
+
+    L.push(`WS40 SNAPSHOT — ${ws40Fmt(d.snapshotAtMs, 'iso')}`);
+    L.push('');
+    L.push('== BUILD / CONTEXT ==');
+    push('APP_BUILD', d.appBuild);
+    push('measurement timestamp (raw ms)', d.snapshotAtMs, 'ms');
+    push('transport', d.transport);
+    push('channel', d.channelTitle);
+    push('channel id', d.channelId);
+    push('programme', d.programmeTitle);
+    push('programme starttimeutc (raw ms)', d.programmeStartMs, 'ms');
+    push('programme starttimeutc (UTC)', d.programmeStartMs, 'iso');
+    L.push('');
+
+    L.push('== MEDIA / HLS ==');
+    push('currentTime (media seconds)', d.currentTimeS, 's');
+    push('seekableStart (media seconds)', d.seekableStartS, 's');
+    push('seekableEnd (media seconds)', d.seekableEndS, 's');
+    push('duration (media seconds)', d.durationS, 's');
+    push('readyState (HAVE_METADATA=1, HAVE_CURRENT_DATA=2, HAVE_FUTURE_DATA=3, HAVE_ENOUGH=4)', d.readyState);
+    push('networkState (NETWORK_EMPTY=0 .. NETWORK_NO_SOURCE=3)', d.networkState);
+    push('paused', d.paused);
+    L.push('');
+
+    L.push('== SAFARI A (getStartDate) ==');
+    push('A (getStartDate, raw ms)', d.mediaOriginMs, 'ms');
+    push('A (getStartDate, UTC)', d.mediaOriginMs, 'iso');
+    push('A source', d.originSource);
+    push('A reason if unavailable', d.originReason);
+    // The RAW value exactly as Safari handed it over, so the reader can see
+    // whether it was null, non-finite, or simply never asked for.
+    push('getStartDate() raw', d.startDateRaw);
+    push('getStartDate() is a function on this element', d.hasGetStartDateFn);
+    L.push('NOTE: A is NEVER reconstructed from seekableEnd, trueEdgeWallMs,');
+    L.push('      currentTime, the proposed target or any programme time.');
+    L.push('');
+
+    L.push('== PLAYLIST WITNESS ==');
+    push('headPdtMs (raw ms)', d.headPdtMs, 'ms');
+    push('headPdt (UTC)', d.headPdtMs, 'iso');
+    push('trueEdgeWallMs (raw ms)', d.trueEdgeWallMs, 'ms');
+    push('playlist edge (UTC)', d.trueEdgeWallMs, 'iso');
+    push('segmentDurationS', d.segmentMs);
+    push('playlist sampledAtMs (raw ms)', d.playlistSampleAtMs, 'ms');
+    push('playlist sampledAt (UTC)', d.playlistSampleAtMs, 'iso');
+    push('playlist sample age (ms)', d.playlistSampleAgeMs, 'ms');
+    push('playlist sample age (s)', d.playlistSampleAgeMs === null
+      ? null : d.playlistSampleAgeMs / 1000, 's');
+    L.push('');
+
+    L.push('== INDEPENDENT ORIGIN CHECK ==');
+    push('A_playlist = trueEdgeWallMs - seekableEnd*1000 (raw ms)', d.playlistOriginMs, 'ms');
+    push('A_playlist (UTC)', d.playlistOriginMs, 'iso');
+    push('A_safari (raw ms)', d.mediaOriginMs, 'ms');
+    push('A_safari - A_playlist (seconds)', d.originDeltaS, 's');
+    L.push('reproduce: A_playlist = trueEdgeWallMs - seekableEnd * 1000');
+    L.push(`         values:  ${ws40Fmt(d.trueEdgeWallMs, 'ms')} - ${ws40Fmt(d.seekableEndS, 's')} * 1000`);
+    L.push('READ WITH THE BIAS IN MIND: trueEdgeWallMs overshoots real UTC by');
+    L.push('about 31.5 s, so A_playlist inherits it. A PERFECT getStartDate()');
+    L.push('gives a difference near -31.5 s, NOT near 0.');
+    L.push('');
+
+    L.push('== TARGET DIAGNOSTICS (computed, never used by production) ==');
+    push('existing formula target (media seconds)', d.existingTargetS, 's');
+    push('proposed formula target (media seconds)', d.proposedTargetS, 's');
+    push('difference proposed - existing (s)', d.targetDeltaS, 's');
+    push('startMs (raw ms)', d.startMs, 'ms');
+    push('startMs (UTC)', d.startMs, 'iso');
+    push('behindMs = now - startMs (ms)', d.behindMs, 'ms');
+    push('WS38 cached seekableEnd (media seconds)', d.cachedSeekableEnd, 's');
+    push('WS38 fresh seekableEnd (media seconds)', d.freshSeekableEnd, 's');
+    push('WS38 rate', d.rate);
+    L.push('');
+
+    L.push('== TEST SEEKS RUN (this session) ==');
+    if (!d.runs || !d.runs.length) {
+      L.push('none — no test seek has been performed');
+    } else {
+      for (const r of d.runs) {
+        L.push(`- [${r.mapping}] ${r.programmeTitle || 'okänd'}`);
+        L.push(`    requested: ${ws40Fmt(r.requestedTargetS, 's')}`);
+        L.push(`    landed:    ${ws40Fmt(r.landedS, 's')}`);
+        L.push(`    clamped:   ${ws40Fmt(r.clampedByS, 's')}`);
+      }
+    }
+    L.push('');
+    L.push('== SAFETY ==');
+    L.push('production seek equation: end - (Date.now() - startMs)/1000 — UNCHANGED');
+    L.push('this snapshot is diagnostic only; it changed no playback state');
+    return L.join('\n');
+  }
+
+  // Take the snapshot. Reads the already-captured records ONCE, synchronously,
+  // so every field belongs to the same instant, and hands the finished string
+  // to the clipboard. The string is built BEFORE any await, so a refresh
+  // during the clipboard write cannot alter it.
+  async function ws40CopyDiagnostics(button, labelNode, boxNode) {
+    const nowMs = Date.now();
+    const cur = state.current;
+    const p = STREAM_EDGE_PROBE;
+    // Read the element's live state at this instant and never again.
+    const readyState = Number.isFinite(audioEl.readyState) ? audioEl.readyState : null;
+    const networkState = Number.isFinite(audioEl.networkState)
+      ? audioEl.networkState : null;
+    const durationS = Number.isFinite(audioEl.duration) ? audioEl.duration : null;
+    const paused = typeof audioEl.paused === 'boolean' ? audioEl.paused : null;
+    // Probe the method's existence SEPARATELY from its value, so "the method
+    // is missing" can never be reported as "the method returned nothing".
+    // These are different faults and the owner has to be able to tell them
+    // apart -- an earlier run conflated them.
+    const hasFn = typeof audioEl.getStartDate === 'function';
+    let startDateRaw = 'not read';
+    if (hasFn) {
+      try {
+        const d = audioEl.getStartDate();
+        startDateRaw = d === null ? 'null'
+          : (d === undefined ? 'undefined'
+            : (typeof d.getTime === 'function' ? String(d.getTime()) : String(d)));
+      } catch (err) {
+        startDateRaw = `threw: ${String((err && err.message) || err).slice(0, 60)}`;
+      }
+    } else {
+      startDateRaw = 'method absent on this element';
+    }
+
+    const text = ws40SnapshotText({
+      snapshotAtMs: nowMs,
+      appBuild: APP_BUILD,
+      transport: WS40.transport || ws40Transport(),
+      channelTitle: cur ? (cur.title || cur.name || null) : null,
+      channelId: cur ? (cur.id ?? null) : null,
+      programmeTitle: WS40.programmeTitle,
+      programmeStartMs: WS40.programmeStartMs,
+      currentTimeS: Number.isFinite(audioEl.currentTime) ? audioEl.currentTime : null,
+      seekableStartS: WS40.seekableStartS,
+      seekableEndS: WS40.seekableEndS,
+      durationS,
+      readyState,
+      networkState,
+      paused,
+      mediaOriginMs: WS40.mediaOriginMs,
+      originSource: WS40.originSource,
+      originReason: WS40.originReason || null,
+      startDateRaw,
+      hasGetStartDateFn: hasFn,
+      headPdtMs: WS40.headPdtMs,
+      trueEdgeWallMs: WS40.playlistEdgeWallMs,
+      segmentMs: WS40.segmentMs,
+      playlistSampleAtMs: WS40.playlistSampleAtMs,
+      playlistSampleAgeMs: WS40.playlistSampleAgeMs,
+      playlistOriginMs: WS40.playlistOriginMs,
+      originDeltaS: WS40.originDeltaS,
+      existingTargetS: WS40.existingTargetS,
+      proposedTargetS: WS40.proposedTargetS,
+      targetDeltaS: WS40.targetDeltaS,
+      startMs: SEEK_MEASURE.startMs,
+      behindMs: SEEK_MEASURE.behindMs,
+      cachedSeekableEnd: SEEK_MEASURE.cachedSeekableEnd,
+      freshSeekableEnd: SEEK_MEASURE.freshSeekableEnd,
+      rate: SEEK_MEASURE.rate,
+      runs: WS40.runs.slice(),
+    });
+
+    // The string exists now. Nothing below can change it.
+    let ok = false;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        ok = true;
+      }
+    } catch { /* handled below */ }
+    if (ok) {
+      showToast('Diagnostik kopierad', 1500);
+      if (button && labelNode) {
+        labelNode.textContent = 'Diagnostik kopierad';
+        setTimeout(() => { labelNode.textContent = 'Kopiera all diagnostik'; }, 1500);
+      }
+      return { ok: true, text };
+    }
+    // Clipboard refused (insecure context, permission denied, or a browser
+    // that has no async clipboard). The snapshot is NOT lost: it is shown in
+    // the panel, selected, so it can be copied by hand.
+    //
+    // `boxNode` is PASSED IN, not read from a variable in this scope: the
+    // panel lives in openAbout(), and a reference to it from here threw
+    // ReferenceError on the one path that exists precisely when something has
+    // already gone wrong. Found by driving the real button in the browser, not
+    // by a test -- no source-shape assertion can see a scope error.
+    if (!boxNode) {
+      showToast('Kopiering misslyckades', 4000);
+      return { ok: false, text };
+    }
+    boxNode.textContent = text;
+    try {
+      const range = document.createRange();
+      range.selectNodeContents(boxNode);
+      const sel = window.getSelection();
+      if (sel) { sel.removeAllRanges(); sel.addRange(range); }
+    } catch { /* selection is a convenience, not a requirement */ }
+    showToast('Kopiering misslyckades – texten visas och är markerad', 4000);
+    return { ok: false, text };
   }
 
   // True while the Info panel's paint interval is running. Recorded so a reader
@@ -6417,6 +6662,20 @@ function seekMeasureRecordText() {
       class: 'setting-row', type: 'button',
     }, el('span', { class: 'setting-minmax', text: 'Testseek BEFINTLIG' }));
 
+    // ---- WS40c: copy one whole, internally consistent snapshot. ----
+    // Reads the same records the panel displays, at one instant, and never
+    // scrapes the DOM -- a DOM read would return values painted at different
+    // moments, which is the exact inconsistency this button exists to remove.
+    const ws40CopyLabel = el('span', {
+      class: 'setting-minmax', text: 'Kopiera all diagnostik',
+    });
+    const ws40CopyBtn = el('button', {
+      class: 'setting-row', type: 'button',
+    }, ws40CopyLabel);
+    ws40CopyBtn.addEventListener('click', () => {
+      ws40CopyDiagnostics(ws40CopyBtn, ws40CopyLabel, ws40Box);
+    });
+
     // The candidate programmes: from the CURRENT channel's already-fetched
     // schedule, those that have already started (a future programme cannot be
     // seeked to) and that sit inside the buffered window. Nothing is fetched
@@ -6482,7 +6741,7 @@ function seekMeasureRecordText() {
 
     const ws40Section = el('div', { class: 'about-diag' },
       el('h3', { class: 'about-heading', text: 'Test av föreslagen mätning' }),
-      ws40Pick, ws40Measure, ws40SeekNew, ws40SeekOld, ws40Box);
+      ws40Pick, ws40Measure, ws40SeekNew, ws40SeekOld, ws40CopyBtn, ws40Box);
 
     // Built BEFORE the handlers below are wired, because the click handler
     // toggles `is-off` on it. Declaring it after the handler would be a
@@ -7949,6 +8208,7 @@ function seekMeasureRecordText() {
           playlistSampleAgeMs: WS40.playlistSampleAgeMs,
           deviceNowMs: WS40.deviceNowMs,
           originSource: WS40.originSource,
+          originReason: WS40.originReason,
           mediaOriginMs: WS40.mediaOriginMs,
           // ---- WS40b: independent cross-check of A. DIAGNOSTIC ONLY. ----
           playlistOriginMs: WS40.playlistOriginMs,

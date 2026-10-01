@@ -228,8 +228,14 @@ test('WS38 GUARD: no absolute seekableEnd-vs-stream-clock difference exists in c
   // here is presented as that: it is labelled a cross-check, it inherits a
   // known +31.5 s bias, and the panel says so in the owner's language.
   const EXCEPTION = 'ws40PlaylistOrigin';
-  const withoutException = APP_CODE.replace(
-    new RegExp(`function ${EXCEPTION}\\([\\s\\S]*?\\n  \\}`), '/* removed */');
+  // WS40c added a second legitimate appearance: the snapshot builder PRINTS
+  // the formula as a reproduction hint, inside a string. It is text, not
+  // arithmetic. Excluded by name, narrowly, so a real second computation
+  // anywhere else still fails.
+  const PRINTER = 'ws40SnapshotText';
+  const withoutException = [EXCEPTION, PRINTER].reduce(
+    (acc, fn) => acc.replace(new RegExp(`function ${fn}\\([\\s\\S]*?\\n  \\}`), '/* removed */'),
+    APP_CODE);
   const forbidden = [
     /trueEdge\w*\s*-\s*[^;]*seekableEnd/,
     /seekableEnd[^;]*-\s*[^;]*trueEdge\w*/,
@@ -245,9 +251,22 @@ test('WS38 GUARD: no absolute seekableEnd-vs-stream-clock difference exists in c
   // The exception is real but SINGLE. A second copy of the expression
   // anywhere else would be a fallback origin rebuilding itself, which is the
   // circularity this guard exists to stop.
-  const copies = (APP_CODE.match(/trueEdge\w*\s*-\s*[^;]*seekableEnd/g) || []).length;
+  //
+  // Counted against `APP_CODE` with ONLY the printer removed. An earlier
+  // version counted against the list that also removed `ws40PlaylistOrigin`,
+  // which zeroed the count and demanded 1 — the guard then rejected the very
+  // function it exists to permit. The sanctioned computation must be COUNTED;
+  // only the printed text is excluded.
+  const counted = APP_CODE.replace(
+    new RegExp(`function ${PRINTER}\\([\\s\\S]*?\\n  \\}`), '/* removed */');
+  const copies = (counted.match(/trueEdge\w*\s*-\s*[^;]*seekableEnd/g) || []).length;
   assert.equal(copies, 1,
-    'the stream-clock-minus-buffered-edge expression must appear exactly once');
+    'the stream-clock-minus-buffered-edge expression must appear exactly once '
+    + 'in code (the snapshot printer may also print it as text)');
+  // And the single survivor must be the sanctioned pure function itself.
+  const survivors = counted.match(/trueEdge\w*\s*-\s*[^;]*seekableEnd/g) || [];
+  assert.ok(survivors.every((s) => /trueEdgeWallMs\s*-\s*seekableEnd/.test(s)),
+    'the sole permitted expression must be the trueEdgeWallMs form');
 
   // And the positive statement of what IS allowed: the only cross-frame
   // comparison is a RATIO of elapsed figures between two samples.

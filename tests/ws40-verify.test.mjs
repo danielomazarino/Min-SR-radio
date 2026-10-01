@@ -84,6 +84,25 @@ function grab(name) {
 const PURE = ['ws40SegmentIndex', 'ws40ProposedTarget', 'ws40ExistingTarget',
   'ws40LandingErrorSeg', 'ws40PlaylistOrigin', 'ws40OriginDelta'];
 
+// Functions that RENDER text rather than COMPUTE it. `ws40SnapshotText` prints
+// the expression twice — once as a label and once as a reproduction hint — so
+// it is not a second origin, and a guard that counts it is a guard on
+// spelling rather than on shape. `codeOnly` removes the whole function body
+// before the occurrence count runs; the printer is still covered by its own
+// tests, which assert on the text it produces.
+const PRINTERS = ['ws40SnapshotText'];
+
+function codeOnly(src) {
+  let out = src;
+  for (const name of PRINTERS) {
+    out = out.replace(
+      new RegExp(`function ${name}\\([\\s\\S]*?\\n  \\}`, 'g'), '/* printer */');
+  }
+  return out;
+}
+
+const CODE_ONLY = codeOnly(APP_CODE);
+
 function pureHarness() {
   const canary = { calls: 0 };
   const api = new Function('deps', `
@@ -340,9 +359,15 @@ test('the WS38 guard against a circular seekableEnd difference still holds', () 
   // permitted to contain it.
   const EDGE_FIELD = /(?:trueEdge|playlistEdge)\w*/;
   const shape = new RegExp(`${EDGE_FIELD.source}\\s*-\\s*[^;]*?[Ee]nd\\w*\\s*\\*\\s*1000`, 'g');
-  const occurrences = (APP_CODE.match(shape) || []).length;
+  const occurrences = (CODE_ONLY.match(shape) || []).length;
   assert.equal(occurrences, 1,
     'exactly one stream-edge-minus-buffered-position expression may exist');
+  // And the survivor must be inside the ONE sanctioned function — so a copy
+  // added elsewhere cannot satisfy the count by displacing it.
+  const survivors = CODE_ONLY.match(shape) || [];
+  assert.ok(survivors.every((s) => /trueEdgeWallMs\s*-\s*seekableEnd/.test(s)),
+    'the sole permitted expression must be the trueEdgeWallMs form, not a '
+    + 'renamed local that defeats the pattern');
   // And it must be the sanctioned one, reached only via the pure function.
   assert.ok(/trueEdgeWallMs\s*-\s*seekableEndS\s*\*\s*1000/.test(
     APP_CODE.replace(/\s+/g, ' ')),
@@ -548,4 +573,178 @@ test('GUARD: the origin functions stay independent of each other', () => {
   const r = stripComments(grab('ws40ReadOrigin'));
   assert.ok(!/playlistOrigin|trueEdgeWallMs\s*-/.test(r),
     'A_safari must not be derived from the playlist edge');
+});
+
+// ===========================================================================
+// 8. WS40c — the "Kopiera all diagnostik" snapshot.
+// ===========================================================================
+
+// The builder is PURE: it reads nothing global, so it can be executed here
+// with a fixed input and its output asserted exactly. That is what makes the
+// "one consistent snapshot" claim testable at all.
+function snapshotHarness(over = {}) {
+  const canary = { calls: 0 };
+  const api = new Function('canary', `
+    ${grab('ws40Fmt')}
+    ${grab('ws40SnapshotText')}
+    return {
+      ws40SnapshotText: (...a) => { canary.calls += 1; return ws40SnapshotText(...a); },
+      ws40Fmt: (...a) => { canary.calls += 1; return ws40Fmt(...a); },
+    };
+  `);
+  const PT = (iso) => Date.parse(iso);
+  const base = {
+    snapshotAtMs: PT('2026-10-01T20:24:31.151Z'),
+    appBuild: '8ac39f6',
+    transport: 'native-hls',
+    channelTitle: 'P2', channelId: '163',
+    programmeTitle: 'Radiokorrespondenterna',
+    programmeStartMs: PT('2026-10-01T00:02:00.000Z'),
+    currentTimeS: 6763.0, seekableStartS: 0.0, seekableEndS: 6763.0,
+    durationS: null, readyState: 4, networkState: 2, paused: false,
+    // A PERFECT getStartDate() reading differs from A_playlist by about
+    // -31.5 s, because the playlist edge overshoots real UTC. Do NOT assert
+    // "close to zero" here: that acceptance band was wrong once already, and
+    // encoding it would make the mistake a requirement.
+    mediaOriginMs: PT('2026-09-30T22:09:17.000Z'),
+    originSource: 'getStartDate()', originReason: 'Safari anchors the media start',
+    startDateRaw: String(PT('2026-09-30T22:09:17.000Z')),
+    hasGetStartDateFn: true,
+    headPdtMs: PT('2026-09-30T21:58:24.000Z'),
+    trueEdgeWallMs: PT('2026-10-01T20:25:04.000Z'),
+    segmentMs: 6.4,
+    playlistSampleAtMs: PT('2026-10-01T20:24:31.151Z'),
+    playlistSampleAgeMs: 0,
+    playlistOriginMs: PT('2026-10-01T20:25:04.000Z') - 6763.0 * 1000,
+    originDeltaS: -31.5,
+    existingTargetS: 6775.2, proposedTargetS: 6763.0, targetDeltaS: -12.2,
+    startMs: PT('2026-10-01T00:02:00.000Z'), behindMs: 1000,
+    cachedSeekableEnd: 6763.0, freshSeekableEnd: 6763.0, rate: null,
+    runs: [],
+  };
+  return { ...api(canary), canary, input: { ...base, ...over } };
+}
+
+test('the snapshot contains every section the owner asked for', () => {
+  const h = snapshotHarness();
+  h.canary.calls = 0;
+  const text = h.ws40SnapshotText(h.input);
+  assert.ok(h.canary.calls > 0, 'canary: the real function must have been called');
+  // Requirement 7: the timestamp is the very first line, so two snapshots can
+  // never be mistaken for the same measurement.
+  assert.ok(text.startsWith('WS40 SNAPSHOT — 2026-10-01T20:24:31.151Z'),
+    `first line must be the snapshot timestamp, got: ${text.slice(0, 60)}`);
+  for (const section of ['== BUILD / CONTEXT ==', '== MEDIA / HLS ==',
+    '== SAFARI A (getStartDate) ==', '== PLAYLIST WITNESS ==',
+    '== INDEPENDENT ORIGIN CHECK ==', '== TARGET DIAGNOSTICS',
+    '== TEST SEEKS RUN', '== SAFETY ==']) {
+    assert.ok(text.includes(section), `missing section: ${section}`);
+  }
+  // Raw-ms expectations are DERIVED from the same constants the fixture uses.
+  // A hand-copied epoch is a number that can be wrong with nothing noticing,
+  // which is the class of mistake this workstream exists to stop.
+  const MS = (iso) => String(Date.parse(iso));
+  for (const needle of ['APP_BUILD: 8ac39f6', 'transport: native-hls',
+    'channel: P2', 'programme: Radiokorrespondenterna',
+    'currentTime (media seconds): 6763.00 s',
+    'seekableEnd (media seconds): 6763.00 s',
+    `A (getStartDate, raw ms): ${MS('2026-09-30T22:09:17.000Z')} ms`,
+    'A source: getStartDate()',
+    `getStartDate() raw: ${MS('2026-09-30T22:09:17.000Z')}`,
+    'getStartDate() is a function on this element: true',
+    `headPdtMs (raw ms): ${MS('2026-09-30T21:58:24.000Z')} ms`,
+    `trueEdgeWallMs (raw ms): ${MS('2026-10-01T20:25:04.000Z')} ms`,
+    'segmentDurationS: 6.4',
+    'playlist sample age (ms): 0 ms',
+    'A_safari - A_playlist (seconds): -31.50 s',
+    'existing formula target (media seconds): 6775.20 s',
+    'proposed formula target (media seconds): 6763.00 s',
+    'behindMs = now - startMs (ms): 1000 ms',
+    'production seek equation: end - (Date.now() - startMs)/1000 — UNCHANGED']) {
+    assert.ok(text.includes(needle), `snapshot is missing: ${needle}`);
+  }
+  // Both raw ms AND human-readable UTC wherever a raw value exists.
+  assert.ok(/headPdt \(UTC\): 2026-09-30/.test(text), 'headPdt needs a UTC form');
+  assert.ok(/playlist edge \(UTC\): 2026-10-01/.test(text), 'edge needs a UTC form');
+  assert.ok(/A \(getStartDate, UTC\)/.test(text), 'A needs a UTC form');
+  // Plain text, not JSON.
+  assert.ok(!text.trim().startsWith('{'), 'must not be JSON');
+  // It must state the reproduction, so the reader can check the arithmetic.
+  assert.ok(/reproduce: A_playlist = trueEdgeWallMs - seekableEnd \* 1000/.test(text),
+    'the snapshot must show how to reproduce the origin calculation');
+  // And it must repeat the bias warning: a reader pasting this into a chat has
+  // none of the surrounding context.
+  assert.ok(/31\.5 s/.test(text), 'the snapshot must carry the overshoot warning');
+});
+
+test('unavailable values are spelled out, never derived or zeroed', () => {
+  const h = snapshotHarness({
+    mediaOriginMs: null, originSource: 'unavailable',
+    originReason: 'this transport offers no absolute native-HLS origin',
+    startDateRaw: 'method absent on this element',
+    hasGetStartDateFn: false,
+    durationS: null, rate: null, originDeltaS: null,
+  });
+  h.canary.calls = 0;
+  const text = h.ws40SnapshotText(h.input);
+  assert.ok(h.canary.calls > 0, 'canary: the real function must have been called');
+  assert.ok(text.includes('A (getStartDate, raw ms): unavailable'),
+    'a missing A must read unavailable');
+  assert.ok(text.includes('getStartDate() is a function on this element: false'),
+    'the method-presence fact must survive, so "missing method" stays '
+    + 'distinguishable from "returned nothing"');
+  assert.ok(text.includes('getStartDate() raw: method absent on this element'),
+    'the raw probe result must be carried verbatim');
+  assert.ok(text.includes('duration (media seconds): unavailable'));
+  assert.ok(!/A \(getStartDate, raw ms\): 0 ms/.test(text),
+    'a missing A must never read as zero');
+  // The cross-check must go unavailable with A, not print a stale delta that
+  // reads like a measurement.
+  assert.ok(text.includes('A_safari - A_playlist (seconds): unavailable'),
+    'the delta must be unavailable when A is');
+});
+
+test('the snapshot never computes an origin the caller did not supply', () => {
+  const h = snapshotHarness({ mediaOriginMs: null, originSource: 'unavailable',
+    originDeltaS: null });
+  h.canary.calls = 0;
+  const text = h.ws40SnapshotText(h.input);
+  assert.ok(h.canary.calls > 0, 'canary: the real function must have been called');
+  assert.ok(!/A \(getStartDate, raw ms\): \d/.test(text),
+    'no numeric A may appear when none was supplied');
+  // A_playlist is allowed, because the caller supplies it explicitly.
+  assert.ok(text.includes('A_playlist (UTC)'), 'A_playlist is caller-supplied');
+});
+
+test('the snapshot is ONE input, so it cannot mix measurement moments', () => {
+  const h = snapshotHarness();
+  h.canary.calls = 0;
+  const a = h.ws40SnapshotText(h.input);
+  assert.ok(h.canary.calls > 0, 'canary: the first call must have run');
+  h.input.seekableEndS = 9999;
+  h.input.mediaOriginMs = 1;
+  const b = h.ws40SnapshotText(h.input);
+  assert.ok(h.canary.calls >= 2, 'canary: both calls must have run');
+  assert.ok(a.includes('seekableEnd (media seconds): 6763.00 s'),
+    'the first snapshot must reflect the values it was given');
+  assert.ok(b.includes('seekableEnd (media seconds): 9999.00 s'),
+    'the second must reflect the new values');
+  assert.notEqual(a, b, 'different inputs must produce different snapshots');
+});
+
+test('test-seek history is reported, and "none" is explicit', () => {
+  const none = snapshotHarness();
+  none.canary.calls = 0;
+  assert.ok(none.ws40SnapshotText(none.input)
+    .includes('none — no test seek has been performed'),
+  'an empty run list must say so plainly');
+  const withRun = snapshotHarness({
+    runs: [{ mapping: 'proposed', programmeTitle: 'Ekot', requestedTargetS: 1,
+      landedS: 1, clampedByS: 0 }],
+  });
+  withRun.canary.calls = 0;
+  const text = withRun.ws40SnapshotText(withRun.input);
+  assert.ok(withRun.canary.calls > 0, 'canary: the real function must have been called');
+  assert.ok(text.includes('[proposed] Ekot'), 'runs must be listed by mapping');
+  assert.ok(text.includes('clamped:   0.00 s'), 'clamping must be reported');
 });
