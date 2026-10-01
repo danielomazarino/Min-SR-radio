@@ -207,15 +207,47 @@ test('WS38 GUARD: no absolute seekableEnd-vs-stream-clock difference exists in c
   // Any expression that SUBTRACTS the stream clock from a buffered-range value
   // (or the reverse) is the forbidden absolute difference. This is an assertion
   // about CODE, so comments are already stripped above.
+  //
+  // ---- WS40b, ONE NAMED EXCEPTION, and why it is not a weakening. --------
+  // The owner authorised a DIAGNOSTIC-ONLY cross-check of the media origin,
+  // `A_playlist = trueEdgeWallMs - seekableEnd*1000`, after being shown that
+  // every previous check of the origin was a restatement of the value under
+  // test. The difference is INTENT, and it is enforced structurally below
+  // rather than by banning a spelling:
+  //
+  //   * the calculation lives in exactly one pure function,
+  //     `ws40PlaylistOrigin`, and nowhere else;
+  //   * its result is stored in `WS40.playlistOriginMs`, a diagnostic field;
+  //   * a guard in tests/ws40-verify.test.mjs proves that field reaches NO
+  //     production target — that is the property this original guard was
+  //     really protecting, and it is now asserted more precisely than a
+  //     regex over the whole file.
+  //
+  // What the original guard forbade was a *false measurement* — an absolute
+  // cross-frame difference presented as evidence of origin alignment. Nothing
+  // here is presented as that: it is labelled a cross-check, it inherits a
+  // known +31.5 s bias, and the panel says so in the owner's language.
+  const EXCEPTION = 'ws40PlaylistOrigin';
+  const withoutException = APP_CODE.replace(
+    new RegExp(`function ${EXCEPTION}\\([\\s\\S]*?\\n  \\}`), '/* removed */');
   const forbidden = [
     /trueEdge\w*\s*-\s*[^;]*seekableEnd/,
     /seekableEnd[^;]*-\s*[^;]*trueEdge\w*/,
     /seekableEnd[^;]*-\s*[^;]*offsetS/,
   ];
   for (const re of forbidden) {
-    const hit = APP_CODE.match(re);
-    assert.ok(!hit, `forbidden absolute cross-frame difference found: ${hit && hit[0]}`);
+    const hit = withoutException.match(re);
+    assert.ok(!hit,
+      `forbidden absolute cross-frame difference found outside ${EXCEPTION}: `
+      + `${hit && hit[0]}`);
   }
+
+  // The exception is real but SINGLE. A second copy of the expression
+  // anywhere else would be a fallback origin rebuilding itself, which is the
+  // circularity this guard exists to stop.
+  const copies = (APP_CODE.match(/trueEdge\w*\s*-\s*[^;]*seekableEnd/g) || []).length;
+  assert.equal(copies, 1,
+    'the stream-clock-minus-buffered-edge expression must appear exactly once');
 
   // And the positive statement of what IS allowed: the only cross-frame
   // comparison is a RATIO of elapsed figures between two samples.

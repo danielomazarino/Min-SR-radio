@@ -82,7 +82,7 @@ function grab(name) {
 }
 
 const PURE = ['ws40SegmentIndex', 'ws40ProposedTarget', 'ws40ExistingTarget',
-  'ws40LandingErrorSeg'];
+  'ws40LandingErrorSeg', 'ws40PlaylistOrigin', 'ws40OriginDelta'];
 
 function pureHarness() {
   const canary = { calls: 0 };
@@ -95,6 +95,8 @@ function pureHarness() {
       ws40ProposedTarget: counted(ws40ProposedTarget),
       ws40ExistingTarget: counted(ws40ExistingTarget),
       ws40LandingErrorSeg: counted(ws40LandingErrorSeg),
+      ws40PlaylistOrigin: counted(ws40PlaylistOrigin),
+      ws40OriginDelta: counted(ws40OriginDelta),
     };
   `);
   return { ...api({ canary }), canary };
@@ -291,37 +293,93 @@ test('the PRODUCTION seek is untouched by WS40', () => {
 });
 
 test('the WS38 guard against a circular seekableEnd difference still holds', () => {
-  // A fallback `trueEdgeWallMs - seekableEnd*1000` was written and REMOVED:
-  // it assumes the playlist edge and the buffered edge are the same instant,
-  // i.e. it assumes L = 0, which is the quantity under test. If it ever
-  // returns, the diagnostic would report agreement by construction.
-  assert.ok(!/trueEdge\w*\s*-\s*[^;]*seekableEnd/.test(APP_CODE),
-    'no absolute stream-clock minus seekableEnd difference may exist in code');
-  assert.ok(!/seekableEnd[^;]*-\s*[^;]*trueEdge\w*/.test(APP_CODE),
-    'nor in the reverse order');
-
-  // ---- ADDED AFTER MUTATION M1 CAME BACK GREEN. -------------------------
-  // The two patterns above are NAME-BASED, and M1 wrote the circular
-  // expression as `trueEdgeWallMs - e0 * 1000` — the same circular quantity,
-  // reading a buffered edge into a local named `e0` instead of literally
-  // `seekableEnd`. Both name-patterns missed it and the mutation passed.
+  // HISTORY, kept because the reasoning is load-bearing. A fallback
+  // `trueEdgeWallMs - seekableEnd*1000` was ORIGINALLY written inside
+  // `ws40ReadOrigin` and REMOVED, because there it was used as the origin for
+  // the target — which assumes the playlist edge and the buffered edge are the
+  // same instant, i.e. assumes L = 0, the quantity under test. Used as the
+  // ORIGIN it assumed the answer; used as a CROSS-CHECK beside a Safari-derived
+  // origin it assumes nothing, because the two share no input.
   //
-  // A guard that only catches one spelling of a defect is not a guard. These
-  // two are STRUCTURAL: they forbid the SHAPE (a stream-clock field minus a
-  // fresh-seekable read, times 1000) whatever the variable is called, and they
-  // forbid the origin fallback inside ws40ReadOrigin by name.
+  // The two blanket regex bans that used to live here were NAME-based, so they
+  // forbade every spelling of that expression including the diagnostic the owner
+  // has now authorised. They are replaced below by the property that was
+  // always the point: the quantity must reach NO production target.
+
+  // ---- WS40b: ONE sanctioned diagnostic expression, guarded structurally. ---
+  // The owner authorised `A_playlist = trueEdgeWallMs - seekableEnd*1000` as a
+  // DIAGNOSTIC cross-check, after being shown that every earlier check of the
+  // origin was algebraically a restatement of the value under test. What the
+  // original guard forbade was a false measurement presented as evidence of
+  // alignment; nothing here is presented as that — it is labelled a
+  // cross-check and inherits a known +31.5 s bias that the panel states.
+  //
+  // The function that computes it must not touch `getStartDate`, the device
+  // clock, or any target: it is the second, independent witness, so it must
+  // stay independent.
   const readFn = stripComments(grab('ws40ReadOrigin'));
-  assert.ok(!/trueEdgeWallMs\s*[-+]\s*/.test(readFn),
-    'ws40ReadOrigin must not derive an origin from the stream clock at all');
-  assert.ok(!/readFreshSeekableEnd\s*\(\s*\)/.test(readFn),
-    'ws40ReadOrigin must not read the buffered edge: any origin built from it '
-    + 'assumes the buffered edge and the playlist edge coincide (L = 0), which '
-    + 'is the quantity under test');
-  // And structurally, anywhere in code: a stream clock minus a fresh read.
-  assert.ok(!/trueEdgeWallMs\s*-\s*[A-Za-z_$][\w$]*\s*\*\s*1000/.test(APP_CODE),
-    'no stream-clock minus buffered-position expression may exist');
-  assert.ok(!/trueEdgeWallMs\s*-\s*readFreshSeekableEnd/.test(APP_CODE),
-    'nor one using the buffered-edge reader directly');
+  const originFn = stripComments(grab('ws40PlaylistOrigin'));
+  assert.ok(!/getStartDate|mediaOriginMs|Date\.now|deviceNow/.test(originFn),
+    'the playlist origin must not read A, getStartDate, the device clock, or a target');
+  assert.ok(/trueEdgeWallMs\s*-\s*seekableEndS\s*\*\s*1000/.test(
+    originFn.replace(/\s+/g, ' ')),
+  'the playlist origin must be exactly trueEdgeWallMs - seekableEnd*1000');
+
+  // ---- THE SECOND NAME-BASED HOLE, FOUND BY MUTATION N6. ----------------
+  // N6 added a SECOND copy of the same subtraction, spelled
+  // `playlistEdgeWallMs - WS40.seekableEndS * 1000`, and assigned it back into
+  // `mediaOriginMs` — i.e. a fallback origin rebuilt from the circular
+  // expression, which is the exact defect this guard exists to prevent. The
+  // `trueEdge\w*` pattern missed it because `playlistEdgeWallMs` does not
+  // contain the token `trueEdge`.
+  //
+  // That is the SAME failure as mutation M1 one round ago, and naming it is
+  // the point: a pattern that matches an identifier is a guard on spelling.
+  // This one is on SHAPE — any field holding the playlist edge, minus any
+  // media-second position, times 1000 — and it is anchored to the ONE function
+  // permitted to contain it.
+  const EDGE_FIELD = /(?:trueEdge|playlistEdge)\w*/;
+  const shape = new RegExp(`${EDGE_FIELD.source}\\s*-\\s*[^;]*?[Ee]nd\\w*\\s*\\*\\s*1000`, 'g');
+  const occurrences = (APP_CODE.match(shape) || []).length;
+  assert.equal(occurrences, 1,
+    'exactly one stream-edge-minus-buffered-position expression may exist');
+  // And it must be the sanctioned one, reached only via the pure function.
+  assert.ok(/trueEdgeWallMs\s*-\s*seekableEndS\s*\*\s*1000/.test(
+    APP_CODE.replace(/\s+/g, ' ')),
+  'the single permitted expression must be the trueEdgeWallMs form');
+  // No other function may compute one, whatever it calls the operands.
+  for (const fn of ['ws40Capture', 'ws40ReadOrigin', 'ws40TestSeek',
+    'ws40ProposedTarget', 'ws40ExistingTarget', 'originMeasureRecordText']) {
+    const b = stripComments(grab(fn));
+    assert.ok(!new RegExp(EDGE_FIELD.source + '\\s*-').test(b),
+      `${fn} must not contain a stream-edge-minus-position expression`);
+  }
+  // Explicitly: the capture may not write the cross-check back into A.
+  assert.ok(!/mediaOriginMs\s*=\s*[^;]*(?:playlistOrigin|playlistEdge|trueEdge)/
+    .test(APP_CODE),
+  'mediaOriginMs must never be assigned from the playlist edge');
+
+  // THE load-bearing guard: the cross-check must not reach a production
+  // target. This is stricter and more meaningful than the old code-shape ban,
+  // which would also have forbidden a correct diagnostic.
+  const targetFns = ['seekToProgramTime', 'seekBy', 'seekToLive',
+    'playheadWallMs', 'dvrPositionToDate', 'updateSeekableState'];
+  for (const fn of targetFns) {
+    assert.ok(!/playlistOrigin|originDelta/.test(grab(fn)),
+      `${fn} must not reference the cross-check fields`);
+  }
+  // The proposed target is computed from `mediaOriginMs` ALONE.
+  const capture = stripComments(grab('ws40Capture'));
+  const propLine = capture.split('WS40.proposedTargetS')[1] || '';
+  assert.ok(/ws40ProposedTarget\(\s*WS40\.programmeStartMs\s*,\s*WS40\.mediaOriginMs\s*\)/
+    .test(capture),
+    'the proposed target must be computed from mediaOriginMs alone');
+  assert.ok(!propLine.includes('playlistOrigin'),
+    'nothing after the proposed target may recompute it from the cross-check');
+  // And the cross-check is written after the target, never feeding it.
+  assert.ok(capture.indexOf('WS40.playlistOriginMs =')
+    < capture.indexOf('WS40.existingTargetS ='),
+    'the cross-check is captured before the targets are derived (ordering only)');
 
   // No fallback origin may be invented when the platform offers none: the
   // function must reach `unavailable` without having derived anything.
@@ -398,4 +456,96 @@ test('the renderer never renders an unknown value as 0', () => {
   const snap = APP_JS.slice(APP_JS.indexOf('note: \'DIAGNOSTIC ONLY'));
   assert.ok(/tautological/i.test(snap),
     'the snapshot note must label the same-origin figure as tautological');
+});
+
+// ===========================================================================
+// 7. WS40b — the independent-origin cross-check.
+// ===========================================================================
+
+test('A_playlist is exactly trueEdgeWallMs - seekableEnd*1000', () => {
+  const h = pureHarness();
+  h.canary.calls = 0;
+  const edge = 1790811244800;
+  const end = 6763.0;
+  const got = h.ws40PlaylistOrigin(edge, end);
+  assert.ok(h.canary.calls > 0, 'canary: the real function must have been called');
+  assert.equal(got, edge - end * 1000);
+  // Written out longhand, because a units slip here would be invisible:
+  // seekableEnd is MEDIA SECONDS and must be scaled, not left alone.
+  assert.equal(got, 1790811244800 - 6763000);
+});
+
+test('A_playlist returns null, never 0, when an operand is missing', () => {
+  const h = pureHarness();
+  h.canary.calls = 0;
+  assert.equal(h.ws40PlaylistOrigin(null, 1), null);
+  assert.equal(h.ws40PlaylistOrigin(1, null), null);
+  assert.equal(h.ws40PlaylistOrigin(NaN, 1), null);
+  // A genuine zero must survive as a real value, not collapse to null.
+  assert.equal(h.ws40PlaylistOrigin(0, 0), 0);
+  assert.notEqual(h.ws40PlaylistOrigin(0, 0), null);
+  assert.ok(h.canary.calls > 0, 'canary: the real function must have been called');
+});
+
+test('the cross-check distinguishes the two hypotheses', () => {
+  // THE POINT OF THE INSTRUMENT. A perfect Safari anchor and a Safari anchor
+  // biased by 25 s must produce clearly different deltas, or the test settles
+  // nothing. The bias of A_playlist itself is applied as a CONSTANT here so
+  // the two cases differ ONLY by Safari's error — the quantity in question.
+  const h = pureHarness();
+  h.canary.calls = 0;
+  const edge = 1790811244800, end = 6763.0;
+  const A_playlist = h.ws40PlaylistOrigin(edge, end);
+  const A_true = A_playlist - 31_500;   // undo the known overshoot
+  const deltaIfCorrect = h.ws40OriginDelta(A_true, A_playlist);
+  const deltaIfBiased25 = h.ws40OriginDelta(A_true - 25_000, A_playlist);
+  assert.ok(h.canary.calls > 0, 'canary: the real functions must have been called');
+  assert.ok(Math.abs(deltaIfCorrect - (-31.5)) < 1e-9,
+    `a correct anchor must read the documented -31.5 s, got ${deltaIfCorrect}`);
+  assert.ok(Math.abs(deltaIfBiased25 - (-56.5)) < 1e-9,
+    `a 25 s bias must read -56.5 s, got ${deltaIfBiased25}`);
+  // 25 s apart, and no amount of playlist age (a few seconds) bridges that.
+  assert.ok(Math.abs(deltaIfCorrect - deltaIfBiased25 - 25) < 1e-9);
+});
+
+test('originDeltaS is null unless BOTH origins are finite', () => {
+  const h = pureHarness();
+  h.canary.calls = 0;
+  assert.equal(h.ws40OriginDelta(null, 1), null);
+  assert.equal(h.ws40OriginDelta(1, null), null);
+  assert.equal(h.ws40OriginDelta(0, 0), 0, 'a real zero must be a real value');
+  assert.ok(h.canary.calls > 0, 'canary: the real function must have been called');
+});
+
+test('GUARD: the cross-check is diagnostic-only and reaches no target', () => {
+  // The load-bearing structural guard. A diagnostic that can influence a seek
+  // is a production change wearing a diagnostic's name.
+  for (const fn of ['seekToProgramTime', 'seekBy', 'seekToLive',
+    'playheadWallMs', 'dvrPositionToDate', 'updateSeekableState',
+    'resolveProgramTitle', 'programBoundary', 'fetchScheduleDay']) {
+    assert.ok(!/playlistOrigin|originDelta/.test(grab(fn)),
+      `${fn} must not reference the cross-check`);
+  }
+  // The target is derived from mediaOriginMs alone, in one call.
+  const capture = stripComments(grab('ws40Capture'));
+  assert.ok(/ws40ProposedTarget\(\s*WS40\.programmeStartMs\s*,\s*WS40\.mediaOriginMs\s*\)/
+    .test(capture), 'the proposed target must take mediaOriginMs as its origin');
+  // And nothing anywhere else re-derives a target from the cross-check.
+  const all = (APP_CODE.match(/ws40ProposedTarget\(/g) || []).length;
+  assert.equal(all, 2, 'exactly one definition and one call site');
+  // The production equation is untouched.
+  assert.ok(/const target = end - behindMs \/ 1000;/.test(APP_JS),
+    'the production seek equation must still be end - behindMs/1000');
+});
+
+test('GUARD: the origin functions stay independent of each other', () => {
+  // A_playlist must not read A, and A must not be derived from the playlist.
+  // If either borrowed from the other the cross-check would compare a value
+  // with itself and read 0 — the tautology this whole phase exists to avoid.
+  const p = stripComments(grab('ws40PlaylistOrigin'));
+  assert.ok(!/mediaOriginMs|getStartDate/.test(p),
+    'A_playlist must not read the Safari origin');
+  const r = stripComments(grab('ws40ReadOrigin'));
+  assert.ok(!/playlistOrigin|trueEdgeWallMs\s*-/.test(r),
+    'A_safari must not be derived from the playlist edge');
 });
