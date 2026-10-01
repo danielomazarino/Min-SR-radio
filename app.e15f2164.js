@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '6e7a43e';
+  const APP_BUILD = 'fac88f3';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -250,6 +250,49 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     return unescapeXml(s).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
   }
 
+  // ---- News audio: the per-item "Lyssna:" clip ----
+  // The Ekot feed already carries a short audio clip for (measured 2026-10-01)
+  // 20 of 20 entries, as a link in the entry's own content HTML:
+  //   <strong>Lyssna:</strong> <a href=".../radio.aspx?type=db&id=10317313&...">
+  // That DBID is the clip's stable id in SR's audio system.
+  //
+  // The link the feed prints is DEAD: radio.aspx?...&metafile=m3u returns an
+  // EMPTY playlist (just "#EXTM3U", 8 bytes, measured on fresh items). So the
+  // feed's own href must not be used as an audio source.
+  //
+  // The working route is SR's Topsy resolver, which takes the DBID and
+  // redirects (302) to a real .m4a on lyssna-cdn.sr.se:
+  //   /topsy/ljudfil/{dbId}?publicationId={articleId}
+  // Both the resolver and the CDN send `access-control-allow-origin: *`, and
+  // the resolver explicitly allows the `range` request header, so a static
+  // host can stream it directly. The CDN URL itself embeds a per-publication
+  // timestamp, so the DBID — not that URL — is the durable identifier.
+  //
+  // The .m4a format is already proven by this app: podcast episodes resolve to
+  // the same lyssna-cdn.sr.se host (e.g. .../ljudit/.../nyheter_p4_jmtland_*.m4a)
+  // and play through the existing player. News clips therefore reuse the
+  // existing player unchanged — no second audio path.
+  const TOPSY_CLIP_BASE = 'https://www.sverigesradio.se/topsy';
+  function newsClipDbId(contentHtml) {
+    // Run on the ALREADY-unescaped content, so the href is plain
+    // `?type=db&id=123`. The optional `&amp;` also covers a feed that leaves
+    // the entity escaped, so a future feed change cannot silently drop every
+    // clip.
+    const m = /radio\.aspx\?type=db&(?:amp;)?id=(\d+)/.exec(contentHtml || '');
+    return m ? m[1] : null;
+  }
+
+  function newsAudioUrl(articleId, dbId) {
+    // BOTH ids are required. The resolver is keyed on the clip, but
+    // `publicationId` is what tells SR which publication the clip belongs to;
+    // without a real article id there is nothing coherent to send. Any
+    // missing or non-numeric part returns null, which leaves the item on the
+    // existing read-the-article path instead of producing a dead play button.
+    if (!Number.isInteger(articleId) || articleId <= 0) return null;
+    if (!/^\d+$/.test(String(dbId || ''))) return null;
+    return `${TOPSY_CLIP_BASE}/ljudfil/${dbId}?publicationId=${articleId}`;
+  }
+
   async function fetchNewsFlashes(count) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
@@ -275,6 +318,8 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       let publishedMs = published ? Date.parse(published.trim()) : NaN;
       if (!Number.isFinite(publishedMs)) publishedMs = null;
       const idMatch = /artikel\/(\d+)/.exec(link);
+      const articleId = idMatch ? Number(idMatch[1]) : null;
+      const audioDbId = newsClipDbId(decoded);
       items.push({
         id: idMatch ? Number(idMatch[1]) : publishedMs ?? items.length,
         title: stripTags(title).slice(0, 160),
@@ -285,7 +330,10 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         url: link.trim(),
         publishDateUtc: publishedMs,
         programName: author ? unescapeXml(author).trim().slice(0, 80) : null,
-        audioUrl: null,
+        // The clip id travels with the item so the resolver URL is derived, not
+        // guessed, and so a bad id can never produce a play button.
+        audioDbId,
+        audioUrl: newsAudioUrl(articleId, audioDbId),
         duration: null,
       });
       if (items.length >= count * 3) break;
@@ -420,6 +468,17 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     lastTrackKeys: null,        // key names on ONE raw track, verbatim
     lastTrackSample: null,      // that raw track, verbatim
     lastTrackEpisodeStartMs: null, // the programme start it was anchored to
+    // ---- WS42: what the BACKWARD programme button captured, and when. ----
+    // The backward handler is bound ONCE and permanently captures `prevEv`
+    // (see the `prevProgramBtn.onclick = goPrev` site), while the forward path
+    // is refreshed on `timeupdate`. So the captured value is the thing under
+    // suspicion, and until now nothing recorded what it WAS.
+    //
+    // Every field is captured at BIND time by the same expression that produced
+    // the value, so this cannot disagree with what the handler will do. It is
+    // a RECORD, not a re-computation: nothing here changes which programme is
+    // selected.
+    prevBind: null,             // null until a backward handler is ever bound
   };
 
   // WS41: record which endpoint produced a set of tracks, and what that payload
@@ -2081,10 +2140,93 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   //     playhead wall clock = now - (live edge - currentTime)
   // It lives at module scope (not inside renderPlayer) because resolveProgram-
   // Title and the seek paths need it without a player render.
+  //
+  // WS44 EXPERIMENT. This is the model the app has always used: the buffered
+  // EDGE is treated as "now". That assumption is what four workstreams have
+  // been trying to validate and have not. It is kept INTACT below and remains
+  // the fallback — this is an A/B, not a replacement.
   function playheadWallMs() {
     const end = state.current ? state.current.seekableEnd : null;
     if (!Number.isFinite(end)) return Date.now();
     return Date.now() - (end - (audioEl.currentTime || 0)) * 1000;
+  }
+
+  // ---- WS44 EXPERIMENT: the NATIVE getStartDate() timebase. ----
+  //
+  // Test seam for the canary inside ws44PlayheadWallMs(). `null` in
+  // production. Declared here — at the same scope the function is defined in —
+  // because an undeclared identifier would make the canary line throw a
+  // ReferenceError on every call, which is a far worse outcome than the
+  // feature it instruments.
+  const WS44_CANARY = null;
+  //
+  // WHAT QUESTION THIS ASKS. `HTMLMediaElement.getStartDate()` returns the
+  // wall-clock instant that corresponds to media time 0 for a live stream.
+  // If Safari supplies it, then
+  //
+  //     playhead wall clock = getStartDate() + currentTime
+  //
+  // is an INDEPENDENT measurement of the same quantity `playheadWallMs()`
+  // computes by ASSUMPTION. The existing model never asks the platform what
+  // time it thinks the media began; it infers it from a buffered edge and the
+  // system clock. This asks the platform directly, and on the path where only
+  // Safari can answer (native HLS — i.e. the owner's iPhone).
+  //
+  // WHY NATIVE-HLS ONLY. hls.js feeds MSE, and `getStartDate()` reflects what
+  // the SOURCE declared, not the segment timeline hls.js synthesised over a
+  // sliding DVR window. Reading it there would compare a declared presentation
+  // time against a constructed one. It is also unnecessary: the hls.js path is
+  // not where the owner's symptom is reported. Leaving it untouched also means
+  // a desktop measurement still reproduces the OLD behaviour exactly.
+  //
+  // PURE BY CONSTRUCTION. Every input arrives as an argument — the Date
+  // constructor is supplied by the caller, the fallback is supplied by the
+  // caller. Nothing here reads `state`, `audioEl` or the module `Date`. That is
+  // what makes the difference between the two timebases measurable at all
+  // (AGENTS.md §7: a harness must prove it is executing the code under test).
+  //
+  // RETURNS a number, or the fallback. Callers get a usable value either way,
+  // so no caller needs a null check that did not exist before.
+  function ws44PlayheadWallMs(startDateMs, currentTime, transport, fallbackMs) {
+    // ---- POSITIVE CANARY (AGENTS.md §7). ----
+    // The parameter is `null` in production, so this is one branch and one
+    // typeof per call — the function is called on metadata refreshes, not per
+    // audio frame. It exists so a test harness can PROVE it is executing this
+    // function rather than a stand-in: an extracted function that silently
+    // does nothing has produced confident, entirely fictional results in this
+    // repo before. The call is inside the function body, so the counter can
+    // only move if this code actually ran.
+    if (WS44_CANARY) WS44_CANARY();
+    // Only the native-HLS path may use the native timebase. See above.
+    if (transport !== 'native-hls') return fallbackMs;
+    // A missing, non-numeric, zero, negative or non-finite start date is not
+    // a usable timebase. Safari returns 0 for "unknown" and throws on some
+    // paths; treating either as an instant in 1970 would silently move the
+    // playhead by half a century, so every one of them falls back.
+    if (!Number.isFinite(startDateMs) || startDateMs <= 0) return fallbackMs;
+    if (!Number.isFinite(currentTime)) return fallbackMs;
+    return startDateMs + currentTime * 1000;
+  }
+
+  // The production accessor. It asks the element ONCE, decides the transport,
+  // and hands both to the pure function above. The existing implementation is
+  // evaluated EAGERLY as the fallback argument, so the fallback is always the
+  // app's established answer and never depends on whether the native read
+  // happened to be taken.
+  function playheadWallMs44() {
+    const fallback = playheadWallMs();
+    const transport = ws40Transport();
+    let startDateMs = null;
+    if (transport === 'native-hls') {
+      try {
+        // Safari only. Guarded on typeof because the method does not exist on
+        // Chromium at all, and calling it there would throw.
+        if (typeof audioEl.getStartDate === 'function') {
+          startDateMs = audioEl.getStartDate();
+        }
+      } catch { startDateMs = null; }
+    }
+    return ws44PlayheadWallMs(startDateMs, audioEl.currentTime, transport, fallback);
   }
 
   // Select the entry whose [startMs, stopMs) contains the playhead. The same
@@ -2104,7 +2246,11 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   function resolveMetadataForPosition(cur) {
     const track = cur || state.current;
     if (!track || track.kind !== 'live' || !track.id) return;
-    const atMs = playheadWallMs();
+    // WS44 EXPERIMENT: read the playhead through the experimental native
+    // timebase. This is the DVR METADATA lookup, which is the four-day
+    // user-visible problem. The seek equation is NOT switched — see
+    // playheadWallMs44().
+    const atMs = playheadWallMs44();
 
     // Programme title: the event CONTAINING the playhead, not the one on air.
     const schedule = cur._srSchedule;
@@ -2200,7 +2346,10 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
           seekArtworkTimer = null;
           // Re-check at fire time: the playhead may have moved on, and the
           // song resolved then may be a different one (or none).
-          const now = pickByPosition(nowPlaying.timeline, playheadWallMs());
+          // WS44 EXPERIMENT: same native timebase as the text it accompanies.
+          // A cover and a title from different timebases would be a new
+          // disagreement of exactly the kind R6 was about.
+          const now = pickByPosition(nowPlaying.timeline, playheadWallMs44());
           if (!now || !now.title || !now.artist) return;
           refreshNowPlayingArtwork(now, 'playhead');
         }, SEEK_ARTWORK_DEBOUNCE_MS);
@@ -2767,9 +2916,12 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       // live channel and `channel` (cur.title) IS the episode name on an
       // episode object. Both fields therefore held the same string and the car
       // displayed the episode title twice. Measured live on P3 Soul.
+      // WS44 EXPERIMENT: the panel's song line for a live DVR position now
+      // reads through the experimental native timebase. Episodes keep the
+      // existing path untouched — the experiment is native-HLS live only.
       const curSong = cur.kind === 'episode'
         ? episodeCurrentTrack
-        : pickByPosition(nowPlaying.timeline, playheadWallMs());
+        : pickByPosition(nowPlaying.timeline, playheadWallMs44());
       // For an episode, cur.title is the EPISODE name and cur.programName is
       // the PODCAST name -- they are swapped relative to a live channel, where
       // cur.title is the channel and _srProgramTitle is the programme.
@@ -3583,6 +3735,107 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     };
   }
 
+  // ---- WS42: BACKWARD-BINDING record. PURE for the same reason as the
+  // collector above: everything arrives as an argument, so the tests can
+  // execute it and assert the output exactly.
+  //
+  // It reports the CAPTURED value and, separately, what the same inputs would
+  // select NOW. The gap between those two IS the defect, expressed as data
+  // rather than as an argument. It computes no correction and changes no
+  // selection.
+  // `audio` is PASSED IN, not reached for. This function reads no global, so it
+  // can be executed in a test with a fixture element and its output asserted
+  // exactly — which is the only reason the second fresh/cached reading is
+  // trustworthy at all. A "pure" collector that quietly read `audioEl` would
+  // have been untestable and therefore unverified.
+  function ws42PrevBindFields(bind, state, schedule, playheadWallMsFn, audio) {
+    const b = bind || {};
+    const end = state && state.current ? state.current.seekableEnd : null;
+    const now = Date.now();
+    const list = Array.isArray(schedule) ? schedule : [];
+    // The live state: where the playhead sits by the app's own bridge now.
+    const pwNow = typeof playheadWallMsFn === 'function' ? playheadWallMsFn() : null;
+    const evNow = Number.isFinite(pwNow)
+      ? (list.find((e) => e.startMs <= pwNow && pwNow < e.endMs)
+        || list.find((e) => e.endMs > pwNow) || null)
+      : null;
+    const posNow = evNow ? evNow.startMs : pwNow;
+    // What the backward handler WOULD select if it re-evaluated. Recomputed
+    // here ONLY for comparison; the real handler still uses the captured
+    // value, so this cannot change what a press does.
+    const wouldPickNow = Number.isFinite(posNow)
+      ? (list.length ? [...list].reverse().find((e) => e.startMs < posNow - 1000) : null)
+      : null;
+    const captured = Number.isFinite(b.prevStartMs) ? b.prevStartMs : null;
+    const fresh = wouldPickNow && Number.isFinite(wouldPickNow.startMs)
+      ? wouldPickNow.startMs : null;
+    return {
+      prevBindBound: b.boundAtMs == null ? null : b.boundAtMs,
+      prevBindBoundAgoMs: b.boundAtMs == null ? null : now - b.boundAtMs,
+      prevBindLiveEdgeWallMs: Number.isFinite(b.liveEdgeWallMs) ? b.liveEdgeWallMs : null,
+      prevBindLiveEdgeWall: Number.isFinite(b.liveEdgeWallMs)
+        ? new Date(b.liveEdgeWallMs).toISOString() : null,
+      prevBindPosMs: Number.isFinite(b.posMs) ? b.posMs : null,
+      prevBindPosWasEventStart: b.posMsWasEventStart == null ? null : b.posMsWasEventStart,
+      prevBindContainingTitle: b.containingTitle || null,
+      prevBindContainingStartMs: Number.isFinite(b.containingStartMs)
+        ? b.containingStartMs : null,
+      prevBindSeekableEnd: Number.isFinite(b.seekableEndAtBind) ? b.seekableEndAtBind : null,
+      prevBindSeekableEndWrittenAt: Number.isFinite(b.seekableEndWrittenAtBind)
+        ? b.seekableEndWrittenAtBind : null,
+      prevBindCurrentTime: Number.isFinite(b.currentTimeAtBind) ? b.currentTimeAtBind : null,
+      prevBindScheduleLength: Number.isFinite(b.scheduleLength) ? b.scheduleLength : null,
+      // THE CAPTURED DECISION — what the button will do on a press.
+      prevBindCapturedStartMs: captured,
+      prevBindCapturedTitle: b.prevTitle || null,
+      // WHAT IT WOULD DO NOW. A press seeks to `captured`, so this pair is the
+      // skip, measured rather than argued.
+      prevLivePosMs: Number.isFinite(posNow) ? posNow : null,
+      prevLiveContainingTitle: evNow ? (evNow.title || null) : null,
+      prevWouldSelectNowMs: fresh,
+      prevWouldSelectNowTitle: wouldPickNow ? (wouldPickNow.title || null) : null,
+      prevBindingIsStale: (captured != null && fresh != null) ? captured !== fresh : null,
+      // How many boundaries stale, in whole programmes. This is the number the
+      // owner sees as "skipped several". Counted between the two SELECTIONS,
+      // not between the two positions: the schedules entries whose start lies
+      // after what a fresh press would pick and up to what the captured press
+      // will pick.
+      prevSkippedCount: (captured != null && fresh != null && captured !== fresh && list.length)
+        ? [...list].filter((e) => e.startMs > fresh && e.startMs <= captured).length
+        : null,
+      // A SECOND, INDEPENDENT reading of the same quantity the seek uses. The
+      // WS38 record only samples AT a seek; this one is available at any
+      // snapshot, so the discrepancy can be observed without seeking.
+      freshSeekableEndNow: (() => {
+        try {
+          const s = audio && audio.seekable;
+          if (!s || !s.length) return null;
+          const e2 = s.end(s.length - 1);
+          return Number.isFinite(e2) ? e2 : null;
+        } catch { return null; }
+      })(),
+      cachedSeekableEndNow: Number.isFinite(end) ? end : null,
+      freshMinusCachedNowMs: (() => {
+        try {
+          const s = audio && audio.seekable;
+          if (!s || !s.length || !Number.isFinite(end)) return null;
+          const e2 = s.end(s.length - 1);
+          return Number.isFinite(e2) ? (e2 - end) * 1000 : null;
+        } catch { return null; }
+      })(),
+      seekableEndAgeNowMs: state && state.current
+        && Number.isFinite(state.current.seekableEndWrittenAtMs)
+        ? now - state.current.seekableEndWrittenAtMs : null,
+      currentTimeNow: audio && Number.isFinite(audio.currentTime) ? audio.currentTime : null,
+    };
+  }
+
+  // WS42: live wrapper for the bind record.
+  function ws42CollectPrevBind() {
+    return ws42PrevBindFields(META_DIAG.prevBind, state,
+      state.current ? state.current._srSchedule : null, playheadWallMs, audioEl);
+  }
+
   // WS41: live wrapper. Reads the element ONCE, synchronously, and delegates.
   // Nothing here changes metadata behaviour; it only observes it.
   function ws41CollectMetadata() {
@@ -4017,6 +4270,46 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     L.push('      is a CACHED buffered edge, not the timeline\'s programme start.');
     L.push('');
 
+    L.push('== BACKWARD PROGRAMME BINDING (WS42) ==');
+    push('bound at (raw ms)', d.prevBindBound, 'ms');
+    push('bound at (UTC)', d.prevBindBound, 'iso');
+    push('bound this long ago (ms)', d.prevBindBoundAgoMs, 'ms');
+    push('liveEdgeWallMs() at bind', d.prevBindLiveEdgeWall, 'ms');
+    push('posMs() at bind', d.prevBindPosMs, 'ms');
+    push('posMs() was the event start', d.prevBindPosWasEventStart);
+    push('containing programme at bind', d.prevBindContainingTitle);
+    push('seekableEnd at bind (media s)', d.prevBindSeekableEnd, 's');
+    push('seekableEnd writtenAt at bind', d.prevBindSeekableEndWrittenAt, 'ms');
+    push('currentTime at bind (media s)', d.prevBindCurrentTime, 's');
+    push('schedule entries', d.prevBindScheduleLength);
+    push('CAPTURED prevEv startMs', d.prevBindCapturedStartMs, 'ms');
+    push('CAPTURED prevEv (UTC)', d.prevBindCapturedStartMs, 'iso');
+    push('CAPTURED prevEv title', d.prevBindCapturedTitle);
+    push('NOW: posMs()', d.prevLivePosMs, 'ms');
+    push('NOW: containing programme', d.prevLiveContainingTitle);
+    push('NOW: would select (startMs)', d.prevWouldSelectNowMs, 'ms');
+    push('NOW: would select (title)', d.prevWouldSelectNowTitle);
+    push('IS THE BINDING STALE', d.prevBindingIsStale);
+    push('programmes skipped by the stale binding', d.prevSkippedCount);
+    L.push('READING THIS: a press on the backward button seeks to the CAPTURED');
+    L.push('      value, not to "would select now". Where those differ, that is the');
+    L.push('      skip, measured. "would select" is computed HERE for comparison only');
+    L.push('      — the real handler is unchanged and still uses the captured value.');
+    L.push('');
+
+    L.push('== SEEKABLE EDGE: SECOND INDEPENDENT READING (WS42) ==');
+    push('currentTime now (media s)', d.currentTimeNow, 's');
+    push('cached seekableEnd now (media s)', d.cachedSeekableEndNow, 's');
+    push('fresh seekableEnd now (media s)', d.freshSeekableEndNow, 's');
+    push('fresh MINUS cached (ms)', d.freshMinusCachedNowMs, 'ms');
+    push('cached value age now (ms)', d.seekableEndAgeNowMs, 'ms');
+    L.push('SIGN: NEGATIVE means the CACHED edge is AHEAD of the fresh read.');
+    L.push('      Since target = end - behindMs/1000 and target INCREASES with end,');
+    L.push('      an oversized cached edge moves the landing point FORWARD.');
+    L.push('      Compare with the WS38 "fresh seekableEnd" above, which is sampled');
+    L.push('      AT a seek; this one is sampled at snapshot time and needs no seek.');
+    L.push('');
+
     L.push('== METADATA vs MEDIA (measured, not assumed) ==');
     push('playheadWallMs - onAirStartMs (s)', d.onAirOffsetS, 's');
     push('playheadWallMs - timelineHitStartMs (s)', d.timelineHitOffsetS, 's');
@@ -4158,6 +4451,9 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       // stays a function of ONE input object; the collector itself is pure and
       // is unit-tested separately.
       ...ws41CollectMetadata(),
+      // ---- WS42: the backward binding record + a second, seek-free reading of
+      // the cached/fresh seekable-end discrepancy. Observation only.
+      ...ws42CollectPrevBind(),
     });
 
     // The string exists now. Nothing below can change it.
@@ -5789,7 +6085,38 @@ function seekMeasureRecordText() {
             || schedule.find((e) => e.endMs > est);
           return ev ? ev.startMs : est;
         };
-        const prevEv = programBoundary(schedule, posMs(), -1);
+        // ---- WS42: capture posMs() ONCE and use it for both the record and the
+        // real selection. Storing the value changes NOTHING about the
+        // behaviour: `posMs()` is still evaluated exactly once here, it is
+        // simply kept. Calling it a second time for the record would sample a
+        // slightly later instant and could report a `prevEv` the handler does
+        // not actually make — a diagnostic that lies about its own subject.
+        const bindPosMs = posMs();
+        const prevEv = programBoundary(schedule, bindPosMs, -1);
+        // Recorded AFTER the value it describes exists, and never read by the
+        // handler. Pure observation.
+        const bindEstMs = liveEdgeWallMs();
+        const bindEv = schedule.find((e) => e.startMs <= bindPosMs && bindPosMs < e.endMs)
+          || schedule.find((e) => e.endMs > bindPosMs);
+        META_DIAG.prevBind = {
+          boundAtMs: Date.now(),
+          liveEdgeWallMs: bindEstMs,
+          posMs: bindPosMs,
+          posMsWasEventStart: bindEv ? bindEv.startMs === bindPosMs : false,
+          containingTitle: bindEv ? (bindEv.title || null) : null,
+          containingStartMs: bindEv && Number.isFinite(bindEv.startMs) ? bindEv.startMs : null,
+          containingEndMs: bindEv && Number.isFinite(bindEv.endMs) ? bindEv.endMs : null,
+          prevStartMs: prevEv ? prevEv.startMs : null,
+          prevTitle: prevEv ? (prevEv.title || null) : null,
+          // The edge the estimate was seeded from. If this is the stale
+          // cached edge, the same staleness that shifts the seek target also
+          // shifts which programme `posMs()` lands in.
+          seekableEndAtBind: Number.isFinite(cur.seekableEnd) ? cur.seekableEnd : null,
+          seekableEndWrittenAtBind: Number.isFinite(cur.seekableEndWrittenAtMs)
+            ? cur.seekableEndWrittenAtMs : null,
+          currentTimeAtBind: Number.isFinite(audioEl.currentTime) ? audioEl.currentTime : null,
+          scheduleLength: Array.isArray(schedule) ? schedule.length : null,
+        };
         if (prevEv) {
           prevProgramBtn.style.display = '';
           prevProgramBtn._srMode = 'programme';
@@ -8009,6 +8336,24 @@ function seekMeasureRecordText() {
       // WS9: the playhead's wall-clock position and what it resolves to, so a
       // screenshot shows the title AND the position that produced it.
       playheadWallMs: (cur && cur.kind === 'live') ? playheadWallMs() : null,
+      // WS44 EXPERIMENT. BOTH timebases on the press path too. The delta is
+      // the experiment's result: on the iPhone it is the size of the error the
+      // seekableEnd-derived model was carrying. Recorded whether or not a
+      // native read was available, so "delta 0 because the platform returned
+      // nothing" stays distinguishable from "delta 0 because the two agree".
+      playheadWallMs44: (cur && cur.kind === 'live') ? playheadWallMs44() : null,
+      playheadDelta44Ms: (cur && cur.kind === 'live'
+        && Number.isFinite(playheadWallMs())
+        && Number.isFinite(playheadWallMs44()))
+        ? playheadWallMs44() - playheadWallMs() : null,
+      getStartDateMs: (() => {
+        try {
+          if (typeof audioEl.getStartDate !== 'function') return null;
+          const v = audioEl.getStartDate();
+          return Number.isFinite(v) && v > 0 ? v : null;
+        } catch { return null; }
+      })(),
+      getStartDateAvailable: typeof audioEl.getStartDate === 'function',
       programAtPlayhead: (cur && cur.kind === 'live' && Array.isArray(cur._srSchedule))
         ? (pickByPosition(cur._srSchedule.map((e) => ({
           startMs: e.startMs, stopMs: e.endMs, title: e.title,
