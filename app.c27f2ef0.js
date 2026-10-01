@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '244fdc5';
+  const APP_BUILD = '6e7a43e';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -404,7 +404,41 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // `schedule.gate`. Declared here so the shape is fixed, not created on
     // first assignment deep inside an async function.
     lastScheduleGate: null,
+    // ---- WS41: what the metadata claims about itself, and when. ----
+    // Captured at RECEPTION, before any parsing, because the parsed fields are
+    // lossy: `nowPlaying.song` keeps only title/artist/startMs/stopMs, and the
+    // seek path's entries keep only absolute ms. If the raw payload ever grows
+    // a real timestamp, this is where it will be seen.
+    //
+    // `source` names WHICH endpoint produced the entry, because that is the
+    // whole finding: the two sources use different timebases and the entries
+    // are merged into ONE list.
+    lastTrackSource: null,      // endpoint id that produced the last entry
+    lastTrackEpisodeId: null,
+    lastTrackCount: 0,
+    lastTrackAt: null,
+    lastTrackKeys: null,        // key names on ONE raw track, verbatim
+    lastTrackSample: null,      // that raw track, verbatim
+    lastTrackEpisodeStartMs: null, // the programme start it was anchored to
   };
+
+  // WS41: record which endpoint produced a set of tracks, and what that payload
+  // literally contained. WRITE-ONLY capture; it feeds the diagnostic snapshot
+  // and nothing else, so metadata behaviour cannot change because of it.
+  //
+  // `episodeStartMs` is stored BESIDE the tracks because the seek path builds
+  // absolute times as `episodeStartMs + relativeStartTime`. Without recording
+  // the anchor, a timeline entry's provenance is unrecoverable after the fact.
+  function metaDiagTrackSource(source, episodeId, tracks, episodeStartMs) {
+    if (!Array.isArray(tracks)) return;
+    META_DIAG.lastTrackSource = source;
+    META_DIAG.lastTrackEpisodeId = episodeId == null ? null : episodeId;
+    META_DIAG.lastTrackCount = tracks.length;
+    META_DIAG.lastTrackAt = Date.now();
+    META_DIAG.lastTrackKeys = tracks.length && tracks[0] ? Object.keys(tracks[0]) : null;
+    META_DIAG.lastTrackSample = tracks.length ? tracks[0] : null;
+    META_DIAG.lastTrackEpisodeStartMs = Number.isFinite(episodeStartMs) ? episodeStartMs : null;
+  }
 
   // Instrumented at the APP'S OWN registration sites only. EventTarget.prototype
   // and every built-in are left untouched.
@@ -1233,6 +1267,10 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       paintNowPlaying();
       repaintExpandPanel();
     }
+    // WS41: record the RELATIVE-timebase source and the anchor it was built
+    // from. Placed AFTER the merge so it only fires when the lookup actually
+    // produced something — a record of an empty result would be misleading.
+    metaDiagTrackSource('player/ondemand', entry.episodeId, tracks, entry.startMs);
   }
   // Timer handle, module scope, so a second song change can cancel the first
   // and a channel switch can clear a pending lookup (see stopNowPlayingPoll).
@@ -1389,6 +1427,13 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         if (nowPlaying.timeline.some((e) => e.startMs === startMs)) return;
         nowPlaying.timeline.push({ title, artist, startMs, stopMs });
       };
+      // WS41: this is the ABSOLUTE-timebase source. Recorded as such, so the
+      // snapshot can show that the one timeline holds entries from two sources
+      // on two different timebases. The capture is placed BEFORE `keep()`
+      // filters, so the recorded key set is the raw payload's and not the
+      // surviving subset's.
+      metaDiagTrackSource('playlists/rightnow', channelId,
+        [pl.previoussong, song, pl.nextsong].filter(Boolean), null);
       // Oldest first, so indexOf/index math stays simple after the sort.
       keep(pl.previoussong);
       keep(song);
@@ -3458,6 +3503,92 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // No fallback invents a number. Absent both sources, A is null and every
   // dependent value is null — which is the honest answer on a transport that
   // offers no absolute anchor.
+  // ---- WS41: METADATA COLLECTOR -------------------------------------------
+  // PURE: takes the timeline, the polled song and the META_DIAG record, and
+  // returns the flat field set the snapshot prints. It reads NOTHING global,
+  // which is what lets the tests execute it and assert its output exactly.
+  //
+  // It computes NO correction and NO alignment. It reports two offsets and
+  // labels what each is a difference BETWEEN, because the entire finding is
+  // that the two sides are anchored to different things.
+  function ws41MetadataFields(timeline, onAir, diag) {
+    const d = diag || {};
+    const list = Array.isArray(timeline) ? timeline : [];
+    const nowMs = Date.now();
+    // Which entries came from where. The poll's entries are absolute; the
+    // seek path's are programmeStart + relative. They are indistinguishable
+    // once merged, which is why this is counted rather than assumed.
+    const anchor = Number.isFinite(d.lastTrackEpisodeStartMs)
+      ? d.lastTrackEpisodeStartMs : null;
+    let seekCount = 0;
+    let pollCount = 0;
+    for (const e of list) {
+      // A seek-path entry's startMs is >= the programme anchor and inside that
+      // programme. Entries far outside it came from the absolute-timebase poll.
+      if (anchor != null && e.startMs >= anchor) seekCount += 1;
+      else pollCount += 1;
+    }
+    // The entry the panel would pick RIGHT NOW, and the same entry judged
+    // against the playhead's wall-clock reconstruction. Both are reported; the
+    // difference between them is the quantity under investigation.
+    const end = state.current ? state.current.seekableEnd : null;
+    const pwMs = playheadWallMs();
+    const hit = pickByPosition(list, pwMs);
+    let onAirOffsetS = null;
+    if (onAir && Number.isFinite(onAir.startMs) && Number.isFinite(pwMs)) {
+      onAirOffsetS = (pwMs - onAir.startMs) / 1000;
+    }
+    let hitOffsetS = null;
+    if (hit && Number.isFinite(hit.startMs) && Number.isFinite(pwMs)) {
+      hitOffsetS = (pwMs - hit.startMs) / 1000;
+    }
+    return {
+      metaSource: d.lastTrackSource || null,
+      metaEndpoint: d.lastTrackSource === 'player/ondemand'
+        ? 'web-api.sr.se/v1/player/ondemand?id=<episodeId>&type=episode'
+        : (d.lastTrackSource === 'playlists/rightnow'
+          ? `${SR_API}/playlists/rightnow?channelid=<id>`
+          : null),
+      metaEpisodeId: d.lastTrackEpisodeId == null ? null : d.lastTrackEpisodeId,
+      metaTrackCount: Number.isFinite(d.lastTrackCount) ? d.lastTrackCount : null,
+      metaCapturedAtMs: Number.isFinite(d.lastTrackAt) ? d.lastTrackAt : null,
+      metaTrackKeys: Array.isArray(d.lastTrackKeys) ? d.lastTrackKeys.join(',') : null,
+      metaTrackSample: d.lastTrackSample ? JSON.stringify(d.lastTrackSample) : null,
+      metaEpisodeStartMs: anchor,
+      metaAnchorSource: 'SR schedule starttimeutc (fetchScheduleDay)',
+      onAirTitle: onAir ? (onAir.title || null) : null,
+      onAirArtist: onAir ? (onAir.artist || null) : null,
+      onAirStartMs: onAir && Number.isFinite(onAir.startMs) ? onAir.startMs : null,
+      onAirStopMs: onAir && Number.isFinite(onAir.stopMs) ? onAir.stopMs : null,
+      timelineCount: list.length,
+      timelinePollCount: pollCount,
+      timelineSeekCount: seekCount,
+      playheadWallMs: Number.isFinite(pwMs) ? pwMs : null,
+      deviceNowMs: nowMs,
+      cachedSeekableEnd: Number.isFinite(end) ? end : null,
+      seekableEndWrittenAtMs: state.current
+        && Number.isFinite(state.current.seekableEndWrittenAtMs)
+        ? state.current.seekableEndWrittenAtMs : null,
+      seekableEndAgeMs: state.current
+        && Number.isFinite(state.current.seekableEndWrittenAtMs)
+        ? nowMs - state.current.seekableEndWrittenAtMs : null,
+      onAirOffsetS,
+      timelineHitOffsetS: hitOffsetS,
+      timelineHitTitle: hit ? (hit.title || null) : null,
+      timelineHitStartMs: hit && Number.isFinite(hit.startMs) ? hit.startMs : null,
+      timelineHitSource: hit
+        ? (anchor != null && hit.startMs >= anchor ? 'SR tracks (programme-anchored)'
+          : 'poll (absolute)')
+        : null,
+    };
+  }
+
+  // WS41: live wrapper. Reads the element ONCE, synchronously, and delegates.
+  // Nothing here changes metadata behaviour; it only observes it.
+  function ws41CollectMetadata() {
+    return ws41MetadataFields(nowPlaying.timeline, nowPlaying.song, META_DIAG);
+  }
+
   function ws40ReadOrigin() {
     try {
       // (1) Safari native HLS.
@@ -3843,6 +3974,62 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     L.push('      currentTime, the proposed target or any programme time.');
     L.push('');
 
+    // ---- WS41: METADATA. The two sources use different timebases and their
+    // entries are merged into ONE list, so this section exists to make that
+    // visible rather than to assert anything about it.
+    L.push('== METADATA SOURCE / TIMEBASE ==');
+    push('metadata source (last track set)', d.metaSource);
+    push('metadata endpoint', d.metaEndpoint);
+    push('metadata episodeId', d.metaEpisodeId);
+    push('metadata track count', d.metaTrackCount);
+    push('metadata capturedAtMs (raw ms)', d.metaCapturedAtMs, 'ms');
+    push('metadata capturedAt (UTC)', d.metaCapturedAtMs, 'iso');
+    // The literal key names on one raw track. This is what proves the payload
+    // carries no absolute timestamp: if a real one ever appears, it appears HERE.
+    push('raw track keys (verbatim)', d.metaTrackKeys);
+    push('raw track[0] (verbatim)', d.metaTrackSample);
+    push('programme anchor startMs (raw ms)', d.metaEpisodeStartMs, 'ms');
+    push('programme anchor (UTC)', d.metaEpisodeStartMs, 'iso');
+    push('anchor source', d.metaAnchorSource);
+    L.push('');
+
+    L.push('== METADATA AS THE PANEL SEES IT ==');
+    push('on-air song (poll)', d.onAirTitle);
+    push('on-air artist (poll)', d.onAirArtist);
+    push('on-air startMs (raw ms)', d.onAirStartMs, 'ms');
+    push('on-air stopMs (raw ms)', d.onAirStopMs, 'ms');
+    push('timeline entries', d.timelineCount);
+    push('timeline entries from poll', d.timelinePollCount);
+    push('timeline entries from SR tracks', d.timelineSeekCount);
+    L.push('');
+
+    L.push('== PLAYHEAD -> WALL-CLOCK MAPPING (the only bridge) ==');
+    push('playheadWallMs() result (raw ms)', d.playheadWallMs, 'ms');
+    push('playheadWallMs (UTC)', d.playheadWallMs, 'iso');
+    push('derived from: Date.now() (raw ms)', d.deviceNowMs, 'ms');
+    push('cached seekableEnd used (media s)', d.cachedSeekableEnd, 's');
+    push('cached seekableEnd writtenAtMs', d.seekableEndWrittenAtMs, 'ms');
+    push('cached seekableEnd age at snapshot', d.seekableEndAgeMs, 'ms');
+    push('currentTime read (media s)', d.currentTimeS, 's');
+    L.push('NOTE: playheadWallMs() = Date.now() - (cachedSeekableEnd - currentTime)*1000');
+    L.push('      It does NOT use getStartDate(). It is the ONLY bridge between');
+    L.push('      media seconds and the absolute metadata timeline, and its anchor');
+    L.push('      is a CACHED buffered edge, not the timeline\'s programme start.');
+    L.push('');
+
+    L.push('== METADATA vs MEDIA (measured, not assumed) ==');
+    push('playheadWallMs - onAirStartMs (s)', d.onAirOffsetS, 's');
+    push('playheadWallMs - timelineHitStartMs (s)', d.timelineHitOffsetS, 's');
+    push('timeline hit title', d.timelineHitTitle);
+    push('timeline hit startMs (raw ms)', d.timelineHitStartMs, 'ms');
+    push('timeline hit came from', d.timelineHitSource);
+    L.push('READING THIS: a NON-ZERO "playheadWallMs - hitStartMs" is NOT proof of');
+    L.push('a metadata error. It is the difference between two different anchors —');
+    L.push('the timeline entry is anchored to PROGRAMME START, the playhead to a');
+    L.push('CACHED seekableEnd. To attribute a mismatch, compare the anchors first:');
+    L.push('  (programme anchor) vs (getStartDate()) vs (cached seekableEnd edge).');
+    L.push('');
+
     L.push('== PLAYLIST WITNESS ==');
     push('headPdtMs (raw ms)', d.headPdtMs, 'ms');
     push('headPdt (UTC)', d.headPdtMs, 'iso');
@@ -3967,6 +4154,10 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       freshSeekableEnd: SEEK_MEASURE.freshSeekableEnd,
       rate: SEEK_MEASURE.rate,
       runs: WS40.runs.slice(),
+      // ---- WS41: metadata. Spread from the pure collector so the snapshot
+      // stays a function of ONE input object; the collector itself is pure and
+      // is unit-tested separately.
+      ...ws41CollectMetadata(),
     });
 
     // The string exists now. Nothing below can change it.
