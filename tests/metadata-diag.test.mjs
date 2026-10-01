@@ -553,6 +553,28 @@ const PROGRAM_SKIP = region(
 assert.ok(APP_JS.includes(LAYOUT_BLOCK), 'the layout block marker must exist');
 const PROGRAM_SKIP_CODE = stripComments(PROGRAM_SKIP);
 
+// ---- WS42: the backward-lookup guard, restated ONCE. ------------------
+// WS42 named the position argument so the captured value could also be
+// recorded: `const bindPosMs = posMs();` then
+// `programBoundary(schedule, bindPosMs, -1)`. The LOOKUP is unchanged — same
+// function, same `-1` direction, same `posMs()` source, evaluated once.
+//
+// These guards previously pinned the literal source text, which made them
+// blind to a rename they were never written to police: they would equally have
+// failed on a change to the direction or the function. So the REQUIREMENT is
+// restated rather than the string, and both source forms are accepted.
+//
+// The proof that the two forms are equivalent is EXECUTED, not asserted in
+// prose: `the named position argument is the same value the inline form passed`
+// runs the real `programBoundary` over both and compares the results. If that
+// equivalence test is ever removed this restatement becomes unproven.
+const PREV_LOOKUP_SOURCE =
+  /const bindPosMs = posMs\(\);\s*const prevEv = programBoundary\(schedule, bindPosMs, -1\);/;
+const PREV_LOOKUP_INLINE =
+  /const prevEv = programBoundary\(schedule, posMs\(\), -1\);/;
+const PREV_LOOKUP_REQUIREMENT = new RegExp(
+  `${PREV_LOOKUP_SOURCE.source}|${PREV_LOOKUP_INLINE.source}`);
+
 test('WS1: the programme-skip timeupdate listener is removed before it is added', () => {
   // The handler is stored on the audioEl singleton, like its two siblings.
   assert.ok(PROGRAM_SKIP_CODE.includes('if (audioEl._srNextUpd)'),
@@ -631,8 +653,8 @@ test('WS1: no user-visible programme-skip behaviour was dropped', () => {
   // target must be identical.
   assert.ok(/if \(!schedule \|\| !document\.contains\(prevProgramBtn\)\) return;/.test(PROGRAM_SKIP_CODE),
     'the document.contains() early-return guard must survive');
-  assert.ok(/const prevEv = programBoundary\(schedule, posMs\(\), -1\);/.test(PROGRAM_SKIP_CODE),
-    'the previous-programme lookup must survive');
+  assert.ok(PREV_LOOKUP_REQUIREMENT.test(PROGRAM_SKIP_CODE),
+    'the previous-programme lookup must survive (WS42: named position arg)');
   // WS6 CHANGED THIS, deliberately. The lookup was
   //   const nextEv = programBoundary(schedule, posMs(), +1);
   // which returns the first event starting AFTER the playhead -- including an
@@ -2174,8 +2196,8 @@ test('WS7: the forward lookup returns the NEAREST started boundary, not the firs
   // anything.
   const SCHED_WS7 = stripComments(region(
     'fetchSchedule(cur.id).then((schedule) => {', 'if (prevEv) syncNext();', APP_JS));
-  assert.ok(/const prevEv = programBoundary\(schedule, posMs\(\), -1\);/.test(SCHED_WS7),
-    'the previous-programme lookup must be untouched');
+  assert.ok(PREV_LOOKUP_REQUIREMENT.test(SCHED_WS7),
+    'the previous-programme lookup must be untouched (WS42: named position arg)');
 });
 
 test('WS7: the press is recorded, so a dead press is distinguishable from silence',
@@ -2332,8 +2354,8 @@ test('WS9: out of scope -- every seek function and the DVR constants are byte-id
   // posMs and liveEdgeWallMs unchanged.
   assert.ok(/const posMs = \(\) => \{/.test(APP_CODE), 'posMs must still exist');
   assert.ok(/const liveEdgeWallMs = \(\) => \{/.test(APP_CODE), 'liveEdgeWallMs must still exist');
-  assert.ok(/const prevEv = programBoundary\(schedule, posMs\(\), -1\);/.test(APP_CODE),
-    'the backwards lookup must be byte-identical');
+  assert.ok(PREV_LOOKUP_REQUIREMENT.test(APP_CODE),
+    'the backwards lookup must be unchanged in behaviour (WS42: named position arg)');
   // The read-only contract.
   assert.ok(!/state\.current\.\w+\s*=/.test(HOOK), 'the hook must not write to the current-track object');
 });
@@ -2863,8 +2885,8 @@ test('WS11: out of scope -- every seek and position function is byte-identical',
   const SYNC = stripComments(region('const syncNext = () => {', 'if (prevEv) syncNext();', APP_JS));
   assert.ok(/ev\.startMs > playheadMs\s*\n?\s*&& ev\.startMs <= nowMs/.test(SYNC),
     'the programme-skip lookup must be byte-identical -- the button works');
-  assert.ok(/const prevEv = programBoundary\(schedule, posMs\(\), -1\);/.test(APP_CODE),
-    'the backwards lookup must be byte-identical');
+  assert.ok(PREV_LOOKUP_REQUIREMENT.test(APP_CODE),
+    'the backwards lookup must be unchanged in behaviour (WS42: named position arg)');
   // WS5's attribution footer stays gone.
   assert.ok(!/class: 'attribution'/.test(APP_CODE), 'the WS5 attribution footer must not return');
 });

@@ -108,6 +108,22 @@ const REFUSING_ENV = {
     seekableEndAgeMs: null, onAirOffsetS: null, timelineHitOffsetS: null,
     timelineHitTitle: null, timelineHitStartMs: null, timelineHitSource: null,
   }),
+  // WS42: the backward-binding record. Listed for the same reason — the harness
+  // is CLOSED, so an unlisted name is a ReferenceError rather than a silent
+  // undefined. Observation only; it must not throw on the copy path.
+  ws42CollectPrevBind: () => ({
+    prevBindBound: null, prevBindBoundAgoMs: null, prevBindLiveEdgeWallMs: null,
+    prevBindLiveEdgeWall: null, prevBindPosMs: null, prevBindPosWasEventStart: null,
+    prevBindContainingTitle: null, prevBindContainingStartMs: null,
+    prevBindSeekableEnd: null, prevBindSeekableEndWrittenAt: null,
+    prevBindCurrentTime: null, prevBindScheduleLength: null,
+    prevBindCapturedStartMs: null, prevBindCapturedTitle: null,
+    prevLivePosMs: null, prevLiveContainingTitle: null,
+    prevWouldSelectNowMs: null, prevWouldSelectNowTitle: null,
+    prevBindingIsStale: null, prevSkippedCount: null,
+    freshSeekableEndNow: null, cachedSeekableEndNow: null,
+    freshMinusCachedNowMs: null, seekableEndAgeNowMs: null, currentTimeNow: null,
+  }),
 };
 
 test('the clipboard FALLBACK path runs without a ReferenceError', async () => {

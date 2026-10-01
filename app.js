@@ -468,6 +468,17 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     lastTrackKeys: null,        // key names on ONE raw track, verbatim
     lastTrackSample: null,      // that raw track, verbatim
     lastTrackEpisodeStartMs: null, // the programme start it was anchored to
+    // ---- WS42: what the BACKWARD programme button captured, and when. ----
+    // The backward handler is bound ONCE and permanently captures `prevEv`
+    // (see the `prevProgramBtn.onclick = goPrev` site), while the forward path
+    // is refreshed on `timeupdate`. So the captured value is the thing under
+    // suspicion, and until now nothing recorded what it WAS.
+    //
+    // Every field is captured at BIND time by the same expression that produced
+    // the value, so this cannot disagree with what the handler will do. It is
+    // a RECORD, not a re-computation: nothing here changes which programme is
+    // selected.
+    prevBind: null,             // null until a backward handler is ever bound
   };
 
   // WS41: record which endpoint produced a set of tracks, and what that payload
@@ -3631,6 +3642,107 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     };
   }
 
+  // ---- WS42: BACKWARD-BINDING record. PURE for the same reason as the
+  // collector above: everything arrives as an argument, so the tests can
+  // execute it and assert the output exactly.
+  //
+  // It reports the CAPTURED value and, separately, what the same inputs would
+  // select NOW. The gap between those two IS the defect, expressed as data
+  // rather than as an argument. It computes no correction and changes no
+  // selection.
+  // `audio` is PASSED IN, not reached for. This function reads no global, so it
+  // can be executed in a test with a fixture element and its output asserted
+  // exactly — which is the only reason the second fresh/cached reading is
+  // trustworthy at all. A "pure" collector that quietly read `audioEl` would
+  // have been untestable and therefore unverified.
+  function ws42PrevBindFields(bind, state, schedule, playheadWallMsFn, audio) {
+    const b = bind || {};
+    const end = state && state.current ? state.current.seekableEnd : null;
+    const now = Date.now();
+    const list = Array.isArray(schedule) ? schedule : [];
+    // The live state: where the playhead sits by the app's own bridge now.
+    const pwNow = typeof playheadWallMsFn === 'function' ? playheadWallMsFn() : null;
+    const evNow = Number.isFinite(pwNow)
+      ? (list.find((e) => e.startMs <= pwNow && pwNow < e.endMs)
+        || list.find((e) => e.endMs > pwNow) || null)
+      : null;
+    const posNow = evNow ? evNow.startMs : pwNow;
+    // What the backward handler WOULD select if it re-evaluated. Recomputed
+    // here ONLY for comparison; the real handler still uses the captured
+    // value, so this cannot change what a press does.
+    const wouldPickNow = Number.isFinite(posNow)
+      ? (list.length ? [...list].reverse().find((e) => e.startMs < posNow - 1000) : null)
+      : null;
+    const captured = Number.isFinite(b.prevStartMs) ? b.prevStartMs : null;
+    const fresh = wouldPickNow && Number.isFinite(wouldPickNow.startMs)
+      ? wouldPickNow.startMs : null;
+    return {
+      prevBindBound: b.boundAtMs == null ? null : b.boundAtMs,
+      prevBindBoundAgoMs: b.boundAtMs == null ? null : now - b.boundAtMs,
+      prevBindLiveEdgeWallMs: Number.isFinite(b.liveEdgeWallMs) ? b.liveEdgeWallMs : null,
+      prevBindLiveEdgeWall: Number.isFinite(b.liveEdgeWallMs)
+        ? new Date(b.liveEdgeWallMs).toISOString() : null,
+      prevBindPosMs: Number.isFinite(b.posMs) ? b.posMs : null,
+      prevBindPosWasEventStart: b.posMsWasEventStart == null ? null : b.posMsWasEventStart,
+      prevBindContainingTitle: b.containingTitle || null,
+      prevBindContainingStartMs: Number.isFinite(b.containingStartMs)
+        ? b.containingStartMs : null,
+      prevBindSeekableEnd: Number.isFinite(b.seekableEndAtBind) ? b.seekableEndAtBind : null,
+      prevBindSeekableEndWrittenAt: Number.isFinite(b.seekableEndWrittenAtBind)
+        ? b.seekableEndWrittenAtBind : null,
+      prevBindCurrentTime: Number.isFinite(b.currentTimeAtBind) ? b.currentTimeAtBind : null,
+      prevBindScheduleLength: Number.isFinite(b.scheduleLength) ? b.scheduleLength : null,
+      // THE CAPTURED DECISION — what the button will do on a press.
+      prevBindCapturedStartMs: captured,
+      prevBindCapturedTitle: b.prevTitle || null,
+      // WHAT IT WOULD DO NOW. A press seeks to `captured`, so this pair is the
+      // skip, measured rather than argued.
+      prevLivePosMs: Number.isFinite(posNow) ? posNow : null,
+      prevLiveContainingTitle: evNow ? (evNow.title || null) : null,
+      prevWouldSelectNowMs: fresh,
+      prevWouldSelectNowTitle: wouldPickNow ? (wouldPickNow.title || null) : null,
+      prevBindingIsStale: (captured != null && fresh != null) ? captured !== fresh : null,
+      // How many boundaries stale, in whole programmes. This is the number the
+      // owner sees as "skipped several". Counted between the two SELECTIONS,
+      // not between the two positions: the schedules entries whose start lies
+      // after what a fresh press would pick and up to what the captured press
+      // will pick.
+      prevSkippedCount: (captured != null && fresh != null && captured !== fresh && list.length)
+        ? [...list].filter((e) => e.startMs > fresh && e.startMs <= captured).length
+        : null,
+      // A SECOND, INDEPENDENT reading of the same quantity the seek uses. The
+      // WS38 record only samples AT a seek; this one is available at any
+      // snapshot, so the discrepancy can be observed without seeking.
+      freshSeekableEndNow: (() => {
+        try {
+          const s = audio && audio.seekable;
+          if (!s || !s.length) return null;
+          const e2 = s.end(s.length - 1);
+          return Number.isFinite(e2) ? e2 : null;
+        } catch { return null; }
+      })(),
+      cachedSeekableEndNow: Number.isFinite(end) ? end : null,
+      freshMinusCachedNowMs: (() => {
+        try {
+          const s = audio && audio.seekable;
+          if (!s || !s.length || !Number.isFinite(end)) return null;
+          const e2 = s.end(s.length - 1);
+          return Number.isFinite(e2) ? (e2 - end) * 1000 : null;
+        } catch { return null; }
+      })(),
+      seekableEndAgeNowMs: state && state.current
+        && Number.isFinite(state.current.seekableEndWrittenAtMs)
+        ? now - state.current.seekableEndWrittenAtMs : null,
+      currentTimeNow: audio && Number.isFinite(audio.currentTime) ? audio.currentTime : null,
+    };
+  }
+
+  // WS42: live wrapper for the bind record.
+  function ws42CollectPrevBind() {
+    return ws42PrevBindFields(META_DIAG.prevBind, state,
+      state.current ? state.current._srSchedule : null, playheadWallMs, audioEl);
+  }
+
   // WS41: live wrapper. Reads the element ONCE, synchronously, and delegates.
   // Nothing here changes metadata behaviour; it only observes it.
   function ws41CollectMetadata() {
@@ -4065,6 +4177,46 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     L.push('      is a CACHED buffered edge, not the timeline\'s programme start.');
     L.push('');
 
+    L.push('== BACKWARD PROGRAMME BINDING (WS42) ==');
+    push('bound at (raw ms)', d.prevBindBound, 'ms');
+    push('bound at (UTC)', d.prevBindBound, 'iso');
+    push('bound this long ago (ms)', d.prevBindBoundAgoMs, 'ms');
+    push('liveEdgeWallMs() at bind', d.prevBindLiveEdgeWall, 'ms');
+    push('posMs() at bind', d.prevBindPosMs, 'ms');
+    push('posMs() was the event start', d.prevBindPosWasEventStart);
+    push('containing programme at bind', d.prevBindContainingTitle);
+    push('seekableEnd at bind (media s)', d.prevBindSeekableEnd, 's');
+    push('seekableEnd writtenAt at bind', d.prevBindSeekableEndWrittenAt, 'ms');
+    push('currentTime at bind (media s)', d.prevBindCurrentTime, 's');
+    push('schedule entries', d.prevBindScheduleLength);
+    push('CAPTURED prevEv startMs', d.prevBindCapturedStartMs, 'ms');
+    push('CAPTURED prevEv (UTC)', d.prevBindCapturedStartMs, 'iso');
+    push('CAPTURED prevEv title', d.prevBindCapturedTitle);
+    push('NOW: posMs()', d.prevLivePosMs, 'ms');
+    push('NOW: containing programme', d.prevLiveContainingTitle);
+    push('NOW: would select (startMs)', d.prevWouldSelectNowMs, 'ms');
+    push('NOW: would select (title)', d.prevWouldSelectNowTitle);
+    push('IS THE BINDING STALE', d.prevBindingIsStale);
+    push('programmes skipped by the stale binding', d.prevSkippedCount);
+    L.push('READING THIS: a press on the backward button seeks to the CAPTURED');
+    L.push('      value, not to "would select now". Where those differ, that is the');
+    L.push('      skip, measured. "would select" is computed HERE for comparison only');
+    L.push('      — the real handler is unchanged and still uses the captured value.');
+    L.push('');
+
+    L.push('== SEEKABLE EDGE: SECOND INDEPENDENT READING (WS42) ==');
+    push('currentTime now (media s)', d.currentTimeNow, 's');
+    push('cached seekableEnd now (media s)', d.cachedSeekableEndNow, 's');
+    push('fresh seekableEnd now (media s)', d.freshSeekableEndNow, 's');
+    push('fresh MINUS cached (ms)', d.freshMinusCachedNowMs, 'ms');
+    push('cached value age now (ms)', d.seekableEndAgeNowMs, 'ms');
+    L.push('SIGN: NEGATIVE means the CACHED edge is AHEAD of the fresh read.');
+    L.push('      Since target = end - behindMs/1000 and target INCREASES with end,');
+    L.push('      an oversized cached edge moves the landing point FORWARD.');
+    L.push('      Compare with the WS38 "fresh seekableEnd" above, which is sampled');
+    L.push('      AT a seek; this one is sampled at snapshot time and needs no seek.');
+    L.push('');
+
     L.push('== METADATA vs MEDIA (measured, not assumed) ==');
     push('playheadWallMs - onAirStartMs (s)', d.onAirOffsetS, 's');
     push('playheadWallMs - timelineHitStartMs (s)', d.timelineHitOffsetS, 's');
@@ -4206,6 +4358,9 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       // stays a function of ONE input object; the collector itself is pure and
       // is unit-tested separately.
       ...ws41CollectMetadata(),
+      // ---- WS42: the backward binding record + a second, seek-free reading of
+      // the cached/fresh seekable-end discrepancy. Observation only.
+      ...ws42CollectPrevBind(),
     });
 
     // The string exists now. Nothing below can change it.
@@ -5837,7 +5992,38 @@ function seekMeasureRecordText() {
             || schedule.find((e) => e.endMs > est);
           return ev ? ev.startMs : est;
         };
-        const prevEv = programBoundary(schedule, posMs(), -1);
+        // ---- WS42: capture posMs() ONCE and use it for both the record and the
+        // real selection. Storing the value changes NOTHING about the
+        // behaviour: `posMs()` is still evaluated exactly once here, it is
+        // simply kept. Calling it a second time for the record would sample a
+        // slightly later instant and could report a `prevEv` the handler does
+        // not actually make — a diagnostic that lies about its own subject.
+        const bindPosMs = posMs();
+        const prevEv = programBoundary(schedule, bindPosMs, -1);
+        // Recorded AFTER the value it describes exists, and never read by the
+        // handler. Pure observation.
+        const bindEstMs = liveEdgeWallMs();
+        const bindEv = schedule.find((e) => e.startMs <= bindPosMs && bindPosMs < e.endMs)
+          || schedule.find((e) => e.endMs > bindPosMs);
+        META_DIAG.prevBind = {
+          boundAtMs: Date.now(),
+          liveEdgeWallMs: bindEstMs,
+          posMs: bindPosMs,
+          posMsWasEventStart: bindEv ? bindEv.startMs === bindPosMs : false,
+          containingTitle: bindEv ? (bindEv.title || null) : null,
+          containingStartMs: bindEv && Number.isFinite(bindEv.startMs) ? bindEv.startMs : null,
+          containingEndMs: bindEv && Number.isFinite(bindEv.endMs) ? bindEv.endMs : null,
+          prevStartMs: prevEv ? prevEv.startMs : null,
+          prevTitle: prevEv ? (prevEv.title || null) : null,
+          // The edge the estimate was seeded from. If this is the stale
+          // cached edge, the same staleness that shifts the seek target also
+          // shifts which programme `posMs()` lands in.
+          seekableEndAtBind: Number.isFinite(cur.seekableEnd) ? cur.seekableEnd : null,
+          seekableEndWrittenAtBind: Number.isFinite(cur.seekableEndWrittenAtMs)
+            ? cur.seekableEndWrittenAtMs : null,
+          currentTimeAtBind: Number.isFinite(audioEl.currentTime) ? audioEl.currentTime : null,
+          scheduleLength: Array.isArray(schedule) ? schedule.length : null,
+        };
         if (prevEv) {
           prevProgramBtn.style.display = '';
           prevProgramBtn._srMode = 'programme';
