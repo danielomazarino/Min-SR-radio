@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '7112f59';
+  const APP_BUILD = '8ac39f6';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -3372,6 +3372,17 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     mediaOriginMs: null,        // A
     transport: null,            // 'native-hls' | 'hlsjs' | 'direct'
 
+    // ---- WS40b: the INDEPENDENT cross-check of A. DIAGNOSTIC ONLY. ----
+    // A second, structurally different estimate of the same quantity (the
+    // media-timeline origin), derived from SR's playlist instead of Safari.
+    // It exists because no amount of arithmetic on A alone can validate A:
+    // every earlier check was a restatement of the value under test.
+    playlistOriginMs: null,     // trueEdgeWallMs - seekableEnd*1000
+    originDeltaS: null,         // (mediaOriginMs - playlistOriginMs)/1000
+    // Read so the delta can be weighted by how old the playlist sample is.
+    // `trueEdgeWallMs` is only as current as this.
+    playlistSampleAtMs: null,   // STREAM_EDGE_PROBE.sampledAtMs
+
     // ---- the two mappings, computed but NOT used by production ----
     existingTargetS: null,      // old equation
     proposedTargetS: null,      // new equation
@@ -3531,6 +3542,17 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     WS40.originSource = origin.source;
     WS40.mediaOriginMs = origin.originMs;
     WS40.transport = ws40Transport();
+    // ---- WS40b: the independent cross-check. Recorded ONLY. ----
+    // Neither value below is read by any production target: `proposedTargetS`
+    // is computed on the line after this, from `mediaOriginMs` alone, and it
+    // must stay that way. A guard test forbids `playlistOriginMs` appearing
+    // in the target computation.
+    WS40.playlistSampleAtMs =
+      Number.isFinite(p.sampledAtMs) ? p.sampledAtMs : null;
+    WS40.playlistOriginMs = ws40PlaylistOrigin(
+      WS40.playlistEdgeWallMs, WS40.seekableEndS);
+    WS40.originDeltaS =
+      ws40OriginDelta(WS40.mediaOriginMs, WS40.playlistOriginMs);
     WS40.existingTargetS =
       ws40ExistingTarget(WS40.seekableEndS, nowMs, WS40.programmeStartMs);
     WS40.proposedTargetS =
@@ -3647,6 +3669,20 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     lines.push(`   A: ${iso(WS40.mediaOriginMs)}`);
     lines.push(`   källa: ${WS40.originSource}`);
     lines.push('');
+    lines.push('Oberoende kontroll av A (från SR:s spellista)');
+    lines.push(`   A ur spellistan: ${iso(WS40.playlistOriginMs)}`);
+    lines.push(`   skillnad A − A_spellista: ${sec(n(WS40.originDeltaS))}`);
+    lines.push(`   provets tidsstämpel: ${iso(WS40.playlistSampleAtMs)}`);
+    lines.push(`   provets ålder: ${ms(n(WS40.playlistSampleAgeMs))}`);
+    if (Number.isFinite(WS40.originDeltaS)) {
+      lines.push('');
+      lines.push('   LÄS DETTA: spellistans kant LIGGER ~31 s EFTER verklig tid');
+      lines.push('   (SR publicerar spellistan en halv minut före). A_playlist');
+      lines.push('   är därför ~+31 s snedvriden, så ett PERFEKT getStartDate()');
+      lines.push('   ger en skillnad på ~−31 s, INTE ~0. Rätta för det innan');
+      lines.push('   du drar slutsatser.');
+    }
+    lines.push('');
     lines.push('De två målen (beräknas, används INTE av produktionen)');
     lines.push(`   befintlig formel: ${sec(n(WS40.existingTargetS))}`);
     lines.push(`   föreslagen formel: ${sec(n(WS40.proposedTargetS))}`);
@@ -3682,6 +3718,50 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         + `(${ok.length} körningar mätta)`);
     }
     return lines.join('\n');
+  }
+
+  // Pure: the media-timeline origin according to SR's OWN PLAYLIST.
+  //
+  //   A_playlist = trueEdgeWallMs - seekableEnd * 1000
+  //
+  // `trueEdgeWallMs` is `headPdt + sum(EXTINF)`, computed by `parseVariantEdge`
+  // from a playlist the app fetched itself. `seekableEnd` is the buffered edge
+  // the media element reports. Neither input involves `getStartDate()`, the
+  // proposed target, or the device clock — so the difference from Safari's
+  // anchor is a genuine CROSS-CHECK and not a restatement of it.
+  //
+  // KNOWN BIAS, measured 2026-10-01 (n=6, range 29-34 s, mean 31.5 s):
+  // `trueEdgeWallMs` OVERSHOOTS real UTC, because summing every EXTINF runs
+  // past the last segment that has actually aired — SR publishes the playlist
+  // roughly half a minute ahead. So `A_playlist` inherits that overshoot and
+  // `A_playlist ~ A_true + 31.5 s`.
+  //
+  // CONSEQUENCE FOR READING `delta` — stated here so the number cannot be
+  // misread as a verdict:
+  //
+  //     delta = A_safari - A_playlist = (A_safari - A_true) - 31.5 s
+  //
+  // A PERFECT `getStartDate()` therefore does NOT give delta ~ 0; it gives
+  // delta ~ -31.5 s. The acceptance band must be centred there, NOT on zero.
+  // A `getStartDate()` that is genuinely 25-37 s out gives a delta tens of
+  // seconds away from that band. The test still discriminates the two
+  // hypotheses by a wide margin; it just does not discriminate them by
+  // comparing against zero.
+  //
+  // Returns null unless both operands are finite. It is DIAGNOSTIC ONLY: see
+  // the guard test that forbids it reaching any production target.
+  function ws40PlaylistOrigin(trueEdgeWallMs, seekableEndS) {
+    if (!Number.isFinite(trueEdgeWallMs)) return null;
+    if (!Number.isFinite(seekableEndS)) return null;
+    return trueEdgeWallMs - seekableEndS * 1000;
+  }
+
+  // Pure: the difference between the two independently derived origins, in
+  // seconds. Positive means Safari's anchor is LATER than the playlist's.
+  // This is the cross-check number; see the bias note above before reading it.
+  function ws40OriginDelta(originMs, playlistOriginMs) {
+    if (!Number.isFinite(originMs) || !Number.isFinite(playlistOriginMs)) return null;
+    return (originMs - playlistOriginMs) / 1000;
   }
 
   // True while the Info panel's paint interval is running. Recorded so a reader
@@ -7870,6 +7950,10 @@ function seekMeasureRecordText() {
           deviceNowMs: WS40.deviceNowMs,
           originSource: WS40.originSource,
           mediaOriginMs: WS40.mediaOriginMs,
+          // ---- WS40b: independent cross-check of A. DIAGNOSTIC ONLY. ----
+          playlistOriginMs: WS40.playlistOriginMs,
+          originDeltaS: WS40.originDeltaS,
+          playlistSampleAtMs: WS40.playlistSampleAtMs,
           existingTargetS: WS40.existingTargetS,
           proposedTargetS: WS40.proposedTargetS,
           targetDeltaS: WS40.targetDeltaS,
@@ -7889,7 +7973,14 @@ function seekMeasureRecordText() {
             + 'landedWallMsSameOrigin IS tautological (it re-converts the '
             + 'landing with the same origin that built the target) and is '
             + 'included only so a reader can see it read ~0 regardless; it is '
-            + 'NOT evidence. A null means NOT MEASURED, never 0.',
+            + 'NOT evidence. playlistOriginMs/originDeltaS are the WS40b '
+            + 'cross-check: a second estimate of the media origin derived from '
+            + 'SR\'s playlist, sharing no input with getStartDate(). READ WITH '
+            + 'THE BIAS IN MIND: trueEdgeWallMs overshoots real UTC by ~31.5 s '
+            + '(measured n=6), so playlistOriginMs inherits that overshoot and '
+            + 'a PERFECT getStartDate() yields originDeltaS of about -31.5 s, '
+            + 'NOT about 0. Both fields are diagnostic and are read by no '
+            + 'production target. A null means NOT MEASURED, never 0.',
         },
         seekableDuration: cur?.seekableDuration ?? null,
         positionWallClockIso: positionWallClock,
