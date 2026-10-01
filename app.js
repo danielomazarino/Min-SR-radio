@@ -1751,9 +1751,20 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       totalMs += secs * 1000;
     }
     const seqMatch = playlistText.match(/#EXT-X-MEDIA-SEQUENCE:(\d+)/);
+    // ---- WS40: the segment duration, published so the landing error can be
+    // measured in SEGMENTS. Derived from the same parse, no extra work: every
+    // EXTINF is already read into `durations`. The MEDIA-SEQUENCE is not
+    // always present (it is optional in the spec), so the duration is a real
+    // measured value rather than an assumed constant.
+    let segmentDurationS = null;
+    for (const d of durations) {
+      const v = parseFloat(d.slice(d.indexOf(':') + 1));
+      if (Number.isFinite(v)) { segmentDurationS = v; break; }
+    }
     return {
       headPdtMs,
       totalMs,
+      segmentDurationS,
       segmentCount: durations.length,
       mediaSequence: seqMatch ? Number(seqMatch[1]) : null,
     };
@@ -1868,6 +1879,17 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     variantUrl: null,
     masterUrl: null,
     error: null,            // a short machine-readable reason, never raw text
+    // ---- WS40: the two raw quantities the segment-index error needs. ----
+    // Both are already computed by `parseVariantEdge` and were simply not
+    // published. They are recorded AS READ — no new fetch, no new parse, and
+    // `offsetS` does not read either of them, so WS33's operand is untouched.
+    //
+    // `headPdtMs` is the playlist's own statement of the wall time of its
+    // FIRST segment, and `segmentDurationS` its segment length. Together they
+    // define SR's media grid in absolute UTC without reference to any device
+    // clock, which is what makes the landing error measurable independently.
+    headPdtMs: null,
+    segmentDurationS: null,
     // A sample older than this is reported as stale on screen. Chosen to be
     // longer than the playlist's own roll period (segments are 6.4 s, the
     // whole playlist rolls far more often) and shorter than a human's
@@ -1969,6 +1991,12 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       STREAM_EDGE_PROBE.appEdgeWallMs = streamEdgeWallMs();
       STREAM_EDGE_PROBE.trueEdgeWallMs = trueEdge;
       STREAM_EDGE_PROBE.offsetS = (deviceNow - trueEdge) / 1000;
+      // ---- WS40: publish the two raw grid quantities. `offsetS` above does
+      // NOT read either of them — it is still exactly (deviceNow - trueEdge),
+      // so the WS33 property that neither operand contains the playhead is
+      // preserved. These exist only for the segment-index landing error.
+      STREAM_EDGE_PROBE.headPdtMs = parsed.headPdtMs;
+      STREAM_EDGE_PROBE.segmentDurationS = parsed.segmentDurationS;
       STREAM_EDGE_PROBE.segmentCount = parsed.segmentCount;
       STREAM_EDGE_PROBE.mediaSequence = parsed.mediaSequence;
       STREAM_EDGE_PROBE.variantUrl = best.url;
@@ -3278,6 +3306,382 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     ORIGIN_MEASURE.wallClockDeltaMs =
       wallClockDelta(ORIGIN_MEASURE.trueEdgeWallMs, pdtRead.pdt, t, s);
     return ORIGIN_MEASURE;
+  }
+
+  // ======================================================================
+  // WS40 — DIAGNOSTIC ONLY. Validates the proposed absolute mapping on the
+  // real iPhone (native HLS), where the ~25 s landing error was observed.
+  // ======================================================================
+  //
+  // WHAT IS ESTABLISHED ALREADY (not re-derived here, see SESSION-STATUS):
+  //   * the device clock is within ~1-2 s of real UTC;
+  //   * the apparent ~30 s "clock offset" is SR's PLAYLIST overshooting real
+  //     UTC by ~31.5 s — it is not a clock error;
+  //   * SR schedule programme starts land 0.00 s off the stream's segment grid,
+  //     so the schedule and the stream share a timeline origin;
+  //   * the OLD mapping  target = seekableEnd - (Date.now()-startMs)/1000
+  //     has error  = clockSkew - L,  where L is how far `seekableEnd` sits
+  //     behind the live edge. L is transport-dependent, which is why the same
+  //     code lands ~8-9 s early on desktop (MSE) and ~25 s early on iPhone
+  //     (native HLS).
+  //
+  // WHAT IS PROPOSED (NOT YET IMPLEMENTED IN PRODUCTION):
+  //     target = (startMs - A) / 1000        with A the media-timeline origin.
+  // Written with `seekableEnd` substituted for A this is algebraically
+  // `seekableEnd + (startMs - wallAtEnd)/1000`, in which `seekableEnd` appears
+  // on both sides and CANCELS — so the buffered-edge lag L drops out entirely.
+  // The production seek is DELIBERATELY UNCHANGED by this block.
+  //
+  // ---- THE CIRCULARITY TRAP, and why this diagnostic is built the way it is
+  // A landing error computed as `(A + landing*1000) - startMs`, where the SAME
+  // A built the target, is a TAUTOLOGY: it is identically zero even if A is
+  // wrong by 999 s. Checked numerically before writing any of this. So the
+  // error is NEVER computed that way.
+  //
+  // Instead the error is judged by SEGMENT INDEX, which uses no origin and no
+  // device clock at all:
+  //     segIdx(m) = (wallMs - headPdt) / (segmentMs * 1000)
+  // The schedule says the programme starts at wall instant `startMs`; the
+  // playlist says media position `(startMs - headPdt)/1000` is segment
+  // `segIdx`. If the player lands on that segment index, the mapping is right.
+  // Both sides are positions on the SAME media timeline, so a shared-origin
+  // error cannot hide: it would move both equally and the DIFFERENCE is what
+  // is reported.
+  //
+  // READ-ONLY WITH RESPECT TO PRODUCTION SEEKING. Nothing here changes
+  // `seekToProgramTime`, `seekBy`, `seekToLive` or any production target. The
+  // ONE seek this block performs is `ws40TestSeek()`, which is reachable ONLY
+  // from an explicit owner action in the diagnostics panel, records both
+  // mappings side by side, and is otherwise inert. It is a measurement, not a
+  // fix: no value it produces is read by the production seek path.
+
+  const WS40 = {
+    // ---- inputs, recorded at one instant ----
+    atMs: null,                 // device clock at capture
+    programmeStartMs: null,     // SR schedule `starttimeutc`, epoch ms
+    programmeTitle: null,
+    currentTimeS: null,         // MEDIA SECONDS
+    seekableStartS: null,       // MEDIA SECONDS
+    seekableEndS: null,         // MEDIA SECONDS
+    segmentMs: null,            // SR's segment duration (6.4 s measured)
+    headPdtMs: null,            // playlist PDT, epoch ms
+    playlistEdgeWallMs: null,   // headPdt + sum(EXTINF)
+    playlistSampleAgeMs: null,  // age of the playlist fetch
+    deviceNowMs: null,          // device clock, for the clock-skew term only
+    originSource: 'unavailable', // how A was obtained
+    mediaOriginMs: null,        // A
+    transport: null,            // 'native-hls' | 'hlsjs' | 'direct'
+
+    // ---- the two mappings, computed but NOT used by production ----
+    existingTargetS: null,      // old equation
+    proposedTargetS: null,      // new equation
+    targetDeltaS: null,         // proposed - existing
+
+    // ---- the test seek ----
+    runs: [],
+  };
+
+  // Pure: media position -> segment index on the SR playlist grid.
+  // No origin, no device clock. Returns null unless all inputs are finite.
+  function ws40SegmentIndex(wallMs, headPdtMs, segmentMs) {
+    if (!Number.isFinite(wallMs) || !Number.isFinite(headPdtMs)) return null;
+    if (!Number.isFinite(segmentMs) || segmentMs <= 0) return null;
+    return (wallMs - headPdtMs) / (segmentMs * 1000);
+  }
+
+  // Pure: the PROPOSED mapping. Needs A only.
+  function ws40ProposedTarget(startMs, mediaOriginMs) {
+    if (!Number.isFinite(startMs) || !Number.isFinite(mediaOriginMs)) return null;
+    return (startMs - mediaOriginMs) / 1000;
+  }
+
+  // Pure: the EXISTING mapping, verbatim from seekToProgramTime.
+  function ws40ExistingTarget(seekableEndS, deviceNowMs, startMs) {
+    if (!Number.isFinite(seekableEndS)) return null;
+    if (!Number.isFinite(deviceNowMs) || !Number.isFinite(startMs)) return null;
+    return seekableEndS - (deviceNowMs - startMs) / 1000;
+  }
+
+  // Pure: how far a landing is from where it should have been, expressed in
+  // SEGMENTS on the playlist grid. Origin-free and device-clock-free, so it
+  // cannot be defeated by a shared-origin error.
+  //
+  // `expectedStartSeg` is the schedule's programme start as a segment index;
+  // `landedSeg` is the landing position as a segment index. Their difference
+  // is the landing error, and a negative value means the player landed
+  // EARLIER than the programme start.
+  function ws40LandingErrorSeg(expectedStartSeg, landedSeg) {
+    if (!Number.isFinite(expectedStartSeg) || !Number.isFinite(landedSeg)) return null;
+    return landedSeg - expectedStartSeg;
+  }
+
+  // Obtain A, the media-timeline origin, using only what the platform can
+  // honestly provide. Preference order, and WHY:
+  //
+  //  1. `getStartDate()` (Safari). It is the only ABSOLUTE native-HLS anchor
+  //     the phone has. Its semantics for a rolling window are UNVALIDATED —
+  //     that is precisely what this workstream is here to find out, so it is
+  //     recorded and used, with its source stated on every reading.
+  //  2. `hls.latency.currentProgramDateTime` (Chromium/hls.js) minus
+  //     `currentTime` — the media origin by construction.
+  //
+  // ---- A FALLBACK THAT WAS HERE AND WAS REMOVED, and why -----------------
+  // There was a third option: `trueEdgeWallMs - seekableEnd*1000`, i.e. take
+  // the playlist's own edge and back out the buffered edge. It is dimensionally
+  // valid and it looks like a sensible fallback. It is also CIRCULAR, and
+  // silently so.
+  //
+  // It computes A correctly ONLY IF the playlist's edge and the buffer's edge
+  // are the SAME instant — i.e. only if L, the buffered-edge lag, is zero.
+  // L is the entire quantity this workstream exists to measure. Using it as a
+  // fallback would assume the answer and then report agreement, which is the
+  // exact failure this repo has paid for repeatedly (a sweep that returns
+  // zeros because the variable cancelled).
+  //
+  // It was removed rather than kept with a caveat, because a caveat on a
+  // circular number is a comment, and comments do not prevent a reader from
+  // quoting the number. `WS38 GUARD` in tests/seek-measure.test.mjs is right
+  // to forbid it; the guard was not weakened.
+  //
+  // No fallback invents a number. Absent both sources, A is null and every
+  // dependent value is null — which is the honest answer on a transport that
+  // offers no absolute anchor.
+  function ws40ReadOrigin() {
+    try {
+      // (1) Safari native HLS.
+      if (audioEl && typeof audioEl.getStartDate === 'function') {
+        const d = audioEl.getStartDate();
+        if (d && typeof d.getTime === 'function') {
+          const ms = d.getTime();
+          if (Number.isFinite(ms)) {
+            return { originMs: ms, source: 'getStartDate()', assumption:
+              'Safari anchors the media start; UNVALIDATED for a rolling '
+              + 'DVR window. This is the hypothesis under test.' };
+          }
+        }
+        return { originMs: null, source: 'getStartDate()-null', assumption:
+          'the method exists but returned no usable instant' };
+      }
+      // (2) hls.js / MSE.
+      const inst = hlsInstance;
+      if (inst && inst.latency) {
+        const v = inst.latency.currentProgramDateTime;
+        if (v && typeof v.getTime === 'function') {
+          const pdt = v.getTime();
+          const cur = audioEl.currentTime;
+          if (Number.isFinite(pdt) && Number.isFinite(cur)) {
+            return { originMs: pdt - cur * 1000,
+              source: 'hls.latency.currentProgramDateTime',
+              assumption: 'PDT-derived; exact by construction' };
+          }
+        }
+      }
+      return { originMs: null, source: 'unavailable',
+        assumption: 'this transport offers no absolute native-HLS origin; '
+          + 'no fallback is derived, because every one of them assumes the '
+          + 'answer (see the removed fallback above)' };
+    } catch (err) {
+      return { originMs: null, source: 'threw',
+        assumption: String((err && err.message) || err).slice(0, 80) };
+    }
+  }
+
+  // The transport actually in use, so a reading is never attributed to the
+  // wrong path. Mirrors the CAPS decision in hlsAttach.
+  function ws40Transport() {
+    if (hlsInstance) return 'hlsjs';
+    const cur = state.current;
+    if (cur && cur.transport === 'hls') return 'native-hls';
+    if (cur && typeof cur.audioUrl === 'string' && /\.m3u8/i.test(cur.audioUrl)) {
+      return 'native-hls';
+    }
+    return cur ? 'direct' : null;
+  }
+
+  // Capture the inputs. READ-ONLY: reads the element and the existing probe,
+  // writes only WS40. Never seeks, never fetches.
+  //
+  // `programmeStartMs` is supplied by the caller (the owner picks which
+  // programme to test) so this function needs no network.
+  function ws40Capture(programmeStartMs, programmeTitle) {
+    const nowMs = Date.now();
+    const p = STREAM_EDGE_PROBE;
+    const segMs = p.segmentDurationS || null;
+    const origin = ws40ReadOrigin();
+
+    WS40.atMs = nowMs;
+    WS40.deviceNowMs = nowMs;
+    WS40.programmeStartMs = Number.isFinite(programmeStartMs) ? programmeStartMs : null;
+    WS40.programmeTitle = programmeTitle || null;
+    WS40.currentTimeS = Number.isFinite(audioEl.currentTime) ? audioEl.currentTime : null;
+    WS40.seekableStartS = null;
+    WS40.seekableEndS = readFreshSeekableEnd();
+    try {
+      const s = audioEl.seekable;
+      if (s && s.length) WS40.seekableStartS = s.start(0);
+    } catch { /* recorded as null */ }
+    WS40.segmentMs = Number.isFinite(segMs) ? segMs : null;
+    WS40.headPdtMs = Number.isFinite(p.headPdtMs) ? p.headPdtMs : null;
+    WS40.playlistEdgeWallMs =
+      Number.isFinite(p.trueEdgeWallMs) ? p.trueEdgeWallMs : null;
+    WS40.playlistSampleAgeMs =
+      Number.isFinite(p.sampledAtMs) && Number.isFinite(p.staleAfterMs)
+        ? nowMs - p.sampledAtMs : (Number.isFinite(p.sampledAtMs)
+          ? nowMs - p.sampledAtMs : null);
+    WS40.originSource = origin.source;
+    WS40.mediaOriginMs = origin.originMs;
+    WS40.transport = ws40Transport();
+    WS40.existingTargetS =
+      ws40ExistingTarget(WS40.seekableEndS, nowMs, WS40.programmeStartMs);
+    WS40.proposedTargetS =
+      ws40ProposedTarget(WS40.programmeStartMs, WS40.mediaOriginMs);
+    WS40.targetDeltaS = (Number.isFinite(WS40.proposedTargetS)
+      && Number.isFinite(WS40.existingTargetS))
+      ? WS40.proposedTargetS - WS40.existingTargetS : null;
+    return WS40;
+  }
+
+  // ---- the controlled test seek ------------------------------------------
+  //
+  // THE ONE SEEK THIS BLOCK PERFORMS. It is reachable only from an explicit
+  // owner action in the diagnostics panel, and it does exactly one thing the
+  // production path does not: it seeks to the PROPOSED target instead of the
+  // existing one, then measures where the player actually landed.
+  //
+  // The landing is judged in SEGMENTS, never by re-converting with the origin
+  // that built the target (see the tautology note above).
+  //
+  // `mapping` is 'proposed' or 'existing', so the owner can run BOTH and get
+  // a like-for-like comparison on the same phone, same channel, same window.
+  async function ws40TestSeek(mapping) {
+    const cur = state.current;
+    if (!cur || cur.kind !== 'live') return null;
+    const useProposed = mapping !== 'existing';
+    const target = useProposed ? WS40.proposedTargetS : WS40.existingTargetS;
+    if (!Number.isFinite(target)) return null;
+    // Refuse to leave the buffered window rather than clamping silently: a
+    // clamped seek would understate the landing error.
+    const start = Number.isFinite(WS40.seekableStartS) ? WS40.seekableStartS : 0;
+    const end = Number.isFinite(WS40.seekableEndS) ? WS40.seekableEndS : null;
+    if (Number.isFinite(end) && (target < start || target > end)) {
+      return { mapping, skipped: 'target-outside-window', target,
+        seekableStartS: start, seekableEndS: end };
+    }
+    const expectedStartSeg = ws40SegmentIndex(
+      WS40.programmeStartMs, WS40.headPdtMs, WS40.segmentMs);
+    const requested = target;
+    audioEl.currentTime = target;
+    // Let the element settle before reading where it landed. A seek is
+    // asynchronous: currentTime is updated synchronously on assignment in
+    // most engines but the SEEKED-TO position arrives after the seek completes.
+    await new Promise((r) => setTimeout(r, 700));
+    const landed = Number.isFinite(audioEl.currentTime) ? audioEl.currentTime : null;
+    const landedSeg = ws40SegmentIndex(
+      WS40.programmeStartMs, WS40.headPdtMs, WS40.segmentMs);
+    const landedWallFromOrigin = Number.isFinite(landed) && Number.isFinite(WS40.mediaOriginMs)
+      ? WS40.mediaOriginMs + landed * 1000 : null;
+    const run = {
+      mapping: useProposed ? 'proposed' : 'existing',
+      atMs: Date.now(),
+      programmeTitle: WS40.programmeTitle,
+      programmeStartMs: WS40.programmeStartMs,
+      requestedTargetS: requested,
+      landedS: landed,
+      // What the player did to our request, in media seconds. WS38 measured
+      // this as ~0 on both platforms, so a large value here means the player
+      // clamped and the landing error is NOT the mapping's fault.
+      clampedByS: Number.isFinite(landed) ? landed - requested : null,
+      originSource: WS40.originSource,
+      mediaOriginMs: WS40.mediaOriginMs,
+      transport: WS40.transport,
+      segmentMs: WS40.segmentMs,
+      // THE ACCEPTANCE NUMBER. Segment-index error: origin-free, device-clock-free.
+      landingErrorSeg: ws40LandingErrorSeg(expectedStartSeg, landedSeg),
+      // The same error in seconds, for reading. Derived from segments × the
+      // measured segment duration, so it inherits the same independence.
+      landingErrorS: (Number.isFinite(expectedStartSeg) && Number.isFinite(landedSeg)
+        && Number.isFinite(WS40.segmentMs))
+        ? (landedSeg - expectedStartSeg) * WS40.segmentMs : null,
+      // Wall-clock reading of the landing, using the origin under test. This
+      // IS the tautological figure and is labelled as such: it is here only so
+      // a reader can see that it reads ~0 regardless, which is why it is not
+      // used as evidence.
+      landedWallMsSameOrigin: landedWallFromOrigin,
+      tautologicalByConstruction: true,
+    };
+    WS40.runs.push(run);
+    if (WS40.runs.length > 12) WS40.runs.shift();
+    return run;
+  }
+
+  // Render the WS40 record. Pure and total. `null` renders as "okänd", never
+  // as 0 — "measured and zero" and "not measured" are different facts.
+  function ws40RecordText() {
+    const n = (v) => (Number.isFinite(v) ? v : null);
+    const ms = (v) => (Number.isFinite(v) ? `${Math.round(v)} ms` : 'okänd');
+    const sec = (v) => (Number.isFinite(v) ? `${v.toFixed(2)} s` : 'okänd');
+    const iso = (v) => (Number.isFinite(v) ? new Date(v).toISOString() : 'okänd');
+    const lines = [];
+    lines.push('MÄTNING (WS40) — test av den FÖRESLAGNA mätningen');
+    lines.push('Produktionens sökning är OFÖRÄNDRAD. Detta mäter bara.');
+    lines.push('');
+    if (!Number.isFinite(WS40.atMs)) {
+      lines.push('Ingen mätning gjord ännu. Tryck på "Mät".');
+      return lines.join('\n');
+    }
+    lines.push('Insamlat');
+    lines.push(`   transport: ${WS40.transport || 'okänd'}`);
+    lines.push(`   program: ${WS40.programmeTitle || 'okänd'}`);
+    lines.push(`   starttimeutc: ${iso(WS40.programmeStartMs)}`);
+    lines.push(`   currentTime (media-s): ${sec(n(WS40.currentTimeS))}`);
+    lines.push(`   seekableStart (media-s): ${sec(n(WS40.seekableStartS))}`);
+    lines.push(`   seekableEnd (media-s): ${sec(n(WS40.seekableEndS))}`);
+    lines.push('');
+    lines.push('SR:s segmentrutnät (från spellistan, ingen enhetsklocka)');
+    lines.push(`   headPdt: ${iso(WS40.headPdtMs)}`);
+    lines.push(`   segment (ms): ${n(WS40.segmentMs)}`);
+    lines.push(`   spellistans kant: ${iso(WS40.playlistEdgeWallMs)}`);
+    lines.push(`   provets ålder: ${ms(n(WS40.playlistSampleAgeMs))}`);
+    lines.push('');
+    lines.push('Medietidsnollpunkten A');
+    lines.push(`   A: ${iso(WS40.mediaOriginMs)}`);
+    lines.push(`   källa: ${WS40.originSource}`);
+    lines.push('');
+    lines.push('De två målen (beräknas, används INTE av produktionen)');
+    lines.push(`   befintlig formel: ${sec(n(WS40.existingTargetS))}`);
+    lines.push(`   föreslagen formel: ${sec(n(WS40.proposedTargetS))}`);
+    lines.push(`   skillnad: ${sec(n(WS40.targetDeltaS))}`);
+    if (!WS40.runs.length) {
+      lines.push('');
+      lines.push('Ingen testseek körd. Kör "Testseek föreslagen" först,');
+      lines.push('sedan "Testseek befintlig", för att jämföra samma fönster.');
+      return lines.join('\n');
+    }
+    lines.push('');
+    lines.push('RESULTAT — felet mäts i SEGMENT, utan ursprung och utan klocka');
+    for (const r of WS40.runs) {
+      lines.push(`   [${r.mapping}] ${r.programmeTitle || 'okänd'}`);
+      if (r.skipped) {
+        lines.push(`      hoppades över: ${r.skipped}`);
+        lines.push(`      mål ${sec(n(r.requestedTargetS))} utanför `
+          + `[${sec(n(r.seekableStartS))}, ${sec(n(r.seekableEndS))}]`);
+        continue;
+      }
+      lines.push(`      begärde: ${sec(n(r.requestedTargetS))}`);
+      lines.push(`      landade: ${sec(n(r.landedS))}`);
+      lines.push(`      spelaren klippte: ${sec(n(r.clampedByS))}`);
+      lines.push(`      segmentfel: ${n(r.landingErrorSeg)} `
+        + `= ${sec(n(r.landingErrorS))}`);
+      lines.push(`      A-källa: ${r.originSource}`);
+    }
+    const ok = WS40.runs.filter((r) => Number.isFinite(r.landingErrorSeg));
+    if (ok.length) {
+      const worst = Math.max(...ok.map((r) => Math.abs(r.landingErrorS || 0)));
+      lines.push('');
+      lines.push(`Mest avvikande körning: ${worst.toFixed(2)} s `
+        + `(${ok.length} körningar mätta)`);
+    }
+    return lines.join('\n');
   }
 
   // True while the Info panel's paint interval is running. Recorded so a reader
@@ -5907,6 +6311,99 @@ function seekMeasureRecordText() {
     // stylesheet and no markup change (§5).
     const originRecordBox = el('p', { class: 'about-diag-note', text: '' });
 
+    // ---- WS40: the device-verification controls. ----
+    // Built with the EXISTING helpers and the EXISTING CSS classes only: no
+    // stylesheet and no markup change (§5). Each is a `setting-row`-styled
+    // button, which the sheet already styles.
+    //
+    // The programme selector exists because the acceptance criterion is
+    // "run this against at least 3 programme boundaries" — the owner picks
+    // which programme to test, so a single session can cover three.
+    const ws40Box = el('p', { class: 'about-diag-note', text: '' });
+    let ws40Choice = 0;
+    const ws40ChoiceLabel = el('span', { class: 'setting-minmax', text: '—' });
+    const ws40Pick = el('button', {
+      class: 'setting-row', type: 'button',
+    });
+    ws40Pick.append(el('span', { class: 'setting-minmax', text: 'Program att testa' }),
+      ws40ChoiceLabel);
+    const ws40Measure = el('button', {
+      class: 'setting-row', type: 'button',
+    }, el('span', { class: 'setting-minmax', text: 'Mät (läser bara)' }));
+    const ws40SeekNew = el('button', {
+      class: 'setting-row', type: 'button',
+    }, el('span', { class: 'setting-minmax', text: 'Testseek FÖRESLAGEN' }));
+    const ws40SeekOld = el('button', {
+      class: 'setting-row', type: 'button',
+    }, el('span', { class: 'setting-minmax', text: 'Testseek BEFINTLIG' }));
+
+    // The candidate programmes: from the CURRENT channel's already-fetched
+    // schedule, those that have already started (a future programme cannot be
+    // seeked to) and that sit inside the buffered window. Nothing is fetched
+    // here — `cur._srSchedule` is the array the app already holds.
+    const ws40Candidates = () => {
+      const cur = state.current;
+      if (!cur || cur.kind !== 'live') return [];
+      const sched = Array.isArray(cur._srSchedule) ? cur._srSchedule : [];
+      const now = Date.now();
+      return sched
+        .filter((e) => e && Number.isFinite(e.startMs) && e.startMs < now - 1000)
+        .slice(-8)
+        .reverse();
+    };
+    const syncWs40Choice = () => {
+      const c = ws40Candidates();
+      if (!c.length) {
+        ws40ChoiceLabel.textContent = 'ingen (ingen spellista)';
+        return;
+      }
+      if (ws40Choice >= c.length) ws40Choice = 0;
+      const e = c[ws40Choice];
+      ws40ChoiceLabel.textContent =
+        `${new Date(e.startMs).toISOString().slice(11, 19)} `
+        + `${(e.title || '').slice(0, 22)}`;
+    };
+    ws40Pick.addEventListener('click', () => {
+      ws40Choice += 1;
+      syncWs40Choice();
+    });
+    ws40Measure.addEventListener('click', () => {
+      const e = ws40Candidates()[ws40Choice];
+      if (!e) return;
+      // A FRESH playlist sample, awaited, so headPdt and the segment grid
+      // belong to now. This reuses the existing fetcher; no new endpoint.
+      //
+      // `sampleStreamEdgeClock` already swallows its own failures and returns
+      // null, so there is nothing to catch: a failed fetch leaves the probe's
+      // `status`/`error` visible and the record simply reports nulls. The
+      // capture therefore runs in BOTH cases and cannot be skipped, which is
+      // what the earlier duplicated then/catch pair was really about.
+      const run = () => {
+        ws40Capture(e.startMs, e.title);
+        ws40Box.textContent = ws40RecordText();
+      };
+      try {
+        sampleStreamEdgeClock().then(run, run);
+      } catch (err) {
+        // A synchronous throw would otherwise skip the measurement entirely.
+        run();
+      }
+    });
+    ws40SeekNew.addEventListener('click', () => {
+      ws40TestSeek('proposed').then(() => {
+        ws40Box.textContent = ws40RecordText();
+      });
+    });
+    ws40SeekOld.addEventListener('click', () => {
+      ws40TestSeek('existing').then(() => {
+        ws40Box.textContent = ws40RecordText();
+      });
+    });
+
+    const ws40Section = el('div', { class: 'about-diag' },
+      el('h3', { class: 'about-heading', text: 'Test av föreslagen mätning' }),
+      ws40Pick, ws40Measure, ws40SeekNew, ws40SeekOld, ws40Box);
+
     // Built BEFORE the handlers below are wired, because the click handler
     // toggles `is-off` on it. Declaring it after the handler would be a
     // temporal-dead-zone error on the very first click.
@@ -5916,7 +6413,8 @@ function seekMeasureRecordText() {
       readout,
       readoutNote,
       seekRecordBox,
-      originRecordBox);
+      originRecordBox,
+      ws40Section);
     // Inert until switched on: hidden, but present in the DOM.
     if (diagFlagRead() !== 'on') diagSection.classList.add('is-off');
     body.appendChild(diagSection);
@@ -5962,6 +6460,12 @@ function seekMeasureRecordText() {
       // WS38 rate unmeasurable, reappearing in a different function.
       captureOriginMeasurement();
       originRecordBox.textContent = originMeasureRecordText();
+      // WS40: the test record, painted on the same interval. NOTE: this only
+      // RE-PAINTED text. The measurement itself happens on the explicit "Mät"
+      // press, because it must be a single instant the owner chose, not a
+      // rolling value that changes under the reader's eyes while they compare
+      // two runs.
+      ws40Box.textContent = ws40RecordText();
     };
     const startReadout = () => {
       stopReadout();
@@ -6004,6 +6508,11 @@ function seekMeasureRecordText() {
       if (next === 'on') startReadout(); else stopReadout();
     });
     syncSwitch();
+    // WS40: sync the programme picker on open, so the first thing the owner
+    // sees names a real programme rather than a dash. Without this the
+    // selector reads "—" until it is pressed, which looks like an empty
+    // schedule when it is only an unlabelled default.
+    syncWs40Choice();
     if (diagFlagRead() === 'on') startReadout(); else stopReadout();
 
     about.appendChild(body);
@@ -7341,6 +7850,46 @@ function seekMeasureRecordText() {
             + 'epoch MILLISECONDS. wallClockDeltaMs is the quantity the seek '
             + 'equation assumes is zero. A null means NOT MEASURED and is '
             + 'never rendered as 0. NO correction is applied anywhere.',
+        },
+        // ---- WS40: the device-verification record. DIAGNOSTIC ONLY. ----
+        // Nothing here is read by the production seek path, and the two target
+        // positions are recorded, never used. The acceptance number is
+        // `landingErrorSeg` / `landingErrorS` on each run.
+        ws40: {
+          atMs: WS40.atMs,
+          transport: WS40.transport,
+          programmeTitle: WS40.programmeTitle,
+          programmeStartMs: WS40.programmeStartMs,
+          currentTimeS: WS40.currentTimeS,
+          seekableStartS: WS40.seekableStartS,
+          seekableEndS: WS40.seekableEndS,
+          segmentMs: WS40.segmentMs,
+          headPdtMs: WS40.headPdtMs,
+          playlistEdgeWallMs: WS40.playlistEdgeWallMs,
+          playlistSampleAgeMs: WS40.playlistSampleAgeMs,
+          deviceNowMs: WS40.deviceNowMs,
+          originSource: WS40.originSource,
+          mediaOriginMs: WS40.mediaOriginMs,
+          existingTargetS: WS40.existingTargetS,
+          proposedTargetS: WS40.proposedTargetS,
+          targetDeltaS: WS40.targetDeltaS,
+          runs: WS40.runs.slice(),
+          note: 'DIAGNOSTIC ONLY -- the production seek is unchanged and '
+            + 'reads none of this. The proposed mapping is '
+            + 'target = (startMs - A)/1000 with A the media-timeline origin; '
+            + 'the existing one is target = seekableEnd - '
+            + '(Date.now()-startMs)/1000. Units: programmeStartMs/headPdtMs/'
+            + 'playlistEdgeWallMs/deviceNowMs/mediaOriginMs/atMs are epoch '
+            + 'MILLISECONDS; currentTimeS/seekableStartS/seekableEndS/'
+            + 'existingTargetS/proposedTargetS/targetDeltaS are MEDIA SECONDS; '
+            + 'segmentMs is the playlist segment duration in SECONDS. '
+            + 'landingErrorSeg is measured in SEGMENT INDICES and is the '
+            + 'acceptance number: it uses neither the device clock nor any '
+            + 'media origin, so a shared-origin error cannot hide in it. '
+            + 'landedWallMsSameOrigin IS tautological (it re-converts the '
+            + 'landing with the same origin that built the target) and is '
+            + 'included only so a reader can see it read ~0 regardless; it is '
+            + 'NOT evidence. A null means NOT MEASURED, never 0.',
         },
         seekableDuration: cur?.seekableDuration ?? null,
         positionWallClockIso: positionWallClock,
