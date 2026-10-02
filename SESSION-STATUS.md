@@ -652,3 +652,68 @@ Tests: 494. 12 mutations all RED, checksum restored.
 **Blocked:** nothing. **Next:** owner to check build **`50ced0f`** — the pill
 should be correct the moment the app opens, and Safari should show a reading
 rather than `Väder`.
+
+## WS47c — the launch refresh silently failed on the real device — 2026-10-02T20:40:00+02:00
+
+**Started / baseline:** `npm test` → **494/494** (run). Still **494/494**.
+**Scope now:** one owner report, with a screenshot of BOTH surfaces on the
+previous build (`50ced0f`):
+*"the changes have not visually gone true, and when i clicked on the pill on the
+pwa app it changed again to 13 degrees from 14 at launch"*
+
+**REPRODUCED EXACTLY before changing anything.** Blocking only the geocoding
+host `geocoding-api.open-meteo.com`:
+
+| | chip | network |
+|---|---|---|
+| at open | `14°Göteborg` | `[GEOCODING]` only |
+| after tap | `13°Göteborg` | `[GEOCODING, FORECAST, PLACE]` |
+
+**Root cause.** With no saved coordinates — the state of every install that has
+not refreshed since WS47 — `refreshWeatherQuietly` had exactly **one** route:
+turn the saved place name into coordinates. That needs a **second host** the app
+must reach, and on this device it is not reachable. So the launch refresh failed
+silently and the header kept its old number. The tap worked because it goes via
+`getCurrentPosition` and never touches that host.
+
+**This dependency was introduced by me in WS47 and I never checked it was
+reachable from the phone that matters.** A test can prove the call exists; only
+the device could have told me the host was dead.
+
+**Fix** — three routes, in order of what they cost the user:
+1. coordinates already saved — no request, no permission
+2. the saved place name — no permission, but needs a reachable host
+3. the granted position — **last**; the only one that can raise a dialog
+
+**MEASURED** (real function extracted and executed):
+
+| case | geolocation calls | result |
+|---|---|---|
+| coordinates saved | **0** | refreshed |
+| geocoding reachable | **0** | refreshed |
+| geocoding **unreachable** | 1 | **refreshed** ← was stuck at 14 |
+
+**Two tests SUPERSEDED.** WS47 asserted an *outright ban* on geolocation in the
+quiet refresh. That ban is precisely what made this unfixable, so it is restated
+as the bound that matters: no watcher is ever started, the permission-free route
+is tried first, and geolocation is reached only when it returned nothing.
+
+**Stated cost:** if iOS's "Allow Once" lapses back to `prompt`, the user may see
+one dialog and *get weather* — which is better than a permanent dimmed `Väder`.
+
+**Two probe corrections, both cases where the test would have forced worse code:**
+- asserted a literal `if (!byPlace)` when the code correctly uses an early
+  return — the control flow is asserted instead;
+- hit the WS7 trap live in the verification harness: a stub passed as a function
+  parameter does not make a module-scope `let` assignable. It failed loudly with
+  a `ReferenceError`, which is the good version of that failure.
+
+**One mutation reported GREEN (R5)** — dropping `{ force: true }` from the
+fallback — because the existing assertion was satisfied by the coordinate path.
+Now asserted on the fallback specifically.
+
+Tests: 494. 6 mutations all RED, checksum restored.
+Deploy: remote `4e8f5ac`, live serves `app.f671f30d.js` 200.
+
+**Blocked:** nothing. **Next:** owner to confirm build **`d6d4d67`** shows the
+correct temperature at launch on BOTH surfaces, with no dialog.
