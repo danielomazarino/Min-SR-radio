@@ -81,6 +81,21 @@ function region(startMarker, endMarker, src = APP_JS) {
  * extractor keyed only on `function NAME(` silently misses arrow consts, and
  * silently missing is the dangerous outcome: the harness then reports a wrong
  * answer instead of erroring.
+ *
+ * WS50 — and this is the SAME trap one level deeper. The old version took the
+ * first `{` after the match, which is the BODY only when no parameter list
+ * contains a brace. `function enableSwipeToClose(o, p, c, { axis = 'x' })`
+ * has a destructured parameter with a default, so the first `{` was the
+ * destructuring pattern and the extraction stopped there -- yielding
+ * `function enableSwipeToClose(overlay, panel, close, { axis = 'x' }`, which
+ * `new Function` rejects with "Unexpected token 'return'" when the harness
+ * appends its own return.
+ *
+ * The failure was loud, which is the only reason this was cheap. Had the
+ * truncated body happened to parse, the harness would have run a function that
+ * did nothing and reported a confident wrong answer -- the exact outcome §7
+ * warns about. So: paren-match the PARAMETER list first, and only then take the
+ * brace that follows it. Never assume the first `{` is the body.
  */
 function grab(name, src = APP_JS) {
   const fnRe = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`);
@@ -89,8 +104,25 @@ function grab(name, src = APP_JS) {
   let arrow = false;
   if (!m) { m = arrowRe.exec(src); arrow = true; }
   assert.ok(m, `could not find function ${name} in app.js -- extraction is broken`);
-  const braceAt = src.indexOf('{', m.index);
+  // Paren-match the parameter list so a destructured `{ axis = 'x' }` default
+  // can never be mistaken for the function body.
+  const parenAt = src.indexOf('(', m.index);
+  assert.notEqual(parenAt, -1, `no parameter list found for ${name}`);
+  let parenDepth = 0;
+  let parenEnd = -1;
+  for (let i = parenAt; i < src.length; i += 1) {
+    if (src[i] === '(') parenDepth += 1;
+    else if (src[i] === ')') {
+      parenDepth -= 1;
+      if (parenDepth === 0) { parenEnd = i; break; }
+    }
+  }
+  assert.notEqual(parenEnd, -1, `unbalanced parameter list for ${name}`);
+  const braceAt = src.indexOf('{', parenEnd);
   assert.notEqual(braceAt, -1, `no body found for ${name}`);
+  assert.ok(src.slice(parenEnd + 1, braceAt).trim() === '',
+    `extraction of ${name} stopped at a brace that is not the body -- ` +
+    'a destructured parameter default was mistaken for it');
   let depth = 0;
   for (let i = braceAt; i < src.length; i += 1) {
     if (src[i] === '{') depth += 1;
@@ -2200,4 +2232,156 @@ test('WS49: the "location is off" explanation must fire on OPEN, not only on tap
   // that is a different entry point into the same state.
   assert.match(stripComments(grab('refreshWeatherNow')), /explainNoLocation\(\)/,
     'the tap path must keep its explanation');
+});
+
+// ---------------------------------------------------------------------------
+// WS50 — the flick/drag close must respect DIRECTION.
+//
+// THE DEFECT, measured on the live site (build 40870cf) before the fix, not
+// reasoned about. On the tablå card (P1, 192 programme rows, 8508 px of content
+// in a 430 px window) BOTH of these closed the card:
+//
+//   * a 50 px UPWARD flick   — close threshold is 171 px, so this closed it
+//                             four times too early
+//   * a slow 300 px UPWARD drag — the distance branch, not the flick branch
+//
+// It was reported as "flaky scrolling". It is not flaky: it is deterministic
+// on SPEED and on DISTANCE, and an upward flick is exactly how a person
+// scrolls a long list downward. Hence "the scrolling is unreliable".
+//
+// THE CAUSE. `d` is signed, and negative always means the wrong direction —
+// touchmove already springs the panel back and returns on d < 0, because a
+// sheet only ever closes downward (y) or rightward (x). But finish() measured
+// Math.abs(d), which throws the sign away, so the gesture that the drag code
+// had already REFUSED was still counted as a valid close by the release code.
+// Two halves of one gesture disagreeing about what a close is.
+//
+// This is the "one field, one writer" defect class applied to a gesture: find
+// every reader of the value, not just the one that was reported.
+// ---------------------------------------------------------------------------
+
+// `enableSwipeToClose` reads `window.innerWidth/innerHeight` as GLOBALS -- they
+// are not parameters, so a stub passed as an argument cannot shadow them (the
+// documented §7 trap: a stub shadows the IDENTIFIER, not a global lookup).
+// A global `window` must therefore exist for the duration, which is what makes
+// the 35 % threshold a real number in these tests instead of a NaN that would
+// make every comparison false and let them pass for the wrong reason.
+const VIEWPORT = { innerWidth: 400, innerHeight: 800 };
+globalThis.window = VIEWPORT;
+const swipe = makeFn('enableSwipeToClose');
+
+
+/**
+ * Drive a full touch gesture against a REAL enableSwipeToClose instance.
+ *
+ * The panel is a stand-in, not a fake event: `enableSwipeToClose` reads
+ * `e.touches[0].clientX/clientY` and `e.touches.length`, so the stand-in
+ * dispatches a genuine event-shaped object. Getting this contract wrong was
+ * the first version of this test and it failed loudly (undefined `.length`),
+ * which is the only acceptable way for a harness to fail.
+ *
+ * Date.now is NOT stubbed. Real elapsed time is exactly what separates a flick
+ * from a drag, so stubbing it would let these tests pass for the wrong reason.
+ */
+async function driveSwipe(panel, pts, { axis = 'y', W = 400, H = 800, stepMs = 0 } = {}) {
+  let closed = false;
+  VIEWPORT.innerWidth = W;
+  VIEWPORT.innerHeight = H;
+  swipe.call(null, {}, panel, () => { closed = true; }, { axis });
+  // Points are [x, y] pairs and BOTH coordinates move, because the axis under
+  // test decides which one the production code reads. An earlier version moved
+  // only Y with X pinned, which made every x-axis gesture a zero-length drag --
+  // the test then reported "a rightward flick must still close" as false, which
+  // reads like a product bug and was purely a harness artefact.
+  const ev = (type, [x, y]) => {
+    const t = { clientX: x, clientY: y };
+    const empty = type === 'touchend' || type === 'touchcancel';
+    return { touches: empty ? [] : [t], targetTouches: empty ? [] : [t], changedTouches: [t] };
+  };
+  panel.dispatch(ev('touchstart', pts[0]), 'touchstart');
+  for (let i = 1; i < pts.length; i += 1) {
+    if (stepMs) {
+      const until = Date.now() + stepMs;
+      while (Date.now() < until) { /* real elapsed time, by design */ }
+    }
+    panel.dispatch(ev('touchmove', pts[i]), 'touchmove');
+  }
+  panel.dispatch(ev('touchend', pts[pts.length - 1]), 'touchend');
+  // `close` is invoked via setTimeout(close, 180) so the sheet can animate out
+  // first. Reading `closed` synchronously would make EVERY "must still close"
+  // test fail and, worse, would make every "must NOT close" test pass for the
+  // wrong reason -- the close had not merely not happened, it had not had a
+  // chance to. Await the real delay.
+  await new Promise((r) => setTimeout(r, 240));
+  return { closed, transform: panel.style.transform };
+}
+
+/** Minimal stand-in for the panel: records style writes and fires listeners. */
+function fakePanel() {
+  const handlers = {};
+  return {
+    style: { transform: '', transition: '' },
+    addEventListener(type, fn) { (handlers[type] ||= []).push(fn); },
+    dispatch(ev, type) { for (const fn of handlers[type] || []) fn(ev); },
+  };
+}
+
+// --- 1. The reported symptom: a small UPWARD flick must NOT close. ----------
+test('WS50: an upward flick on a y sheet must not close it (the reported bug)', async () => {
+  const p = fakePanel();
+  // 50 px up, fast (synchronous, so elapsed < 250 ms). Before the fix this
+  // closed the card because Math.abs(-50) = 50 > 40.
+  const r = await driveSwipe(p, [[200, 200], [200, 180], [200, 160], [200, 150]], { axis: 'y', H: 800 });
+  assert.equal(r.closed, false, 'an upward flick must not close a bottom sheet');
+  assert.equal(r.transform, '',
+    'an upward gesture must leave the sheet where it was');
+});
+
+// --- 2. The second branch: a long SLOW upward drag must NOT close. ----------
+test('WS50: a slow upward drag past the distance threshold must not close', async () => {
+  const p = fakePanel();
+  // Slow: 40 ms per step over 6 steps = ~240 ms+, so the FLICK branch cannot
+  // fire and only the distance branch can. 300 px up is well past the 171 px
+  // threshold (35 % of 800).
+  const r = await driveSwipe(p, [[200, 500], [200, 450], [200, 400], [200, 350], [200, 300], [200, 250], [200, 200]], { axis: 'y', H: 800, stepMs: 40 });
+  assert.equal(r.closed, false,
+    'a slow upward drag is a scroll, not a close, even past the threshold');
+  assert.equal(r.transform, '', 'the sheet must spring back, not close');
+});
+
+// --- 3. The gesture that MUST still work: a downward flick closes. ----------
+test('WS50: a downward flick still closes the sheet (the fix is not a disable)', async () => {
+  const p = fakePanel();
+  const r = await driveSwipe(p, [[200, 200], [200, 240], [200, 290], [200, 300]], { axis: 'y', H: 800 });
+  assert.equal(r.closed, true,
+    'downward flick-to-close is the feature; it must survive the fix');
+  assert.match(r.transform, /translateY/, 'it must animate away, not vanish');
+});
+
+// --- 4. A downward SLOW drag past the threshold still closes. ---------------
+test('WS50: a slow downward drag past 35% still closes', async () => {
+  const p = fakePanel();
+  const r = await driveSwipe(p, [[200, 200], [200, 250], [200, 300], [200, 350], [200, 400], [200, 450], [200, 500]], { axis: 'y', H: 800, stepMs: 40 });
+  assert.equal(r.closed, true,
+    'drag-down-to-close past the threshold must still work');
+});
+
+// --- 5. A small SLOW movement must NOT close (regression guard). ------------
+test('WS50: a small slow upward nudge must not close', async () => {
+  const p = fakePanel();
+  const r = await driveSwipe(p, [[200, 300], [200, 295], [200, 290], [200, 288]], { axis: 'y', H: 800, stepMs: 40 });
+  assert.equal(r.closed, false, 'a nudge is not a flick and not a drag');
+});
+
+// --- 6. The x axis is unaffected: right closes, left does not. --------------
+test('WS50: the x axis still closes rightward only', async () => {
+  const right = fakePanel();
+  const rr = await driveSwipe(right, [[100, 200], [140, 200], [190, 200], [200, 200]], { axis: 'x', W: 400 });
+  assert.equal(rr.closed, true, 'a rightward flick must still close an x sheet');
+  assert.match(rr.transform, /translateX/, 'it must animate sideways, not vanish');
+  // The name promises this, so assert it: a LEFTWARD flick on an x sheet is the
+  // mirror of the bug and must not close either.
+  const left = fakePanel();
+  const rl = await driveSwipe(left, [[300, 200], [260, 200], [210, 200], [200, 200]], { axis: 'x', W: 400 });
+  assert.equal(rl.closed, false, 'a leftward flick must not close an x sheet');
 });
