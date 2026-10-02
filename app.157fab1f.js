@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = 'b370dac';
+  const APP_BUILD = 'e502484';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -8289,6 +8289,10 @@ function seekMeasureRecordText() {
     const listWrap = el('div', { class: 'pick-list' });
     const items = { channels: [], podcasts: [] };
     const loaded = { channels: false, podcasts: false };
+    // The live search text. renderList() reads THIS rather than the input's
+    // value, so the list cannot disagree with the box the owner is looking at
+    // (WS44c).
+    let searchQuery = '';
     let searchInput;
     let doneBtn;
 
@@ -8359,6 +8363,30 @@ function seekMeasureRecordText() {
         for (let i = 0; i < 5; i++) listWrap.appendChild(el('div', { class: 'skel', style: 'height:56px;' }));
         return;
       }
+      // THE LONG LIST (owner, 2026-10-02): "removing the long list of the
+      // swedish radio podcasts visually ... visible only via the search box".
+      // Measured: 371 SR programmes rendered 33 010 px tall -- about 89
+      // screens of scrolling to reach a name most owners know already.
+      //
+      // Channels are deliberately EXEMPT: there are only ~52 of them, they fit
+      // on a screen or two, and a channel is picked by recognition rather than
+      // by remembering its exact name. Podcasts are picked by remembering a
+      // name, which is exactly what the search box is for.
+      //
+      // Nothing is hidden FROM the owner: every one of the 371 rows is one
+      // keystroke away, and the search already reaches all of them. This is a
+      // change of presentation, not of access.
+      if (tab === 'podcasts' && !searchQuery) {
+        listWrap.appendChild(el('div', { class: 'pick-empty' },
+          el('p', { class: 'pick-empty-title', text: 'Sök för att hitta poddar' }),
+          // The wording is exact on purpose. TWO characters already search
+          // Sveriges Radio (measured: "ek" -> 45 rows), but iTunes needs THREE
+          // (EXT_SEARCH_MIN_CHARS). Saying "minst tre tecken" would imply two
+          // shows nothing, which is false -- so the threshold is stated as what
+          // it is: what each source needs.
+          el('p', { class: 'pick-empty-sub', text: `${all.length} poddar från Sveriges Radio och iTunes. Sök på två tecken för Sveriges Radio, tre eller fler för att även söka iTunes.` })));
+        return;
+      }
       if (!all.length) {
         listWrap.appendChild(el('div', { class: 'state-msg', text: 'Inga träffar.' }));
         return;
@@ -8405,8 +8433,16 @@ function seekMeasureRecordText() {
           // SR FIRST, unchanged. The external source is appended after it and
           // can only ever add rows -- extSearch never rejects, so an outage at
           // Apple leaves this list exactly as it was.
+          //
+          // MATCHES THE DESCRIPTION TOO. With the long list now hidden behind
+          // the search box, name-only matching became a real limitation
+          // rather than a cosmetic one: measured before this change, searching
+          // "rapportage" returned ZERO SR rows even though several SR
+          // descriptions contain the word. Hiding the browsable list must not
+          // also remove the ability to find a programme by what it is about.
           const srRows = q
-            ? all.filter((p) => p.name.toLowerCase().includes(q))
+            ? all.filter((p) => p.name.toLowerCase().includes(q)
+              || (p.description || '').toLowerCase().includes(q))
             : all;
           const extRows = await extSearch(query);
           items.podcasts = [...srRows, ...extRows];
@@ -8448,6 +8484,24 @@ function seekMeasureRecordText() {
       renderList();
     }
 
+    /**
+     * Return the podcast list to its unsearched state.
+     *
+     * Both the box AND the recorded query are cleared together, deliberately.
+     * Clearing only one of them is how the list and the search field end up
+     * telling the owner different stories -- the same "two halves disagree"
+     * defect class as the R6 song panel, on a different surface.
+     */
+    function clearSearch() {
+      clearTimeout(searchTimer);
+      searchQuery = '';
+      items.podcasts = [];
+      // NOT loaded.podcasts = false -- see the note in the input handler. The
+      // catalogue is cached in memory; marking it unloaded strands the sheet on
+      // skeletons with nothing scheduled to replace them.
+      if (searchInput) searchInput.value = '';
+    }
+
     searchInput = el('input', {
       class: 'search-input', type: 'search',
       placeholder: 'Sök podd…', 'aria-label': 'Sök podd',
@@ -8455,7 +8509,29 @@ function seekMeasureRecordText() {
     let searchTimer = null;
     searchInput.addEventListener('input', () => {
       clearTimeout(searchTimer);
-      searchTimer = setTimeout(() => loadItems('podcasts', searchInput.value.trim()), 300);
+      const q = searchInput.value.trim();
+      // Recorded BEFORE the debounce, so clearing the box brings the empty
+      // state straight back instead of waiting for a network round trip.
+      searchQuery = q;
+      // A clear while a fetch is in flight must not leave stale rows on screen
+      // pretending to be results for an empty box.
+      //
+      // `loaded` stays TRUE here. Setting it false was a real defect found in
+      // the browser: with no fetch scheduled, renderList() took the SKELETON
+      // branch and the sheet showed five permanent grey loading bars instead
+      // of the search prompt. The catalogue is already in memory, so there is
+      // nothing to load and nothing to wait for.
+      if (!q) {
+        items.podcasts = [];
+        renderList();
+        return;
+      }
+      // Show what we already have for this text immediately, then refine when
+      // the debounce fires. iTunes rows for a previous query are dropped so a
+      // stale external hit is never labelled as a result for a new query.
+      items.podcasts = items.podcasts.filter((r) => r.provider !== 'itunes');
+      renderList();
+      searchTimer = setTimeout(() => loadItems('podcasts', q), 300);
     });
 
     doneBtn = el('button', { class: 'sheet-action sheet-save', type: 'button', text: 'Spara',
@@ -9004,6 +9080,7 @@ function seekMeasureRecordText() {
     tabPodcasts.setAttribute('aria-selected', String(tab === 'podcasts'));
     searchInput.style.display = tab === 'podcasts' ? '' : 'none';
     setTitle();
+    clearSearch();
     loadItems(tab);
     renderList();
   }
