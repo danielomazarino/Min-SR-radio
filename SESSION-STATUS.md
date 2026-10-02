@@ -582,3 +582,73 @@ entry is longer than the fix:
 
 **Blocked:** nothing. **Next:** owner to check build **`6cdde29`** on the phone —
 closing and reopening must NOT prompt, and the temperature must track reality.
+
+## WS47b — no stuck "Väder", and always refresh at open — 2026-10-02T19:55:00+02:00
+
+**Started / baseline:** `npm test` → **490/490** (run). **Now 494/494.**
+**Scope now:** two owner reports from the iPhone. IN scope: the open-time
+refresh decision, and recovery when a position lookup FAILS. OUT of scope:
+nothing else.
+
+**Owner report, verbatim:**
+- A *"the temperature updated to 13 from 14 degrees when i clicked on the
+  weather pill manually ... so you need to check if there is a refresh missing
+  at pwa app starts"*
+- B *"on safari [...] i still have the italic väder, and there is no location
+  request popping up when launching the page or clicking the weather pill"*
+
+**B was the serious one — the app could get PERMANENTLY stuck.**
+
+| defect | measured |
+|---|---|
+| D — no recovery from a failed position | 3 consecutive opens, geo denying every call: `Väder`, `Väder`, `Väder`, 0 weather requests, 0 prompts. Tapping the chip: 1 geolocation call, 0 requests, chip unchanged. |
+| E — open-time freshness gate | cache 29 min old → 0 requests, painted a degree out; 31 min old → 1 request, correct |
+
+Cause of D: WS46's ask-once flag + WS47's coordinate-or-place-name refresh
+left the app silent AND unable to recover — with no reading there is no place
+name to look up either. **A failed position is not the user saying no.**
+Fix: retry quietly on a 10-minute timestamp cooldown; a tap falls back to the
+permission-free route, paints and stores what it got.
+
+Cause of E: the gate traded accuracy for one saved request per launch. Removed.
+An open now always refreshes, bounded to ONE request by the `weatherBusy` lock,
+still with zero permission prompts.
+
+**MEASURED live at `50ced0f`** (SW + caches cleared; PROMPTS = get/watch):
+
+| case | weather calls | prompts | chip |
+|---|---|---|---|
+| 29-min cache, truth 13 | 1 | **0/0** | `13°Göteborg` |
+| 20-min cache, truth 13 | 1 | **0/0** | `13°Göteborg` |
+| no cache + geo DENIED | 1 | **0/0** | `13°Göteborg` |
+| same, tapped | +1 | 1 get | `13°Göteborg` |
+
+Deploy checks: suite 494/494 · remote `d4fdfe2` · live serves `app.b2b2fcea.js`
+200 · hashed bundle contains all three fixes.
+
+### How often the weather refreshes (asked directly)
+
+- **On every open** — always, one request, no permission. This is new: a
+  30-minute "fresh enough" gate was removed because it showed a stale number.
+- **Every 30 minutes** while the app is open and visible (`WEATHER_REFRESH_MS`).
+  Nothing is polled while it is in the background.
+- **On tap** of the pill — immediately, bypassing all gates.
+- Worst case staleness is therefore ~30 min, down from ~60 before.
+- Retrying a *failed* position: once, then at most once per 10 minutes.
+
+**Two tests SUPERSEDED** and restated to the requirement, not the mechanism —
+one had been satisfiable by deleting the branch it guarded.
+
+**One mutation reported GREEN (Q4).** Making `weatherRetryDue()` return `true`
+unconditionally passed everything, because the tests asserted only that the
+helper is *called*. The test now extracts and **calls** the real helper with a
+fake localStorage and asserts it declines inside the cooldown window.
+Asserting the literal `return false` was tried first and was wrong — the helper
+returns a boolean expression, and matching the literal would have forced worse
+code to satisfy a test.
+
+Tests: 494. 12 mutations all RED, checksum restored.
+
+**Blocked:** nothing. **Next:** owner to check build **`50ced0f`** — the pill
+should be correct the moment the app opens, and Safari should show a reading
+rather than `Väder`.
