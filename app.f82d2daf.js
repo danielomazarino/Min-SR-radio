@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = 'd6d4d67';
+  const APP_BUILD = 'ed9f68e';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -10054,7 +10054,17 @@ function seekMeasureRecordText() {
   // from now, and not asking is worth far more than one fresher degree.
   const WEATHER_FRESH_MS = 30 * 60 * 1000;
   const WEATHER_MAX_AGE_MS = 6 * 60 * 60 * 1000;   // decision 3
-  const WEATHER_REFRESH_MS = 30 * 60 * 1000;       // refresh well inside the TTL
+  // WS48, at the owner's explicit request: "update every 5th minute instead of
+  // every 30 minutes". Halves the worst-case staleness of the header from
+  // ~30 min to ~5 min.
+  //
+  // The cost is 6x the weather requests over a long session, and that is a real
+  // trade, not a free win: Open-Meteo's free tier is generous but not unlimited,
+  // and more traffic is more traffic. Bounded by three things that keep it
+  // honest: one request per tick at most (the weatherBusy lock), nothing at all
+  // while the app is hidden, and nothing at all while the reading is unchanged
+  // enough to look the same.
+  const WEATHER_REFRESH_MS = 5 * 60 * 1000;        // owner-requested cadence
 
   /**
    * Map a WMO weather code to an icon and a Swedish label.
@@ -10459,6 +10469,15 @@ function seekMeasureRecordText() {
    */
   async function refreshWeatherNow() {
     markAskedForLocation();
+    // WS48. A tap is meant to be the CHEAP refresh, so it must not ask for
+    // location when the app already has coordinates saved -- asking is exactly
+    // what saving them was for. MEASURED before this change: with coordinates
+    // in the cache, tapping the pill still made one geolocation call, which on
+    // iOS is the difference between a silent refresh and a system dialog.
+    const held = readWeatherCache();
+    if (held && typeof held.lat === 'number' && typeof held.lon === 'number') {
+      return refreshWeather({ lat: held.lat, lon: held.lon }, { force: true });
+    }
     const pos = await locate();
     if (pos) return refreshWeather(pos, { force: true });
     // No position. That is exactly the state the owner was stuck in: an empty
@@ -10473,14 +10492,40 @@ function seekMeasureRecordText() {
     if (cached && typeof cached.place === 'string' && cached.place) {
       const byPlace = await fetchWeatherByPlace(cached.place).catch(() => null);
       if (byPlace) {
-        const rec = { temp: byPlace.temp, code: byPlace.code, place: cached.place, at: Date.now() };
+        // WS48: persist the coordinates this lookup resolved, so a tap also
+        // makes every later open cheaper instead of repeating the same work.
+        const rec = { temp: byPlace.temp, code: byPlace.code, place: cached.place, at: Date.now(),
+                      lat: byPlace.lat, lon: byPlace.lon };
         writeWeatherCache(rec);
         renderWeatherChip(rec);
         lastPainted = rec;
         return 'ok';
       }
     }
+    // Nothing worked. MEASURED: when iOS has location set to DENIED it returns
+    // no position AND shows no dialog, so this path is reached with the user
+    // staring at a dimmed "Väder" that looks broken. A denied web permission is
+    // permanent -- only the user can change it, in Settings. So the chip says so
+    // instead of silently doing nothing.
+    explainNoLocation();
     return 'no-position';
+  }
+
+  /**
+   * Tell the user why the header is empty, and how to fix it.
+   *
+   * Deliberately NOT a toast: a toast is transient and is missed by anyone who
+   * was not looking at the instant they tapped. This sets the chip's own label
+   * and tooltip, so the explanation is still there when they look again.
+   */
+  function explainNoLocation() {
+    const chip = document.querySelector('.weather');
+    if (!chip) return;
+    const label = 'Ingen platsinfo. Tillåt i Settings > Safari > Plats.';
+    chip.setAttribute('aria-label', label);
+    chip.setAttribute('title', label);
+    const place = chip.querySelector('.weather-place');
+    if (place) place.textContent = 'Tryck igen';
   }
 
   /**
@@ -10545,7 +10590,10 @@ function seekMeasureRecordText() {
     // raise a permission prompt. It is a plain request to a public endpoint.
     const byPlace = await fetchWeatherByPlace(cached.place).catch(() => null);
     if (byPlace) {
-      const rec = { temp: byPlace.temp, code: byPlace.code, place: cached.place, at: Date.now() };
+      // WS48: keep the coordinates this lookup resolved, so the next open uses
+      // route 1 and never needs the geocoder -- or the permission -- again.
+      const rec = { temp: byPlace.temp, code: byPlace.code, place: cached.place, at: Date.now(),
+                    lat: byPlace.lat, lon: byPlace.lon };
       lastFetched = { lat: null, lon: null, at: rec.at, hasPos: false };
       writeWeatherCache(rec);
       if (!lastPainted || lastPainted.place !== rec.place || Math.round(lastPainted.temp) !== Math.round(rec.temp)) {
@@ -10584,6 +10632,10 @@ function seekMeasureRecordText() {
    * is one the app already showed the user -- it is not a new disclosure, and
    * nothing here can raise a prompt.
    */
+  // Returns the reading AND the coordinates it resolved, so callers can store
+  // them. WS48: these were previously discarded, which meant the by-name route
+  // never made any future open cheaper -- it asked for location again every
+  // single time. Returning them is what turns it into a one-off.
   async function fetchWeatherByPlace(place) {
     const q = encodeURIComponent(String(place || '').trim());
     if (!q) throw new Error('place name required');
@@ -10597,7 +10649,9 @@ function seekMeasureRecordText() {
     }
     // Reuse the ordinary coordinate call rather than duplicating its parsing --
     // one place that knows how to read a weather response, not two.
-    return fetchWeather(hit.latitude, hit.longitude);
+    const w = await fetchWeather(hit.latitude, hit.longitude);
+    // WS48: hand the coordinates back so the caller can persist them.
+    return { ...w, lat: hit.latitude, lon: hit.longitude };
   }
 
   function stopWeatherWatch() {
