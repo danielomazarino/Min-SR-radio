@@ -474,3 +474,55 @@ during a real train ride.
 **NOT verified, and it needs the phone:** real GPS behaviour, iOS's own
 permission prompt, and battery impact over a long ride. Every measurement above
 drove the real handlers with a simulated GPS.
+
+## WS46 — ask for location once, not on every open — 2026-10-02T17:40:00+02:00
+
+**Started / baseline:** `npm test` → **472/472 pass** (run, not copied)
+**Scope now:** the repeated iOS location prompt. IN scope: when the app asks.
+OUT of scope: everything else — no change to favourites, drag-sort, swipe-to-
+remove, search, DVR/HLS or playback.
+**Decision or finding:** the app asked on EVERY open — measured at 2 geolocation
+calls per load (1 `watchPosition` + 1 `getCurrentPosition`) even with a
+1-minute-old cache. A cache it already held was not enough to stop it. Now it
+asks at most once per install, and taps the weather chip to refresh on demand.
+
+**Test count:** 472 → **483/483 pass**
+**Working tree:** clean. Source `13e15ec`, artifacts `7f1ebd3`, both pushed.
+
+**MEASURED (browser, service worker + caches cleared first, geolocation stubbed
+with counters; calls shown as get/watch per open):**
+
+| open | calls | chip |
+|---|---|---|
+| never asked, no cache | 1/1 | `16°Göteborg` |
+| asked, 1-min cache | 0/0 | `16°Göteborg` |
+| asked, 4-hour cache | **0/0** | `16°Göteborg` |
+| asked, no cache, tapped | 0/0 → 1 get | `Väder` → `16°Göteborg` |
+| asked, 4-hour, tapped 3× | 0/0 → 3 gets | unchanged, no duplication |
+
+Live re-verified at `13e15ec`: same results; chip carries `role="button"`.
+
+**What it does NOT prove:** nothing was run on iOS. Desktop Chromium cannot
+show the system dialog, so whether the owner's iPhone still asks is unmeasured.
+MDN: a granted permission's lifetime "depends on the user agent, and may be time
+based, session based, or even permanent" — iOS offers web apps only "Allow Once"
+/ "While Using", never always-allow. If iOS re-prompts per session, that is the
+OS and no web app can override it.
+
+**Three defects I introduced and then caught by measuring** — all invisible to
+green source-text tests, all found only by reading the rendered DOM:
+1. no chip at all when there was no cached reading (a silent dead end);
+2. repaint appended instead of replaced → `16°Göteborg16°Göteborg`;
+3. the no-blank guard fired on a freshly created chip → a blank, untappable chip.
+
+**Blocked:** nothing. **Next:** owner to check build `13e15ec` on the iPhone.
+
+### Two things the owner raised that were NOT defects in the app
+
+1. *"each time i open... i get the question"* — a real defect, fixed above.
+2. *"i don't see the weather info when i open the url in the safari browser"* —
+   the Safari tab was serving a **stale service-worker cache**. Verified: with
+   the cache in place the page ran the old `app.aea08104.js`; after unregistering
+   the worker and deleting the caches it ran `app.6e0b5230.js` with the fix.
+   This repo has hit this before. Unstick on a phone: reload, or remove the
+   Home-Screen app and add it again.
