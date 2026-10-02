@@ -1739,3 +1739,156 @@ test('WS46: a repaint REPLACES the chip, it does not append to it', () => {
   assert.equal((chip.match(/chip\.textContent =/g) || []).length, 2,
     'expected one clear in the no-reading branch and one in the real-reading branch, and no more');
 });
+
+// ---------------------------------------------------------------------------
+// WS47 -- the owner reported three things from the iPhone:
+//   1. Safari shows a dimmed italic "Väder" while the PWA shows real weather.
+//   2. "it does not seem to update as it get colder outside"
+//   3. "the closure of the pwa app and then opening again now doesn't evoke a
+//      new location approval automatically"  <- this one is CORRECT behaviour
+//
+// All three were measured before anything was changed. Two were real defects;
+// the third is the fix working, and is pinned so it cannot regress.
+// ---------------------------------------------------------------------------
+
+test('WS47: a stale reading is refreshed WITHOUT asking for location again', () => {
+  // The defect, MEASURED: an open with a 4-hour-old cache made ZERO weather
+  // requests and left the header frozen at 16 degrees while the real weather
+  // was 2. WS46 made a stale cache silent and, in doing so, silently
+  // conflated "never ask again" with "never update again". Only the first was
+  // ever the requirement.
+  const init = stripComments(region('async function initWeather', 'async function boot', APP_JS));
+  const askedBranch = init.slice(init.indexOf('if (hasAskedForLocation())'),
+                                 init.indexOf('markAskedForLocation()', init.indexOf('if (hasAskedForLocation())')));
+  assert.match(askedBranch, /refreshWeatherQuietly\(\)/,
+    'the already-asked branch must still REFRESH, or a stale reading stays frozen forever');
+
+  // P2 LESSON, learned the hard way: renaming `refreshWeatherQuietly` to
+  // `refreshWeatherQuietly_DISABLED` left EVERY one of these tests GREEN. They
+  // assert the call SITE, and the function-inspecting tests used grab() on the
+  // ORIGINAL name -- which still existed, unused. A test set that cannot
+  // distinguish "the work is done" from "the work was renamed away" proves
+  // nothing.
+  //
+  // So assert the closure: the identifier called here must be a function this
+  // file actually DEFINES, and defining it twice must not be how it survives.
+  const called = /(\w+)\(\)/.exec(askedBranch.replace(/refreshWeatherQuietly\(\)/, 'refreshWeatherQuietly()'))[1];
+  const defs = (stripComments(APP_JS).match(/async function refreshWeatherQuietly\b/g) || []).length;
+  assert.equal(defs, 1,
+    `exactly one definition of refreshWeatherQuietly must exist -- found ${defs}. A rename that leaves the old body behind is the mutation that went green.`);
+  // And the defined function must contain the actual work, not a stub.
+  const body = stripComments(region('async function refreshWeatherQuietly', 'async function fetchWeatherByPlace', APP_JS));
+  assert.match(body, /refreshWeather\(|fetchWeatherByPlace\(/,
+    `the called function must actually refresh something -- called: ${called}`);
+});
+
+test('WS47: a quiet refresh can never raise a permission prompt', () => {
+  // This is the whole point, and it is an ABSENCE: nothing on this path may
+  // touch getCurrentPosition or watchPosition. Asserted against the whole
+  // function AND its helper, because a helper is where such a call would hide.
+  const quiet = stripComments(region('async function refreshWeatherQuietly', 'function stopWeatherWatch', APP_JS));
+  assert.doesNotMatch(quiet, /locate\(\)|startWeatherWatch\(\)|navigator\.geolocation/,
+    'the quiet refresh must not touch the geolocation API -- that is what re-arms the prompt');
+  assert.match(quiet, /force: true/,
+    'the quiet refresh is a deliberate, gates-bypassing read of current conditions');
+
+  // The by-place helper is the fallback for a cache with no coordinates, which
+  // is the state every WS45/WS46 install is in. Same rule: no geolocation.
+  const byPlace = stripComments(grab('fetchWeatherByPlace'));
+  assert.doesNotMatch(byPlace, /navigator\.geolocation|locate\(\)/,
+    'looking up weather by place name must not require permission');
+  // It must resolve to real coordinates before asking for weather -- the first
+  // implementation passed the NAME straight into latitude/longitude, which the
+  // service answered with HTTP 200 and an {"error":true} body. A fictional API
+  // shape that fails silently is worse than one that 404s.
+  assert.match(byPlace, /geocoding-api\.open-meteo\.com/,
+    'a name must be resolved to coordinates by the geocoding API first');
+  assert.match(byPlace, /fetchWeather\(hit\.latitude, hit\.longitude\)/,
+    'the resolved coordinates must be used for the weather call');
+  assert.doesNotMatch(byPlace, /latitude=\$\{q\}/,
+    'the place name must never be passed as a latitude -- probed: HTTP 200 with an error body');
+});
+
+test('WS47: returning to the foreground must not ask for location', () => {
+  // A defect WS46 introduced, found by reading this listener while chasing
+  // WS47's symptoms: it called startWeatherWatch() on every return to the
+  // foreground. `watchPosition` is a geolocation call, so every app-switch in
+  // iOS re-armed the exact prompt WS46 was written to silence -- and the
+  // initWeather tests could not see it because they never read THIS listener.
+  const vis = stripComments(region("document.addEventListener('visibilitychange', () => {\n    if (document.hidden) {\n      stopWeatherWatch();", 'async function boot'));
+  const shown = vis.slice(vis.indexOf('stopWeatherWatch();'));
+  assert.doesNotMatch(vis.slice(vis.indexOf('return;')), /startWeatherWatch\(\)/,
+    'coming back to the foreground must not start a watcher -- that re-arms the prompt');
+  assert.match(shown, /refreshWeatherQuietly\(\)/,
+    'coming back to the foreground should refresh from what is already known');
+  assert.match(vis, /stopWeatherWatch\(\)/,
+    'the watch must still be stopped when hidden');
+});
+
+test('WS47: a failed place lookup must not throw the temperature away', () => {
+  // The Safari symptom. `if (!place) return 'no-place'` discarded a REAL
+  // temperature because a SECONDARY service -- the geocoder, not the weather
+  // API -- was unreachable. Measured with the geocoder blocked: no weather at
+  // all in the header. Two different providers; one being down must not cost
+  // the other.
+  const refresh = stripComments(region('async function refreshWeather', 'function startWeatherWatch', APP_JS));
+  assert.match(refresh, /fallbackPlace/,
+    'a missing place name must fall back to one already known');
+  assert.doesNotMatch(refresh, /if \(!place\) return 'no-place';\s*\n\s*const rec/,
+    'the reading must not be discarded outright when the geocoder fails');
+  // The single genuinely-hopeless case is preserved: no place anywhere.
+  assert.match(refresh, /if \(!place && !fallbackPlace\) return 'no-place';/,
+    'a reading with no place from any source is still dropped, and still reported');
+});
+
+test('WS47: coordinates are stored so a later open can refresh', () => {
+  const refresh = stripComments(region('async function refreshWeather', 'function startWeatherWatch', APP_JS));
+  assert.match(refresh, /const rec = \{[^}]*lat: pos\.lat, lon: pos\.lon/,
+    'the saved reading must carry coordinates, or no later open can refresh without asking');
+  // And they must be OPTIONAL on read, or every pre-WS47 cache is thrown away.
+  const read = stripComments(grab('readWeatherCache'));
+  assert.doesNotMatch(read, /typeof v\.lat === 'number'/,
+    'coordinates are optional: a cache written by WS45/46 has none and must still work');
+  assert.match(read, /typeof v\.temp === 'number' && typeof v\.place === 'string'/,
+    'temperature and place remain the only required fields');
+});
+
+test('WS47: a fresh reading is left alone (no pointless request)', () => {
+  // The other half of the guard: refreshing everything on every open would
+  // spend an API call per launch, which is the thing the guards exist to
+  // prevent. MEASURED: a 10-minute-old cache made 0 requests and kept 16
+  // degrees while the API was being forced to say 2 -- correct, and it is the
+  // case that proves the gate can still decline.
+  const init = stripComments(region('async function initWeather', 'async function boot', APP_JS));
+  const gate = init.indexOf('if (cached && age < WEATHER_FRESH_MS)');
+  const quiet = init.indexOf('refreshWeatherQuietly()');
+  assert.ok(gate !== -1 && gate < quiet,
+    'the fresh-cache early return must precede the quiet refresh, or every open spends a request');
+});
+
+test('WS47: the header refreshes while the app stays open', () => {
+  // "it does not seem to update as it get colder outside" -- a header that is
+  // right at open and then frozen for the session is only accidentally right.
+  // PROBE CORRECTION: this used to `indexOf('setInterval(() => {')` on the whole
+  // file, which matched an UNRELATED timer far above the weather code (the
+  // playback position sync at app.js:3389) and so inspected the wrong function
+  // entirely. Anchored on the WEATHER_REFRESH_MS constant instead, which is
+  // unique to this timer and is the interval it must actually use.
+  // ANCHOR NOTE, corrected twice: `WEATHER_REFRESH_MS` is used AFTER the
+  // `setInterval(` that consumes it, so searching forward FROM the constant
+  // finds nothing. The unique marker is the CALL inside the timer body, and the
+  // interval argument is asserted separately below.
+  const clean = stripComments(APP_JS);
+  const bodyAt = clean.indexOf('if (document.hidden) return;');
+  const timerAt = clean.lastIndexOf('setInterval(() => {', bodyAt);
+  assert.ok(timerAt !== -1 && bodyAt - timerAt < 60,
+    'the weather refresh timer could not be located next to its hidden-app guard');
+  const timer = clean.slice(timerAt, timerAt + 400);
+  assert.match(timer, /refreshWeatherQuietly\(\)/,
+    'an open, visible app must refresh on a timer or the reading goes stale within the hour');
+  assert.match(timer, /document\.hidden/,
+    'the timer must skip a hidden app, or a backgrounded PWA keeps spending requests');
+  // It must be the interval WS45 defined and never used, not an invented number.
+  assert.match(clean.slice(timerAt, timerAt + 400), /\}, WEATHER_REFRESH_MS\)/,
+    'the timer must use WEATHER_REFRESH_MS, the constant already defined for this purpose');
+});

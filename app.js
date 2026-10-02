@@ -10093,6 +10093,11 @@ function seekMeasureRecordText() {
       const raw = localStorage.getItem(WEATHER_KEY);
       if (!raw) return null;
       const v = JSON.parse(raw);
+      // `lat`/`lon` are OPTIONAL, added in WS47. A cache written by WS45/WS46
+      // has neither and MUST keep working -- requiring them would throw away
+      // the reading of every existing install and leave those headers frozen.
+      // Their absence is recorded as `hasPos: false` on the seeded lastFetched,
+      // which is what tells the distance gate to skip rather than compare null.
       return (v && typeof v.temp === 'number' && typeof v.place === 'string') ? v : null;
     } catch {
       return null;   // corrupt cache must never break the header
@@ -10355,8 +10360,23 @@ function seekMeasureRecordText() {
         // cost the temperature -- so this one may fail on its own.
         fetchPlace(pos.lat, pos.lon).catch(() => ''),
       ]);
-      if (!place) return 'no-place';
-      const rec = { temp: w.temp, code: w.code, place, at: now };
+      // WS47. The place lookup is the FRAGILE half, and it used to be
+      // all-or-nothing: `if (!place) return 'no-place'` threw away a REAL
+      // temperature because a SECONDARY service -- a geocoder, not the weather
+      // API -- was unreachable. MEASURED with the geocoder blocked: the header
+      // showed nothing at all. That is what left the owner's Safari tab with no
+      // weather, and it was never a Safari problem.
+      //
+      // A weather API and a geocoder are different providers. One being down
+      // must not cost the other, so the place falls back to whatever is already
+      // on screen, then to the cached one. A reading with no place ANYWHERE is
+      // still dropped, and still reported rather than swallowed.
+      const fallbackPlace = (lastPainted && lastPainted.place) || (readWeatherCache() || {}).place || '';
+      if (!place && !fallbackPlace) return 'no-place';
+      // `lat`/`lon` are stored so a later open can refresh WITHOUT asking for
+      // location again -- see refreshWeatherQuietly(). That is the whole point:
+      // WS46 made a stale cache silent, and this makes it silent AND current.
+      const rec = { temp: w.temp, code: w.code, place: place || fallbackPlace, at: now, lat: pos.lat, lon: pos.lon };
       lastFetched = { lat: pos.lat, lon: pos.lon, at: now, hasPos: true };
       writeWeatherCache(rec);
       // Only repaint when something the tester can SEE changed. A new
@@ -10414,6 +10434,79 @@ function seekMeasureRecordText() {
     const pos = await locate();
     if (!pos) return 'no-position';
     return refreshWeather(pos, { force: true });
+  }
+
+  /**
+   * Refresh using ONLY what is already known -- no permission, no prompt.
+   *
+   * WS47. The owner reported: "it does not seem to update as it get colder
+   * outside. the closure of the pwa app and then opening again now doesn't
+   * evoke a new location approval automatically."
+   *
+   * Both halves are correct observations and both point at one cause. MEASURED:
+   * an open with a 4-hour-old reading made ZERO requests and left the header
+   * frozen at 16 degrees while the real weather was 2. WS46 deliberately made a
+   * stale cache SILENT, and in doing so it silently conflated two different
+   * requirements: "never ask again" and "never update again" are not the same
+   * thing, and only the first was ever wanted.
+   *
+   * Weather does not need a fresh position to be refreshed for someone who is
+   * standing still -- the coordinates from the last real fix are already saved.
+   * Reusing them costs no prompt and no permission. The place NAME is not
+   // refreshed, because that needs a geocoder call per refresh; a journey
+   // therefore shows the previous city until the user taps the chip, which is
+   // a deliberate trade and is stated rather than hidden.
+   */
+  async function refreshWeatherQuietly() {
+    const cached = readWeatherCache();
+    if (!cached) return 'no-cache';
+    // Coordinates are the precise route, but they are NOT always available: a
+    // cache written by WS45/WS46 has a place name and no coordinates, and that
+    // is precisely the state the owner was in when they reported a frozen
+    // header on a stale reading.
+    if (typeof cached.lat === 'number' && typeof cached.lon === 'number') {
+      return refreshWeather({ lat: cached.lat, lon: cached.lon }, { force: true });
+    }
+    // No coordinates, but we have the PLACE NAME the user already saw. The
+    // weather service accepts a place name for a current-conditions lookup, so
+    // this needs the geolocation API nowhere -- there is nothing here that can
+    // raise a permission prompt. It is a plain request to a public endpoint.
+    const byPlace = await fetchWeatherByPlace(cached.place).catch(() => null);
+    if (!byPlace) return 'no-coords';
+    const rec = { temp: byPlace.temp, code: byPlace.code, place: cached.place, at: Date.now() };
+    lastFetched = { lat: null, lon: null, at: rec.at, hasPos: false };
+    writeWeatherCache(rec);
+    // Same visible-change rule as refreshWeather: do not repaint for a fraction
+    // of a degree, or the header flickers for no reason.
+    if (!lastPainted || lastPainted.place !== rec.place || Math.round(lastPainted.temp) !== Math.round(rec.temp)) {
+      renderWeatherChip(rec);
+      lastPainted = rec;
+    }
+    return 'ok';
+  }
+
+  /**
+   * Current weather for a named place. Open-Meteo serves this from the same
+   * endpoint as the coordinate lookup, so it adds no dependency and no key.
+   *
+   * It exists so a refresh never requires the geolocation permission. The name
+   * is one the app already showed the user -- it is not a new disclosure, and
+   * nothing here can raise a prompt.
+   */
+  async function fetchWeatherByPlace(place) {
+    const q = encodeURIComponent(String(place || '').trim());
+    if (!q) throw new Error('place name required');
+    const geoRes = await fetch('https://geocoding-api.open-meteo.com/v1/search'
+      + `?name=${q}&count=1&language=sv&format=json`);
+    if (!geoRes.ok) throw new Error('geocoding ' + geoRes.status);
+    const geo = await geoRes.json();
+    const hit = geo && geo.results && geo.results[0];
+    if (!hit || typeof hit.latitude !== 'number' || typeof hit.longitude !== 'number') {
+      throw new Error('place not found');
+    }
+    // Reuse the ordinary coordinate call rather than duplicating its parsing --
+    // one place that knows how to read a weather response, not two.
+    return fetchWeather(hit.latitude, hit.longitude);
   }
 
   function stopWeatherWatch() {
@@ -10485,6 +10578,13 @@ function seekMeasureRecordText() {
       // own. Tapping the chip refreshes it, deliberately, whenever the user
       // wants. Not asking was the requirement; live tracking cannot be had for
       // free from a browser that asks once.
+      //
+      // WS47: but "not asking" must not mean "never updating again". The
+      // reading is refreshed from the coordinates already saved -- no prompt,
+      // no permission, no new question. Measured before this line existed: an
+      // open with a 4-hour-old cache made ZERO requests and sat frozen at 16
+      // degrees while the real weather was 2.
+      refreshWeatherQuietly();
       return;
     }
     // First ask. Both geolocation entry points run, and the flag is set BEFORE
@@ -10505,13 +10605,29 @@ function seekMeasureRecordText() {
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
       stopWeatherWatch();
-    } else {
-      const cached = readWeatherCache();
-      if (!hasAskedForLocation()) return;      // never asked: stay silent
-      if (cached && Date.now() - cached.at < WEATHER_FRESH_MS) return;
-      startWeatherWatch();
+      return;
     }
+    // Coming back to the foreground must NOT ask for location. WS46's version
+    // of this handler called startWeatherWatch() here, and `watchPosition` is a
+    // geolocation call -- so every app-switch in iOS re-armed the exact prompt
+    // WS46 was written to silence, by a route the initWeather tests could not
+    // see because they never inspected this listener.
+    //
+    // WS47: refresh from the coordinates already saved instead. No prompt, no
+    // watcher, and the header is current again the moment the app is looked at.
+    if (!hasAskedForLocation()) return;        // never asked: stay silent
+    refreshWeatherQuietly();
   });
+
+  // WS47: the owner's other observation -- "it does not seem to update as it
+  // get colder outside". A header that is right at open and frozen for the rest
+  // of the session is only accidentally right, so refresh on a timer while the
+  // app is OPEN and VISIBLE. The interval is the existing WEATHER_REFRESH_MS
+  // (30 min), which was already defined for this purpose and never used.
+  setInterval(() => {
+    if (document.hidden) return;              // do not poll a hidden app
+    refreshWeatherQuietly();
+  }, WEATHER_REFRESH_MS);
 
   async function boot() {
     renderSkeletons();
