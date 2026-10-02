@@ -7063,3 +7063,104 @@ instead of all 371 rows. The list appears on the first keystroke.
 
 Nothing was implemented. No code was changed for WS44b. The recommendation
 above is a proposal for the owner to accept, amend or reject.
+
+---
+
+## 2026-10-02 — WS44c: the podcast list is reachable only through the search box — DONE
+
+**Status: DONE — `e502484` + build `ed7493f`, deployed, live-verified.**
+
+Owner: *"changes are okey to implement as you propose, just make sure you test
+carefully that the search experience is find for both sources. if you with
+long-press drag mean the deselect of favorites, it is working fine."*
+
+Clarification accepted: long-press drag = **reorder**, and deselect works. Both
+were therefore **left untouched** — no change to `enableDragSort`,
+`enableSwipeToRemove`, `removeFavoriteRow`, `restoreFavoriteRow` or the ✕ button.
+
+### What changed
+
+The unsearched podcast list now shows a prompt (127 px) instead of all 371 rows
+(33 010 px, ~89 screens). Rows appear from the first keystroke.
+
+**Channels are deliberately EXEMPT.** ~52 rows, they fit on a screen or two,
+and a channel is chosen by recognition rather than by remembering its name.
+Gating them too would be an unrequested change.
+
+**Nothing is hidden from the owner.** Every one of the 371 rows is one keystroke
+away, and the search already reached all of them. This is a change of
+presentation, not of access.
+
+### Two real defects, found in the browser while building this
+
+**1. Clearing the search stranded the sheet on five permanent grey skeletons.**
+Setting `loaded.podcasts = false` with no fetch scheduled sent `renderList()`
+into its skeleton branch, and nothing ever replaced it. The catalogue is
+already in memory — there is nothing to load and nothing to wait for. Measured:
+after clearing, `skel: 5` and no prompt, and still `skel: 5` three seconds later.
+
+**2. A stale iTunes row could survive under a new query.** Rows an earlier query
+fetched were re-rendered as results for whatever was typed next. They belong to
+the query that fetched them.
+
+### The search now matches the description too
+
+With the browsable list gone, name-only matching stopped being cosmetic.
+Measured **before** the change, against the live catalogue:
+
+| query | by name | by description only | total |
+|---|---|---|---|
+| `granskar` | 1 | 3 | 4 |
+| `samhälle` | 1 | 5 | 6 |
+| `rapportage` | 0 | 0 | 0 |
+
+Hiding the list must not also remove the ability to find a programme by what it
+is about.
+
+### The prompt states the real thresholds
+
+Two characters already search SR — measured, `ek` → 45 rows. iTunes needs three
+(`EXT_SEARCH_MIN_CHARS = 3`). My first wording said *"Skriv minst tre tecken"*,
+which implies two characters shows nothing. That is false and would have been
+read as a bug. It now reads: *"Sök på två tecken för Sveriges Radio, tre eller
+fler för att även söka iTunes."*
+
+### MEASURED — live site, build `e502484`
+
+| check | result |
+|---|---|
+| unsearched | 0 rows, 0 skeletons, prompt shown |
+| `granskar` | 5 rows — Kaliber, Medierna, Ekot granskar, Brottsutredarna, Ekot granskar |
+| cleared | prompt returns, no skeletons |
+| `dear` | 20 iTunes rows |
+| `samhälle` (description-only) | 26 SR rows, led by Funk i P1 |
+| page errors throughout | **none** |
+| pick an SR podcast found by a description-only word | SR `[6706, 4970]`, iTunes untouched |
+| pick an iTunes podcast | iTunes gains it, SR untouched, order key updated |
+| deselect the SR one again | SR back to `[6706]`, iTunes keeps its own |
+| survives reload | icons and sheet rows agree |
+| list re-gates on reload | prompt shown, box empty |
+
+Suite **456 → 462**. **7 mutations, 7 red**: description match removed, gate
+removed, skeleton defect reintroduced, stale-external filter removed, wrong hint
+wording restored, prompt CSS removed, centring removed.
+
+### Two defects in my own work, recorded
+
+- **A harness defect reported a false failure.** The description-filter test
+  extracts the filter from `loadItems` and runs it; my first harness passed the
+  query raw and reported a failure that was the *harness's* — `loadItems`
+  lowercases before filtering. Fixed the harness, not the code.
+- **The CSS was lost twice** by a stale `/tmp` snapshot restore. A source test
+  can assert a class *name* is emitted; it cannot tell whether any rule styles
+  it, so an unstyled prompt passed every other guard. There is now a guard
+  asserting `.pick-empty` is styled and centred.
+
+### Not proven / not done
+
+- **The typing feel on the phone is not verified** — the 300 ms debounce, and
+  whether iOS Safari's keyboard behaves with the list appearing beneath it.
+- **Not implemented:** grouping or sorting the results. SR exposes no category
+  field, so any grouping would have to be invented from names.
+- **Not tested:** a very rapid type-and-clear (the debounce is cancelled on
+  clear, which should be safe, but it was not driven at speed).

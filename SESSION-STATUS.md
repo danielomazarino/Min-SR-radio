@@ -387,3 +387,47 @@ works at 2.
 
 **Next:** owner to (a) confirm the drag feels right on the iPhone at build
 `b370dac`, and (b) accept, amend or reject the WS44b empty-state proposal.
+
+## WS44c — podcast list behind the search box — 2026-10-02T14:40:00Z
+
+**Baseline:** `npm test` → **456/456 pass** (run, not quoted)
+**Scope now:** gate the 371-row podcast list behind the search box, per the
+owner's approval. Files touched: `app.js` (the gate, `searchQuery`,
+`clearSearch()`, description matching, stale-row drop), `styles.css`
+(`.pick-empty` + title/sub), `tests/itunes-podcast.test.mjs` (+6).
+**OUT of scope, deliberately:** `enableDragSort` and `enableSwipeToRemove` —
+the owner clarified long-press drag is *reorder* and that deselect works, so
+neither path was touched. Also untouched: `fetchPodcasts`, `extSearch`,
+`togglePick`'s storage rules, `src/favorites.mjs`, every DVR/HLS path, and the
+**channel** list, which stays browsable.
+**Decision:** show a prompt instead of the rows until the owner types; match SR
+on description as well as name; state each source's real character threshold.
+**Test count:** 456 → 462
+**Working tree:** clean apart from the six pre-existing untracked `WS*-PROMPT.md`
+
+**MEASURED, live site, build `e502484`:**
+- unsearched: 0 rows, 0 skeletons, prompt shown (127 px, was 33 010 px)
+- `granskar` → 5 rows · `dear` → 20 iTunes rows · `samhälle` → 26 SR rows
+  (description-only match) · cleared → prompt returns, no skeletons
+- selection round trip on both providers, each storage changing only its own
+  membership; survives reload; list re-gates
+- **zero page errors** throughout
+- 7 mutations, 7 red
+
+**TWO REAL DEFECTS found in the browser and fixed here** — not present in my
+first implementation:
+1. Clearing the box set `loaded.podcasts = false` with no fetch scheduled, so
+   `renderList()` took the skeleton branch and the sheet showed **five permanent
+   grey bars**. Measured, and it did not resolve on its own.
+2. A stale iTunes row from a previous query was re-rendered as a result for the
+   next query.
+
+**TWO DEFECTS IN MY OWN WORK, also recorded:** the description-filter harness
+reported a false failure because it did not lowercase like `loadItems` does;
+and the prompt CSS was lost twice to a stale `/tmp` restore, which no JS guard
+could see. Both now have guards.
+
+**Blocked:** nothing
+**Next:** owner to check build `e502484` on the iPhone — confirm the prompt
+reads well and that typing feels right, and that finding a podcast by a word in
+its description now works.
