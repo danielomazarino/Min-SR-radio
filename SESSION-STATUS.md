@@ -345,3 +345,45 @@ and re-applied with `assert s.count(marker) == 1`. All later mutations used
 **Blocked:** nothing
 **Next:** owner to check build `1ce0114` on the iPhone — swipe a podcast left,
 confirm it feels like Mail/WhatsApp and that the row is white at rest.
+
+## WS44 — podcast sort ReferenceError + long-list report — 2026-10-02T13:20:00Z
+
+**Baseline:** `npm test` → **453/453 pass** (run, not quoted)
+**Scope now:** fix the podcast reorder save; report on the 371-row SR list.
+Files touched: `app.js` (2 lines — `extList` passed into `enableDragSort`) and
+`tests/itunes-podcast.test.mjs`. **OUT of scope:** `enableSwipeToRemove`,
+`fetchPodcasts`, `togglePick`, all storage helpers, `src/favorites.mjs`, every
+DVR/HLS path.
+**Decision:** the reorder save threw `ReferenceError: extList is not defined` —
+`extList` is `buildSelectedGroup`'s local, read from its sibling. The rows
+moved on screen before `persist()` ran, so nothing was saved and the order
+reverted. Channels were unaffected (their branch returns first), which is why it
+looked podcast-only.
+**Test count:** 453 → 456 (+3: an executing persist harness, a signature guard,
+a scope linter)
+**Working tree:** clean apart from the six pre-existing untracked `WS*-PROMPT.md`
+
+**MEASURED, live site, build `b370dac`:**
+- long-press drag reorders; SR `[3437, 6706]`, iTunes untouched, order key
+  `[3437, 6706, 1518156497]`, **zero page errors**
+- survives reload; main-screen icons match the sheet rows
+- 4 mutations, 4 red
+
+**THE MEASUREMENT THAT MATTERS MOST:** 453 green tests could not see this,
+because a `ReferenceError` is a property of *running* code, not of source text.
+The new test executes `persist()` through `new Function()` and drives the real
+`dragstart`→`dragend` listeners, so reverting the signature reproduces the
+owner's exact error.
+
+**WS44b — REPORT ONLY, nothing implemented.** The SR list is **371 rows /
+33 010 px**. Recommendation: show an empty state until the owner types, so the
+list appears on the first keystroke. Search is already client-side and instant
+(371 rows, no network). SR's API exposes **no category field**, so grouping
+would have to be invented by parsing names. Two caveats recorded: SR search
+matches **name only, not description**, and iTunes needs 3 characters while SR
+works at 2.
+
+**Blocked:** nothing. Waiting on the owner's decision for WS44b.
+
+**Next:** owner to (a) confirm the drag feels right on the iPhone at build
+`b370dac`, and (b) accept, amend or reject the WS44b empty-state proposal.

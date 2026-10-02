@@ -6909,3 +6909,157 @@ failure AGENTS.md §8 warns about, committed by me in the same session.
 Recovered from the already-built bundle `app.82a67d87.js` by re-applying both
 edits with `assert s.count(marker) == 1`. Every later mutation in this
 workstream used `cp` from a `/tmp` snapshot and compared checksums, never git.
+
+---
+
+## 2026-10-02 — WS44: podcast sorting never saved (ReferenceError) — FIXED, live
+
+**Status: DONE — `b370dac` + build `23b595e`, deployed, live-verified.**
+
+Owner: *"look in to howcome the sort order of poscasts is not working in the
+latest version. the swipe for delete is working fine."*
+
+### The owner's clue was the diagnosis
+
+Removal worked; reordering did not. Those are **different functions**, and only
+one was broken. `enableSwipeToRemove` never calls the save path;
+`enableDragSort` does. So the swipe surviving was not luck — it was the control
+that told us which half of the feature to look at.
+
+### Cause: a sibling function read a local that was not in scope
+
+`extList` is declared `const` inside `buildSelectedGroup` (app.js:8527). The
+reorder save, `enableDragSort`'s `persist()`, read it (app.js:8726):
+
+```js
+const extIds = new Set(extList.map((p) => p.id));
+```
+
+`enableDragSort` is a **sibling**, so `extList` was never in scope. Every drop
+threw `ReferenceError: extList is not defined` **before writing anything**.
+
+The rows moved on screen — the DOM reorder happens before `persist()` — so the
+failure was **silent**. Nothing was saved, and the arrangement reverted on the
+next render. Introduced in `d37f586` (WS42b) and live across three builds.
+
+**Channels were never affected**, which is what made it look podcast-specific:
+the channels branch of `persist()` returns *before* the `extList` line.
+Confirmed in the browser — two channels reorder and save cleanly, no error.
+
+### Why 453 green tests never caught it
+
+A `ReferenceError` is not a property of the **source text**. It exists only when
+the code **runs** in a scope where the name is absent. Every guard on this file
+read the text, and the text was well-formed. This is the §2 rule biting from an
+unexpected direction: the suite was not weak, it was measuring the wrong thing.
+
+### The new test executes the save path
+
+`persistHarness` runs `enableDragSort` through `new Function()` and drives the
+**real `dragstart` → `dragend` listeners**. Reverting the signature makes it
+throw the owner-facing `ReferenceError` and the test fails. Mutations: 4
+applied, 4 red — signature reverted, caller reverted, SR integer filter
+dropped, order-key write dropped.
+
+The scope-linter test needed rewriting **twice** before it was trustworthy. The
+first version flagged `r`, `p`, `e` (arrow parameters), `onRemoved` (a
+parameter all along) and then the keyword `if`. A linter that cries wolf is
+worse than no linter; it now treats a name as in scope when it is a parameter
+of the function or any nested arrow, a local, or a module declaration.
+
+### MEASURED — live site, build `b370dac`
+
+| check | result |
+|---|---|
+| long-press drag, podcast row | rows reorder |
+| SR storage | `[3437, 6706]` — its own members, dragged relative order |
+| iTunes storage | untouched |
+| order key | `[3437, 6706, 1518156497]` — the interleaved arrangement |
+| page errors during the drag | **none** |
+| survives reload, icons match sheet | yes |
+
+Suite **453 → 456**.
+
+### Not proven / not done
+
+- **The feel of the drag on the phone is not verified** — long-press on iOS and
+  whether the 250 ms arm is comfortable with a thumb.
+- Not verified: a *rapid* double-drag, or a drag interrupted by the list
+  rebuilding underneath it.
+
+---
+
+## 2026-10-02 — WS44b: the long Sveriges Radio podcast list — REPORT ONLY
+
+**Status: REPORT. No code changed. Awaiting the owner's decision.**
+
+Owner: *"investigate and report a solution for removing the long list of the
+swedish radio podcasts visually and how to make them visible only via the search
+box."*
+
+### MEASURED
+
+| fact | value |
+|---|---|
+| SR podcasts in the catalogue | **371** |
+| rendered list height | **33 010 px** (~89 screens at this viewport) |
+| rows with no description | 0 |
+| rows with no image | 0 |
+| duplicate names in the SR catalogue | **0** |
+| SR API category field | **absent** (`programcategory` and `category` are both null) |
+| iTunes search threshold | `EXT_SEARCH_MIN_CHARS = 3`, limit 20 |
+| SR search | client-side, **name only** — not description |
+
+Search quality, measured in the browser:
+
+| query | SR rows shown |
+|---|---|
+| *(empty)* | 371 |
+| `p4` | 38 |
+| `nyheter` | 53 |
+| `psykolog` | 22 |
+| `ek` (2 chars) | 14 |
+| `granskar` | 2 |
+
+### The solution I recommend: hide the list until the owner searches
+
+Render an **empty state** in the pick-list whenever the search box is empty,
+instead of all 371 rows. The list appears on the first keystroke.
+
+**Why this is the right shape and not a cosmetic preference:**
+
+- **The search already works and is fast.** 371 rows filter in the browser with
+  no network call, so the empty state costs nothing in speed.
+- **SR's own API cannot help.** There is no category field, so a
+  "grouped by channel" list would have to be **invented** by parsing names like
+  `Nyheter P4 Jämtland` — fragile, and it would still be a 371-item wall.
+- **The list is not alphabetical or otherwise ordered by anything the owner
+  asked for**, so it carries no information the search box does not.
+- **It is reversible and lossless.** Nothing is hidden *from* the owner — the
+  same 371 rows are one keystroke away, and the search already covers every one
+  of them.
+
+### Alternatives, and why I rank them lower
+
+| option | verdict |
+|---|---|
+| **A. Empty state until search** (recommended) | smallest change, no data risk, fully reversible |
+| B. Group by channel, collapsible | invents categories the API does not supply; a 371-row list is still 371 rows |
+| C. Show only the ~16 already-selected rows | hides podcasts the owner has not found yet — actively counterproductive |
+| D. Collapse the list behind a "Visa alla" button | same as A with an extra tap |
+
+### Two things worth knowing before you choose
+
+1. **2-character queries already work for SR** (`ek` → 14 rows). The iTunes side
+   needs 3 characters (`EXT_SEARCH_MIN_CHARS = 3`), so a 2-character query shows
+   SR results only. Worth a one-line hint so the absence is not read as a bug.
+2. **Matching is by NAME only.** `rapportage` returns only iTunes hits,
+   because no SR *name* contains that word even though some SR *descriptions*
+   do. If the list becomes search-only, extending the SR match to the
+   description is a small, worthwhile companion change — otherwise the owner
+   loses the ability to browse by scanning descriptions.
+
+### NOT DONE
+
+Nothing was implemented. No code was changed for WS44b. The recommendation
+above is a proposal for the owner to accept, amend or reject.
