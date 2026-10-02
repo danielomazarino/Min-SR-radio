@@ -2343,10 +2343,18 @@ test('WS9: out of scope -- every seek function and the DVR constants are byte-id
     'the seekToLive target must use SEEK_LIVE_MARGIN_S (WS23)');
   // seekToProgramTime: behaviour AND the out-of-window toast are untouched
   // (WS8 Part B, not authorised here).
+  //
+  // WS46 SUPERSEDED only the `if (target < start) {` SPELLING. WS46 changed what
+  // `target` IS on native HLS, so the guard had to move onto the value actually
+  // seeked to — checking the fallback would let an experimental target land
+  // outside the window. Restated, not weakened: the toast text is still pinned
+  // byte-for-byte, and the guard is now asserted to cover the non-finite case
+  // as well, which the old form did not test at all.
   const SPT = stripComments(region('function seekToProgramTime(startMs)', "['waiting', 'stalled'].forEach", APP_JS));
   assert.ok(/showToast\('Programmet ligger utanför spolbart område \(3 timmar\)\.'\);/.test(SPT),
     'the out-of-window toast must be untouched in WS9');
-  assert.ok(/if \(target < start\) \{/.test(SPT), 'the out-of-window guard must be byte-identical');
+  assert.ok(/if \(!Number\.isFinite\(target\) \|\| target < start\) \{/.test(SPT),
+    'the out-of-window guard must cover the target actually seeked to');
   // The programme-skip lookup and its window-free semantics are unchanged.
   const SYNC = stripComments(region('const syncNext = () => {', 'if (prevEv) syncNext();', APP_JS));
   assert.ok(/ev\.startMs > playheadMs\s*\n?\s*&& ev\.startMs <= nowMs/.test(SYNC),
@@ -2885,7 +2893,8 @@ test('WS11: out of scope -- every seek and position function is byte-identical',
   assert.ok(/const upper = Number\.isFinite\(cur\.seekableEnd\)\s*\? Math\.max\(start, cur\.seekableEnd - LIVE_EDGE_TOLERANCE_S\)\s*: Infinity;/.test(SEEK_BY),
     'the seekBy clamp must be byte-identical');
   const SPT = stripComments(region('function seekToProgramTime(startMs)', "['waiting', 'stalled'].forEach", APP_JS));
-  assert.ok(/if \(target < start\) \{/.test(SPT), 'the seekToProgramTime guard must be byte-identical');
+  assert.ok(/if \(!Number\.isFinite\(target\) \|\| target < start\) \{/.test(SPT),
+    'the seekToProgramTime guard must cover the target actually seeked to (WS46)');
   assert.ok(/showToast\('Programmet ligger utanför spolbart område \(3 timmar\)\.'\);/.test(SPT),
     'the out-of-window toast must be byte-identical');
   // The WS9 position machinery and the working skip lookup are untouched.

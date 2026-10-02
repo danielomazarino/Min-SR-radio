@@ -438,8 +438,15 @@ test('WS38 the seek still seeks with the CACHED seekableEnd; the fresh read is o
   assert.match(fn, /const end = cur\.seekableEnd;/,
     'the seek must read the cached cur.seekableEnd');
   // ...computes the SAME target as before...
-  assert.match(fn, /const target = end - behindMs \/ 1000;/,
-    'the target formula must be unchanged: end - behindMs/1000');
+  //
+  // WS46 SUPERSEDED the literal spelling. On native HLS the target now comes
+  // from the absolute media-timeline origin. What this test still requires, and
+  // what is unchanged in spirit: the OLD equation is still computed verbatim
+  // and is still the value used on every non-native transport. Restated so it
+  // fails if someone deletes the fallback — which would silently change the
+  // hls.js seek.
+  assert.match(fn, /const fallbackTarget = end - behindMs \/ 1000;/,
+    'the original target must survive verbatim as the fallback');
   // ...and seeks with that cached-derived target.
   assert.match(fn, /audioEl\.currentTime = target;/,
     'the element must be seeked with the computed target');
@@ -546,11 +553,30 @@ test('WS38 the whole record is painted on the Info panel', () => {
 test('WS38 NO correction constant: the seek is untouched arithmetic', () => {
   assert.ok(!/SEEK_CORRECTION|SEEK_BIAS|EDGE_CORRECTION|SEEK_OFFSET_MS|CLOCK_FIX/i
     .test(APP_CODE), 'no seek correction constant may exist');
-  // The target line must be EXACTLY the pre-existing formula, nothing added.
+  // The target line must be EXACTLY the pre-existing formula, nothing added
+  // as a TUNED CONSTANT.
+  //
+  // WS46 SUPERSEDED the literal-formula half. WS46 does not add or subtract a
+  // term either — it REPLACES the input on native HLS, using an absolute
+  // origin instead of a buffered edge. The rule this test exists to enforce is
+  // §5: no hardcoded timing compensation. That is now enforced STRONGER,
+  // because the formula is gone entirely rather than merely undecorated, and
+  // the replacement is checked for the exact shape a tuned correction takes.
   const fn = APP_CODE.slice(APP_CODE.indexOf('function seekToProgramTime('),
     APP_CODE.indexOf('function seekToProgramTime(') + 2000);
-  assert.match(fn, /const target = end - behindMs \/ 1000;/,
-    'the target must remain end - behindMs/1000 with no added or subtracted term');
+  assert.match(fn, /const fallbackTarget = end - behindMs \/ 1000;/,
+    'the pre-existing formula must survive as the fallback');
   assert.ok(!/const target = end - behindMs \/ 1000 [-+*/]/.test(fn),
     'no term may be added to or subtracted from the target');
+  // The WS46 origin form: division by the media-timeline origin, with nothing
+  // added. This is the assertion that would catch the 31.5 s correction if it
+  // were ever reintroduced through this route.
+  const ws46 = APP_CODE.slice(APP_CODE.indexOf('function ws46SeekTarget('),
+    APP_CODE.indexOf('function ws46SeekTarget(') + 1200);
+  assert.match(ws46, /const target = \(startMs - startDateMs\) \/ 1000;/,
+    'the native target must be (startMs - origin)/1000');
+  assert.ok(!/\(startMs - startDateMs\) \/ 1000 [-+]/.test(ws46),
+    'no constant may be added to or subtracted from the native target');
+  assert.ok(!/\bOFFSET\b|\bBIAS\b|\bCORRECTION\b/.test(ws46),
+    'no calibration constant may appear in the origin calculation');
 });
