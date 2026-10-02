@@ -8698,7 +8698,7 @@ function seekMeasureRecordText() {
         rowEl.querySelector('.selected-item-face').appendChild(controls);
         group.appendChild(rowEl);
       });
-      enableDragSort(group, kind);
+      enableDragSort(group, kind, extList);
       // Swipe-to-remove, enabled for BOTH providers. It calls the SAME
       // onRemoveRequest the ✕ button uses -- one implementation, two inputs.
       // The removal is provider-explicit in removeFavoriteRow(), so this one
@@ -8713,7 +8713,7 @@ function seekMeasureRecordText() {
      * Desktop: HTML5 drag events. Touch: long-press (250 ms) starts a drag;
      * the row follows the finger vertically and drops into place.
      */
-    function enableDragSort(group, kind) {
+    function enableDragSort(group, kind, extList = []) {
       let dragId = null;
 
       const persist = () => {

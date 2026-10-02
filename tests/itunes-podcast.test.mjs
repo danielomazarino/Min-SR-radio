@@ -949,3 +949,166 @@ test('no DVR or HLS code was modified by the integration', () => {
       `${fn} must not touch DVR/HLS code`);
   }
 });
+/* ---------------------------------------------------------------------------
+ * WS44 — the drag-to-reorder save path threw a ReferenceError.
+ *
+ * OWNER REPORT: "the sort order of poscasts is not working in the latest
+ * version. the swipe for delete is working fine."
+ *
+ * WHY A TEXT ASSERTION COULD NOT HAVE CAUGHT IT. Every earlier guard on this
+ * file reads the SOURCE of persist(). A ReferenceError is not a property of
+ * the text — it only exists when the code RUNS, in a scope where `extList` is
+ * not defined. `extList` was declared with `const` inside buildSelectedGroup
+ * and read from enableDragSort, a sibling function. The text says
+ * "const extList = ..." and "extList.map(...)"; both readings look correct.
+ *
+ * So this test EXECUTES the persist body through new Function(). If any
+ * identifier it reads is not passed in, the call throws and the test fails.
+ * That is the property the defect actually had, and the one a regex cannot
+ * observe. Observed in the live browser first, not derived from reading.
+ * --------------------------------------------------------------------- */
+function persistHarness({ sr, ext, domIds }) {
+  const store = {
+    'minradio.favorites.v1': JSON.stringify(sr),
+    'minradio.podcasts.ext.v1': JSON.stringify(ext),
+  };
+  const writes = {};
+  const listeners = {};
+  // Stand-ins for the rows. The array order IS the arrangement the user
+  // dragged them into, which is the only thing persist() reads from the DOM.
+  const rowObjRef = {};
+  const rowObjs = domIds.map((id) => {
+    const r = {
+      dataset: { id: String(id) },
+      // The real code calls e.target.closest('.selected-item'); a row IS one.
+      closest: (sel) => (sel === '.selected-item' ? r : null),
+      querySelector: () => ({ textContent: '' }),
+      classList: { add() {}, remove() {} },
+    };
+    rowObjRef[String(id)] = r;
+    return r;
+  });
+  const group = {
+    querySelectorAll: () => rowObjs,
+    addEventListener: (type, fn) => { listeners[type] = fn; },
+    insertBefore() {},
+    getBoundingClientRect: () => ({ top: 0, height: 10, width: 100, left: 0 }),
+  };
+  const deps = {
+    document: { elementFromPoint: () => null },
+    navigator: {},
+    loadFavorites: () => JSON.parse(store['minradio.favorites.v1']),
+    saveFavorites: (f) => { store['minradio.favorites.v1'] = JSON.stringify(f); writes.sr = f; },
+    loadExternalPodcasts: () => JSON.parse(store['minradio.podcasts.ext.v1']),
+    saveExternalPodcasts: (list) => { store['minradio.podcasts.ext.v1'] = JSON.stringify(list); writes.ext = list; },
+    persistPodcastRowOrder: (ids) => { writes.order = ids; },
+    rebuildSelected: () => {},
+  };
+  const keys = Object.keys(deps);
+  const enableDragSort = new Function(...keys, `${stripComments(grab('enableDragSort'))}\nreturn enableDragSort;`)(...keys.map((k) => deps[k]));
+  // Called EXACTLY as the app calls it, so the parameter contract is the thing
+  // under test. The broken signature was (group, kind) and left extList unbound.
+  enableDragSort(group, 'podcasts', ext);
+
+  // Drive the real desktop drag: dragstart, then dragend -> persist().
+  const drag = () => {
+    listeners.dragstart({ target: rowObjs[0], dataTransfer: { setData() {}, effectAllowed: '' } });
+    listeners.dragend({});
+  };
+  return {
+    drag,
+    readSr: () => JSON.parse(store['minradio.favorites.v1']),
+    readExt: () => JSON.parse(store['minradio.podcasts.ext.v1']),
+    writes,
+  };
+}
+
+test('WS44: the drag-to-reorder save runs without throwing, and splits providers', () => {
+  // THE assertion that matters: the save path must not throw. For the whole of
+  // WS42b -> WS43b it threw `ReferenceError: extList is not defined`, which no
+  // source-text assertion could see, because the text was well-formed.
+  const h = persistHarness({
+    sr: { channels: [132], podcasts: [6706, 3437] },
+    ext: [{ id: 1518156497, name: 'Dear Young Person' }],
+    domIds: [3437, 1518156497, 6706],
+  });
+  assert.doesNotThrow(() => h.drag(),
+    'the reorder save must not throw -- it threw ReferenceError: extList is not defined');
+
+  assert.deepEqual(h.writes.order, [3437, 1518156497, 6706],
+    'the interleaved arrangement must reach the order key verbatim');
+  assert.deepEqual(h.readSr().podcasts, [3437, 6706],
+    'SR keeps its own members, in the dragged relative order');
+  assert.deepEqual(h.readExt().map((p) => p.id), [1518156497],
+    'the iTunes podcast stays in the iTunes storage');
+  assert.ok(!h.readSr().podcasts.includes(1518156497),
+    'an iTunes collectionId must never be written into the SR array -- favoritesFromRaw drops non-integers and would silently undo the reorder');
+  assert.deepEqual(h.readSr().channels, [132], 'channels must be untouched by a podcast reorder');
+});
+
+test('WS44: enableDragSort receives extList as a parameter', () => {
+  // The regression guard for the ReferenceError. If the signature ever loses
+  // the parameter, the test above throws; this states the cause in the source.
+  const sig = stripComments(region('function enableDragSort', 'const rows =', APP_JS));
+  assert.match(sig, /function enableDragSort\(group, kind, extList = \[\]\)/,
+    'enableDragSort must take extList as a parameter -- it is buildSelectedGroup\'s local');
+  const caller = stripComments(region('function buildSelectedGroup', 'function enableSwipeToRemove', APP_JS));
+  assert.match(caller, /enableDragSort\(group, kind, extList\)/,
+    'the only caller must pass extList in');
+});
+
+test('WS44: the reorder path has no other out-of-scope provider variable', () => {
+  // The ReferenceError CLASS of bug: a sibling function's local read from a
+  // different scope. `extList` was exactly that and it shipped, so the shape is
+  // worth a guard -- a second instance must not be addable silently.
+  //
+  // Scoped correctly, which the first attempt was not: the original flagged
+  // `r`, `p`, `e` and `group` (arrow and function parameters) and `extList`
+  // itself, which is now a parameter. The check below therefore treats a name
+  // as IN SCOPE if it is a parameter of the function, of any nested arrow, or
+  // declared anywhere in the module -- and only reports names that satisfy
+  // none of those. A linter that cries wolf is worse than no linter.
+  const moduleDecls = new Set();
+  for (const m of stripComments(APP_JS).matchAll(/\b(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)/g)) moduleDecls.add(m[1]);
+  const globals = new Set([
+    'Math', 'Number', 'JSON', 'Date', 'Set', 'Map', 'WeakMap', 'String', 'Array',
+    'Object', 'Boolean', 'RegExp', 'Promise', 'Error', 'parseInt', 'parseFloat',
+    'isNaN', 'isFinite', 'setTimeout', 'clearTimeout', 'setInterval', 'fetch',
+    'document', 'window', 'navigator', 'console', 'localStorage', 'TouchEvent',
+    'Touch', 'Element', 'CustomEvent', 'AbortController', 'URL', 'location',
+  ]);
+  // Language keywords and statements: they parse as identifiers to a regex but
+  // are never variables. Keeping them out is what stops the guard crying wolf.
+  const keywords = new Set(['if', 'for', 'while', 'switch', 'catch', 'return',
+    'typeof', 'new', 'of', 'in', 'do', 'else', 'function', 'await', 'yield',
+    'delete', 'void', 'instanceof', 'case', 'default', 'try', 'finally', 'throw']);
+
+  for (const fn of ['enableDragSort', 'enableSwipeToRemove']) {
+    // Strip template literals too: their text is prose and CSS, not variables.
+    const body = stripComments(grab(fn)).replace(/`(?:[^`\\]|\\.)*`/g, '``');
+    // Every declared-or-bound name: params of the function, params of any inner
+    // arrow/function, and every const/let/var in the body.
+    const scope = new Set(moduleDecls);
+    // The function's OWN parameters -- this is where `onRemoved` lives. The
+    // first version only scanned arrow parameters, which is why it reported
+    // `onRemoved` as free when it has been a parameter all along.
+    const head = body.slice(0, body.indexOf('{'));
+    for (const part of head.replace(/^[^(]*/, '').replace(/\)\s*\{?$/, '').split(',')) {
+      const n = part.trim().split(/[:=]/)[0].trim().replace(/^[.]{3}/, '');
+      if (/^[A-Za-z_$][\w$]*$/.test(n)) scope.add(n);
+    }
+    for (const m of body.matchAll(/\(([^)]*)\)\s*=>/g)) {
+      for (const part of m[1].split(',')) {
+        const n = part.trim().split(/[:=]/)[0].trim().replace(/^\.\.\./, '');
+        if (/^[A-Za-z_$][\w$]*$/.test(n)) scope.add(n);
+      }
+    }
+    for (const m of body.matchAll(/\b(?:const|let|var|function)\s+([A-Za-z_$][\w$]*)/g)) scope.add(m[1]);
+    // Names read off an object or a call are properties, not variables.
+    const read = new Set();
+    for (const m of body.matchAll(/(?<![.\w$'"])([A-Za-z_$][\w$]*)\s*[.[(]/g)) read.add(m[1]);
+    const suspicious = [...read].filter((id) => !scope.has(id) && !globals.has(id) && !keywords.has(id));
+    assert.deepEqual(suspicious, [],
+      `${fn} reads names that are not parameters, locals, module declarations or globals: ${suspicious.join(', ')}`);
+  }
+});
