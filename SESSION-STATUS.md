@@ -189,3 +189,47 @@ absence.
 
 **Next:** owner reviews the diff and tests the swipe on the iPhone. Deploy
 only after that.
+
+## WS42 — deployed — 2026-10-02T06:05Z
+
+**Commits:** `d37f586` (source + tests + docs) -> `7f2aa36` (artifacts).
+Pushed; `local == origin/main`. Bundle `app.cad98830.js`, build id **d37f586**.
+
+**Deploy checks, each run individually against the LIVE site:**
+1. **PASS** — suite green and the count went UP: 429/429, was 412 (+17).
+2. **PASS** — diff read. Changed: `app.js`, `styles.css`,
+   `tests/itunes-podcast.test.mjs`, `ENHANCEMENTS.md`, `SESSION-STATUS.md`,
+   `AGENTS.md` + instructions, plus mechanical artifacts (`index.html`,
+   `sw.js`, hashed js/css). Nothing outside the stated scope moved; no
+   transport, poll, schedule or timing constant was touched.
+3. **PASS** — driven in a browser against the **built bundle**, asserting on
+   rendered DOM.
+4. **PASS** — the reported defect, checked against the owner's words. Mixed
+   order moved in Settings and **stayed** on the main page.
+5. **PASS** — neighbours spot-checked: SR-only podcast order unchanged, an
+   existing user with no order key sees no change and gets no key created,
+   removal cleans the key, vertical/rightward/short swipes all inert.
+6. **PASS** — artifacts produced, and the **hashed** bundle contains
+   `podcastRowOrder` (8), `enableSwipeToRemove` (3) and the order key (1), and
+   **no** `moveExternalPodcast`.
+
+**A propagation delay occurred and was NOT mistaken for a failure.** The first
+live check returned **404** on `app.cad98830.js` and showed `index.html` still
+pointing at `app.b9a35330.js`. Per the propagation rule I confirmed the commit
+was on the remote and the raw host served the file (HTTP 200, contents
+verified) before concluding **propagating, not failed**. A later check showed
+Pages serving the new bundle.
+
+**Live verification on the real site** (service worker unregistered first, or
+a stale precache would serve the old bundle and invalidate everything):
+`app.cad98830.js` loaded, mixed order moved two places up in Settings, and the
+home page showed **Dear Young Person, Ekot granskar, P4 Psykologen** — the
+arrangement held. Build id on screen: **d37f586**.
+
+**What deploying does NOT establish:** the checks prove the right code is
+**served**. They say nothing about how the swipe **feels**, and nothing about
+audio. The owner's iPhone is still the only thing that settles that.
+
+**Next:** owner checks build **d37f586** on the phone — confirm the swipe feels
+right, that a vertical long-press still reorders, and that removing a podcast
+can be undone.
