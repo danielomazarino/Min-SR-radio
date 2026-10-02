@@ -233,3 +233,69 @@ audio. The owner's iPhone is still the only thing that settles that.
 **Next:** owner checks build **d37f586** on the phone — confirm the swipe feels
 right, that a vertical long-press still reorders, and that removing a podcast
 can be undone.
+
+## WS43 — swipe panel covered the row; corrected to the SMS idiom — 2026-10-02T06:50Z
+
+**Baseline:** `npm test` → **429/429** at the start of this work.
+**Scope now:** two owner reports about the swipe panel. (1) It is a red block
+with a "Ta bort" caption, not like an SMS app. (2) *"we can't have a red
+overlay over the old view — the user can't see which channels and podcasts that
+are in the favorites section at all."*
+
+**Test count:** 429 → **453** (+24). Suite **453/453**.
+
+**Root cause 1 — wrong idiom.** A full-width red block with a written caption.
+iOS Mail / WhatsApp slide the row to uncover a plain coloured area with a
+**glyph**. Caption removed, trash icon added.
+
+**Root cause 2 — a CSS painting-order trap, and the reason the list became
+unreadable.** The row is `position: relative`, the panel `position: absolute`,
+and the row's children were `position: static`. **Positioned elements paint
+above all non-positioned siblings**, so the panel covered everything *despite
+being written first in the DOM*. Source order does not cross the positioning
+boundary. Fixed by giving every content child `position: relative` with no
+offsets — it moves nothing, and only changes paint order.
+
+**MEASURED by screenshot, not by reading code:** before, the row was a red
+block with only the reorder grip faintly visible — name, logo, position and
+controls all hidden. After, at 75 px and 165 px of swipe: content transform
+`-165px`, panel transform `none`, all four content parts still visible.
+
+**The gesture had to change too.** It was translating the **whole row**, which
+would drag the panel sideways and leave nothing to uncover. It now captures the
+content layer (every child except `.swipe-reveal`) on touchstart and
+translates only that.
+
+**Verified in a browser:** external podcast swiped out (SR storage untouched,
+toast names it), SR podcast swiped out (external storage untouched), undo
+restores both with position, vertical/rightward/short swipes inert.
+
+**A TOOLING FAILURE, recorded because it nearly cost the diagnosis.** Three
+`replace_string_in_file` calls reported success and did not apply. The next
+browser check showed unchanged behaviour, which is indistinguishable from "the
+fix does not work" — and I nearly re-diagnosed a correct fix as broken. All
+three were re-applied with Python using `assert s.count(marker) == 1`, which
+fails loudly. Every later edit used the same guard.
+
+### CORRECTION to what I said earlier in this session
+
+I earlier reported WS47 as "uncommitted in-flight work" and that my work
+"cleared a pre-existing WS38/WS47 failure". **Both were wrong.** Measured:
+
+- `ws47EffectiveEdgeS` was committed in **`6df011e`** ("WS47: derive the
+  effective media edge at runtime"), so it is **already deployed**.
+- The failing WS38 assertion came from the **same commit's** test.
+- `git stash` of every uncommitted file shows **HEAD is 451/451 GREEN**.
+
+So the red suite I saw at the start of this turn was caused by **my own
+partially-applied edits landing in a different order**, not by WS47. WS47 is
+untouched by this work and remains parked as an experiment.
+
+**Not proven / not done:**
+- **Device feel is NOT verified.** Layering is proven by screenshot and computed
+  style; the feel of the slide and iOS Safari's cooperation are not.
+- The commit threshold is 35 % of the row: ~149 px on a 425 px row, ~123 px on
+  a 350 px phone row. Deliberately relative, but never checked against a thumb.
+- Not committed, not pushed.
+
+**Next:** owner reviews, then tests the slide on the phone.

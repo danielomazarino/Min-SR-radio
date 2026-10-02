@@ -6700,3 +6700,90 @@ pins the *fallback* — it must degrade to the id, never to `undefined`.
   mutation-verified, but was **not** driven in the browser this session.
 - No analytics, no offline story, no second provider.
 - Not committed, not pushed.
+
+## 2026-10-02 — WS43: the swipe panel COVERED the row — fixed to the SMS idiom
+
+**Status: DONE — code complete and browser-driven. NOT committed, NOT deployed.**
+Owner-reported: *"the swipe area is red with a Ta bort text. but it should of
+course be as for messages in an sms-app or whatsapp"*, followed by *"we can't
+have a red overlay over the old view. the user can't see which channels and
+podcasts that are in the favorites section at all."*
+
+Tests **429 → 453** (+24). 3 further mutations applied, 3 red.
+
+### The defect had TWO causes, and the second was invisible in code review
+
+**Cause 1 — it was not the SMS idiom.** The panel was a full-width red block
+with the caption "Ta bort" painted on it. In iOS Mail and WhatsApp the row
+**slides** to uncover a plain coloured area carrying a **glyph**; there is no
+written label. Fixed: caption removed, a trash icon added.
+
+**Cause 2 — a CSS painting-order trap.** This is the reason the owner's second
+report says the favourites list became *unreadable*, and no amount of choosing
+a better colour would have fixed it.
+
+The row is `position: relative` and the panel is `position: absolute`, while
+the row's own children — `.selected-name`, `.selected-logo`, `.selected-pos`,
+`.selected-controls` — were `position: static`. **In CSS, positioned elements
+paint above all non-positioned siblings.** So the panel covered the entire row
+*even though it was written first in the DOM and is semantically "behind"*.
+Source order does not help across the positioning boundary.
+
+Confirmed by **screenshot, not by reading the code**: the row showed a red
+block with only the reorder grip faintly visible. Every podcast name, logo and
+control was hidden — exactly what the owner described.
+
+Fix: every content child is given `position: relative` with no offsets. That
+lifts them into the positioned layer too, so source order finally decides —
+panel first, content after, content on top. `position: relative` with no
+offsets moves nothing; it only changes paint order.
+
+### The gesture had to change too
+
+The handler was translating **the whole row**, which would have dragged the red
+panel sideways with it and left nothing to uncover. The gesture now captures the
+**content layer** — every child except `.swipe-reveal` — on touchstart, and
+translates only those. The panel stays put, so the row appears to slide off it.
+
+Verified in the browser at two depths (75 px and 165 px): content transform
+`-165px`, panel transform `none`.
+
+### A tooling failure worth recording
+
+Three `replace_string_in_file` calls **reported success and did not apply**.
+The first browser check then showed the old behaviour and it was easy to
+misread that as "the fix does not work". The three edits were re-applied with
+Python using `assert s.count(marker) == 1`, which fails loudly instead of
+silently. Every subsequent edit used the same guard.
+
+This is the §2 rule from the other side: a tool that reports success without
+doing anything is indistinguishable from a fix that was wrong, and both produce
+a browser that looks unchanged.
+
+### Verified in a browser
+
+| check | result |
+|---|---|
+| content vs panel transform | content `-165px`, panel `none` |
+| row readable mid-swipe | **yes** — name, logo, position and controls all visible |
+| panel content | trash icon, **no** caption |
+| swipe removes an iTunes podcast | yes, SR storage untouched, toast names it |
+| swipe removes an SR podcast | yes, external storage untouched, toast names it |
+| undo | restores the podcast and its position |
+| vertical / rightward / short swipes | inert (unchanged) |
+
+Suite **453/453**. Note this also cleared a **pre-existing unrelated failure**
+(WS38/WS47 seek assertion) that was already red before this work started — see
+`SESSION-STATUS.md`; that experiment is parked in `/tmp/w47-preserve/` and was
+**not** touched here.
+
+### Not proven / not done
+
+- **Device feel is NOT verified.** The layering is proven by screenshot and
+  computed style; the *feel* of the slide, and whether iOS Safari's gesture
+  recognition cooperates, still needs the owner's phone.
+- The 425 px row means the commit threshold is ~149 px on this viewport. On a
+  narrow phone the row is ~350 px, so the threshold is ~123 px. Both are
+  deliberate fractions of the row, not fixed pixels — but no threshold has been
+  checked against a real thumb.
+- Not committed, not pushed.

@@ -810,16 +810,45 @@ test('the sheet pick list follows a removal, or Spara would restore it', () => {
     'undo must restore the in-memory pick as well');
 });
 
-test('the swipe reveal is present and the row claims only the horizontal axis', () => {
+test('the swipe reveal is behind the row content, not painted over it', () => {
+  // THE OWNER'S SECOND REPORT: the red panel covered the whole row, so the
+  // favourites list became unreadable exactly when the user was looking at it.
+  // The cause is a CSS painting-order trap, not a colour choice: the panel is
+  // `position: absolute` while the row's children are `position: static`, and
+  // POSITIONED elements paint ABOVE all non-positioned siblings -- so writing
+  // the panel first in the DOM does not put it behind.
+  const css = stripComments(fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8'));
+  // Every content child must be lifted into the positioned layer, and source
+  // order then decides: panel first, content after, content on top.
+  assert.match(css,
+    /\.selected-item > \.selected-grip,[\s\S]*?\.selected-item > \.selected-controls \{\s*position: relative;/,
+    'the row content must be positioned, or the absolute panel paints over it');
+  // The slide must apply to the CONTENT, not the whole row: translating the row
+  // would drag the panel sideways and nothing would be uncovered.
+  const swipe = stripComments(region('function enableSwipeToRemove', 'function rebuildSelected', APP_JS));
+  assert.match(swipe, /const content = \[\.\.\.row\.children\]\.filter\(\(c\) => !c\.classList\.contains\('swipe-reveal'\)\)/,
+    'the gesture must capture the content layer, excluding the panel');
+  assert.doesNotMatch(swipe, /s\.row\.style\.transform/,
+    'the ROW must never be translated -- that moves the panel with it');
+  assert.match(swipe, /s\.content\.forEach\(\(el\) => \{/);
+});
+
+test('the reveal carries an icon and no caption', () => {
+  // Owner: it should look "as for messages in an sms-app or whatsapp". Those
+  // use a plain coloured panel with a glyph, not a written label.
   const grp = stripComments(region('function buildSelectedGroup', 'function enableDragSort', APP_JS));
-  assert.match(grp, /class: 'swipe-reveal'/, 'a swipe with no cue is undiscoverable');
+  assert.match(grp, /class: 'swipe-reveal-icon'/, 'the panel must carry an icon');
+  assert.doesNotMatch(grp, /class: 'swipe-reveal', 'aria-hidden': 'true', text:/,
+    'no written caption on the panel');
+});
+
+test('the reveal is a full-bleed panel behind the row, and the row stays readable', () => {
+  const grp = stripComments(region('function buildSelectedGroup', 'function enableDragSort', APP_JS));
   assert.match(grp, /'aria-hidden': 'true'/, 'the cue is decorative; the ✕ button carries the name');
 
   const css = stripComments(fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8'));
   assert.match(css, /\.swipe-reveal \{[\s\S]*?background: var\(--danger/,
     'the reveal must use the existing --danger token, not a second red');
-  // pan-y leaves vertical panning to the scroller, which is what stops Safari
-  // fighting the page for the gesture.
   assert.match(css, /\.selected-item \{ position: relative; touch-action: pan-y; \}/);
 });
 

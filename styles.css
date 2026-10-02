@@ -153,26 +153,50 @@ a:focus-visible {
 }
 .selected-item.dragging { opacity: 0.45; outline: 1.5px dashed var(--accent); }
 
-/* Swipe-to-remove (2026-10-02). The reveal sits BEHIND the row, so the row
-   itself slides left to uncover it -- the standard iOS pattern. Without a
-   visible cue the gesture is undiscoverable, and an undiscoverable
-   destructive gesture is worse than none. */
+/* Swipe-to-remove (2026-10-02), in the iOS Mail / WhatsApp idiom: the row's
+   CONTENT slides left to uncover a coloured delete panel behind it. The
+   podcast stays readable the whole time -- the owner was explicit that a
+   covered row makes the favourites list unreadable, which is the one thing
+   this list must never be.
+
+   THE PAINTING-ORDER TRAP, which is the whole reason this needs care. The row
+   is `position: relative` and the panel is `position: absolute`, while the
+   row's own children (.selected-name, .selected-logo, .selected-pos) are
+   `position: static`. In CSS, POSITIONED elements paint above all
+   non-positioned siblings -- so the panel covered the entire row even though
+   it was written first and is semantically "behind". Giving every content
+   child `position: relative` puts them in the positioned layer too, and
+   source order then decides: panel first, content after, content on top. */
 .selected-item { position: relative; touch-action: pan-y; }
+
 .swipe-reveal {
   position: absolute;
   inset: 0;
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  padding-right: 18px;
+  padding-right: 20px;
   border-radius: var(--radius-sm);
   background: var(--danger, #c0392b);
   color: #fff;
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
   pointer-events: none;
+  /* No transition here: the PANEL does not move. The row slides across it,
+     which is what produces the "wipe away" feel. */
 }
+.swipe-reveal-icon { display: flex; align-items: center; }
+.swipe-reveal-icon svg { width: 22px; height: 22px; }
+
+/* The content layer. `position: relative` with no offsets moves nothing; it
+   only lifts these above the absolutely-positioned panel. Without this the
+   panel paints over the name and logo (observed in a screenshot, not guessed). */
+.selected-item > .selected-grip,
+.selected-item > .selected-pos,
+.selected-item > .selected-logo,
+.selected-item > .selected-name,
+.selected-item > .selected-controls {
+  position: relative;
+}
+
 .selected-item.swiping { cursor: grabbing; }
 .selected-item.swiping .selected-grip { opacity: 0.4; }
 
