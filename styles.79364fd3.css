@@ -2042,3 +2042,40 @@ body.player-gesture-lock {
   .icon-row, .icon-scroller { gap: 8px; }
   .stream-icon, .icon-empty { border-radius: 14px; }
 }
+
+/* ---------- E2: Spotify / YouTube search links in the expanded player ----------
+   Icons ONLY, per the brief: no text labels, visually discreet, minimal. The
+   glyph is a letter rather than a brand logo -- shipping the real Spotify and
+   YouTube marks would be using trademarks the app has no licence for, and a
+   plain letter in the brand colour is unmistakable in context.
+
+   The row is a flex sibling inside .expand-row, so it sits beside the song
+   text and never pushes the title narrower than it has to. `flex: none` stops
+   it being squeezed by a long title. */
+.song-links {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+}
+.song-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  text-decoration: none;
+  color: var(--song-tint, var(--text-secondary));
+  border: 1px solid color-mix(in srgb, var(--song-tint, #888) 45%, transparent);
+  background: color-mix(in srgb, var(--song-tint, #888) 10%, transparent);
+  -webkit-tap-highlight-color: transparent;
+}
+.song-link-glyph {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+.song-link:active { opacity: 0.6; }
+.song-link:focus-visible { outline: 2px solid var(--song-tint, #888); outline-offset: 2px; }
