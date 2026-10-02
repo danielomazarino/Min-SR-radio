@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = 'fd4bfcb';
+  const APP_BUILD = '13e15ec';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -10044,6 +10044,15 @@ function seekMeasureRecordText() {
   // in the background -- which also keeps the feature useful on the train.
 
   const WEATHER_KEY = 'minradio.weather.v1';
+  // WS46. Set the FIRST time the app asks the OS for location, and never
+  // cleared. It is NOT the permission -- only the browser can grant that. It
+  // records "we have already put this question to the user", which is what
+  // lets a later open decide not to ask again.
+  const WEATHER_ASK_KEY = 'minradio.weather.asked.v1';
+  // How old a cached reading may be and still be shown WITHOUT asking for
+  // location at all. Half an hour of weather in a header is indistinguishable
+  // from now, and not asking is worth far more than one fresher degree.
+  const WEATHER_FRESH_MS = 30 * 60 * 1000;
   const WEATHER_MAX_AGE_MS = 6 * 60 * 60 * 1000;   // decision 3
   const WEATHER_REFRESH_MS = 30 * 60 * 1000;       // refresh well inside the TTL
 
@@ -10092,6 +10101,23 @@ function seekMeasureRecordText() {
 
   function writeWeatherCache(v) {
     try { localStorage.setItem(WEATHER_KEY, JSON.stringify(v)); } catch { /* private mode */ }
+  }
+
+  /**
+   * Has this browser EVER been asked for location by this app?
+   *
+   * This is deliberately NOT a permission check. `navigator.permissions` is not
+   * implemented on iOS Safari, and building the fix on a feature-detected API
+   * that may be absent turns it into a hard dependency on the one platform that
+   * matters most here. The flag is a plain localStorage string: it cannot claim
+   * permission was granted, and it cannot break if the Permissions API is gone.
+   */
+  function hasAskedForLocation() {
+    try { return localStorage.getItem(WEATHER_ASK_KEY) === '1'; } catch { return false; }
+  }
+
+  function markAskedForLocation() {
+    try { localStorage.setItem(WEATHER_ASK_KEY, '1'); } catch { /* private mode */ }
   }
 
   function formatTemp(t) {
@@ -10189,7 +10215,6 @@ function seekMeasureRecordText() {
     const bar = document.querySelector('.topbar');
     if (!bar) return;
     let chip = bar.querySelector('.weather');
-    if (!rec) return;                       // keep whatever is already there
     if (!chip) {
       // A NEW CHILD IS NOT ADDED TO .topbar. That bar is
       // `justify-content: space-between` and WS11 added a third child, which
@@ -10203,9 +10228,59 @@ function seekMeasureRecordText() {
       holder.appendChild(brand);
       chip = el('div', { class: 'weather' });
       holder.appendChild(chip);
+      // WS46: the chip is the user's way OUT of a stale reading. Now that the
+      // app stops asking for location it does not need, a header can honestly
+      // be an hour old -- and without a manual refresh the only cure would be
+      // to re-ask on every open, which is the behaviour this change removes.
+      // One deliberate tap is not a prompt storm.
+      //
+      // Keyboard parity: this is a real control now, so it must be reachable
+      // and activatable without a pointer.
+      chip.setAttribute('role', 'button');
+      chip.setAttribute('tabindex', '0');
+      const onChipActivate = () => refreshWeatherNow();
+      chip.addEventListener('click', onChipActivate);
+      chip.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();        // Space would scroll the page
+        onChipActivate();
+      });
     }
-    const glyph = weatherGlyph(rec.code);
+    // WS46: this branch is only reachable for a chip that has NEVER had a
+    // reading -- if one already showed a temperature, the guard below returns
+    // first. That is what keeps WS45's "a failed refresh never blanks the
+    // header" guarantee intact while still giving a user with no reading at
+    // all something to tap. The two requirements are not in conflict once the
+    // empty state is scoped this narrowly.
+    if (!rec) {
+      // An EMPTY chip is repainted here only because it is empty: a chip that
+      // already shows a reading must survive a failed refresh untouched
+      // (WS45's "never blanks the header"). `weather-empty` is what makes that
+      // distinction explicit and testable rather than a comment's promise.
+      // A chip that already renders SOMETHING must survive a failed refresh
+      // untouched (WS45). "Something" is measured by the DOM, not by a class:
+      // a freshly created chip has no children yet, so a class-based check
+      // fired on it and left the header blank -- measured as an empty
+      // `<div class="weather">` that could not even be tapped.
+      if (chip.childElementCount > 0) return;
+      chip.textContent = '';
+      chip.appendChild(el('span', { class: 'weather-icon', 'aria-hidden': 'true',
+        html: `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">${WEATHER_ICONS.cloudy}</svg>` }));
+      chip.appendChild(el('span', { class: 'weather-place', text: 'Väder' }));
+      chip.setAttribute('aria-label', 'Visa väder. Tryck för att läsa in plats.');
+      chip.setAttribute('title', 'Tryck för att visa väder här');
+      chip.classList.add('weather-empty');
+      return;
+    }
+    // DEFECT (measured in the browser, not reasoned about): this clear was
+    // removed while reshaping the no-reading branch, so every repaint APPENDED
+    // to the existing children. Measured: the chip read "16°Göteborg16°Göteborg"
+    // -- duplicated, and it would have grown on every refresh. Found only
+    // because the browser assertion read textContent rather than trusting the
+    // source; four rounds of green tests could not see it.
     chip.textContent = '';
+    chip.classList.remove('weather-empty');
+    const glyph = weatherGlyph(rec.code);
     chip.appendChild(el('span', { class: 'weather-icon', 'aria-hidden': 'true',
       html: `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">${WEATHER_ICONS[glyph.id]}</svg>` }));
     chip.appendChild(el('span', { class: 'weather-temp', text: formatTemp(rec.temp) }));
@@ -10324,6 +10399,23 @@ function seekMeasureRecordText() {
     );
   }
 
+  /**
+   * A deliberate tap on the chip: get a reading now, ignoring the gates.
+   *
+   * This is the escape hatch that makes "ask less" safe. The gates exist to
+   * stop the app burning an API call on a 300 m wobble, which is right for an
+   * unattended background refresh and wrong for a person who has just asked.
+   * It is the only path that may call the location API after the app has
+   * already been refused once: a user tapping is a fresh decision, not a
+   * repeat of the original prompt.
+   */
+  async function refreshWeatherNow() {
+    markAskedForLocation();
+    const pos = await locate();
+    if (!pos) return 'no-position';
+    return refreshWeather(pos, { force: true });
+  }
+
   function stopWeatherWatch() {
     if (weatherWatchId === null) return;
     navigator.geolocation.clearWatch(weatherWatchId);
@@ -10350,18 +10442,76 @@ function seekMeasureRecordText() {
       // a schedule but not on every wobble.
       lastFetched = { lat: null, lon: null, at: cached.at, hasPos: false };
     }
-    // The watcher goes in first and unconditionally: it is what makes the
-    // header follow the train, and it also produces the very first fix.
-    startWeatherWatch();
-    // One immediate fix so a cold start with no cache still gets weather even
-    // if watchPosition is slow to deliver its first callback. It is NOT forced:
-    // with a fresh cache the time gate may legitimately decline, and forcing
-    // would spend a call the gates exist to avoid.
-    const pos = await locate();
-    if (pos && !(cached && Date.now() - cached.at < WEATHER_MIN_INTERVAL_MS)) {
-      await refreshWeather(pos);
+    // ---- WS46: do not ask again once we have asked once. ----
+    //
+    // The owner reported: "each time i open the page or pwa app i get the
+    // 'Would like to Use Your location' question". MEASURED in the browser:
+    // every open made TWO geolocation calls -- one watchPosition plus one
+    // getCurrentPosition -- even when the cached reading was one minute old.
+    // A cache the app already had, and a request it had already paid for, were
+    // not enough to stop it asking.
+    //
+    // So the question is now asked at most once per install:
+    //
+    //   * cache younger than WEATHER_FRESH_MS  -> do not ask at all. The chip
+    //     is already painted with something accurate. This is the common case
+    //     for a tester who opens the app every day.
+    //   * already asked before, and no usable cache -> do not ask again.
+    //   * genuinely never asked, or the cache has gone stale -> ask once, and
+    //     record that we did, so the NEXT open is silent.
+    //
+    // What this cannot do: stop iOS from re-prompting when it has decided to.
+    // MDN is explicit that a granted permission's lifetime "depends on the user
+    // agent, and may be time based, session based, or even permanent", and iOS
+    // grants web apps only "Allow Once" / "While Using" -- there is no always
+    // allow. So if the dialog still appears, that is the OS, not this code.
+    // Build the chip on EVERY path, including when there is no reading at all,
+    // so there is always something to tap. This runs BEFORE the early returns
+    // on purpose: an earlier version put the call after them, which meant the
+    // empty state was unreachable on exactly the opens that needed it.
+    renderWeatherChip(cached || null);
+    const age = cached ? Date.now() - cached.at : Infinity;
+    if (cached && age < WEATHER_FRESH_MS) {
+      return;                       // fresh enough: nothing to ask for
     }
+    if (hasAskedForLocation()) {
+      // Already put it to the user once, so this open says nothing. Not even a
+      // watcher: `watchPosition` is a geolocation call like any other and
+      // re-arms the prompt on exactly the opens this change exists to silence.
+      // That was a real defect here, caught by the ordering assertion in the
+      // WS46 test -- the branch looked harmless and was not.
+      //
+      // The cost is honest: a stale header no longer follows a train on its
+      // own. Tapping the chip refreshes it, deliberately, whenever the user
+      // wants. Not asking was the requirement; live tracking cannot be had for
+      // free from a browser that asks once.
+      return;
+    }
+    // First ask. Both geolocation entry points run, and the flag is set BEFORE
+    // the call so a crash or a denied permission cannot make us ask again on
+    // the next open.
+    markAskedForLocation();
+    startWeatherWatch();
+    const pos = await locate();
+    if (pos) await refreshWeather(pos);
   }
+
+  // WS46. `stopWeatherWatch()` existed with no caller at all -- verified by
+  // grep, not assumed. That is the WS7a failure in its purest form: correct
+  // code that never executes. A watch left running in a backgrounded PWA
+  // holds the GPS open for a session nobody is watching, which is the
+  // owner's complaint wearing a different hat. Stop it when hidden, restart
+  // when shown again.
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      stopWeatherWatch();
+    } else {
+      const cached = readWeatherCache();
+      if (!hasAskedForLocation()) return;      // never asked: stay silent
+      if (cached && Date.now() - cached.at < WEATHER_FRESH_MS) return;
+      startWeatherWatch();
+    }
+  });
 
   async function boot() {
     renderSkeletons();
