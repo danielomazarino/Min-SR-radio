@@ -2077,3 +2077,101 @@ test('WS47b: the cooldown must GATE the retry, and this test can prove it', () =
   assert.equal(mk(String(Date.now() - 11 * 60 * 1000)), true,
     'a retry after the cooldown must be allowed, or a transient failure is permanent');
 });
+
+// ---------------------------------------------------------------------------
+// WS48 -- the owner's report, after WS47c shipped:
+//
+//  1. "the app started with 13 degrees and clicking on the weather pill opened
+//     the ios toast for approving location services. is this expected?"
+//  2. "on safari [...] still the italic väder sign and no location services
+//     toast when clicking on it"
+//  3. "update every 5th minute instead of every 30 minutes"
+//
+// (1) was NOT expected. A tap is the CHEAP refresh, so it must not ask for
+// location when the app already holds coordinates -- asking is precisely what
+// saving them was for.
+// ---------------------------------------------------------------------------
+
+test('WS48: a tap must not ask for location when coordinates are already saved', () => {
+  // MEASURED before the fix: with lat/lon in the cache, tapping the pill still
+  // made one getCurrentPosition call. On iOS that is the difference between a
+  // silent refresh and a system dialog -- the exact toast the owner reported.
+  const now = stripComments(grab('refreshWeatherNow'));
+  const held = now.indexOf('readWeatherCache()');
+  const geo = now.indexOf('await locate()');
+  assert.ok(held !== -1 && geo !== -1, 'both the cache read and the position attempt must be present');
+  assert.ok(held < geo,
+    'the saved coordinates must be checked BEFORE reaching for location, or every tap prompts');
+  assert.match(now, /typeof held\.lat === 'number' && typeof held\.lon === 'number'/,
+    'the tap may only use saved coordinates when both are real numbers');
+  assert.match(now, /refreshWeather\(\{ lat: held\.lat, lon: held\.lon \}, \{ force: true \}\)/,
+    'and it must force the refresh, or the gates refuse it and the header stays stale');
+});
+
+test('WS48: the by-name route must SAVE the coordinates it resolves', () => {
+  // MEASURED before the fix: with the geocoding host reachable, a successful
+  // refresh still left the cache without coordinates -- so the by-name route
+  // never made any future open cheaper, and every one of them reached for
+  // location again. It resolved coordinates purely to throw them away.
+  const byPlace = stripComments(grab('fetchWeatherByPlace'));
+  assert.match(byPlace, /return \{ \.\.\.w, lat: hit\.latitude, lon: hit\.longitude \};/,
+    'the resolved coordinates must be returned to the caller, not discarded');
+
+  // Both call sites must persist them.
+  const quiet = stripComments(region('async function refreshWeatherQuietly', '\n  /**'));
+  assert.match(quiet, /lat: byPlace\.lat, lon: byPlace\.lon/,
+    'the quiet refresh must store the coordinates the by-name lookup resolved');
+  const now = stripComments(grab('refreshWeatherNow'));
+  assert.match(now, /lat: byPlace\.lat, lon: byPlace\.lon/,
+    'the tap must store them too -- otherwise a tap never makes the next open cheaper');
+});
+
+test('WS48: the refresh interval is 5 minutes, at the owner\'s request', () => {
+  // "update every 5th minute instead of every 30 minutes". Asserted as the
+  // VALUE and not as the presence of a constant, so it cannot pass while the
+  // number is still 30.
+  assert.match(stripComments(APP_JS), /const WEATHER_REFRESH_MS = 5 \* 60 \* 1000;/,
+    'the owner asked for a 5-minute refresh cadence, and it must be exactly that');
+  // The timer must still use it, and must still skip a hidden app -- a faster
+  // cadence that also polls in the background would be 6x the cost for nothing.
+  const clean = stripComments(APP_JS);
+  const bodyAt = clean.indexOf('if (document.hidden) return;');
+  const timerAt = clean.lastIndexOf('setInterval(() => {', bodyAt);
+  assert.ok(timerAt !== -1 && bodyAt - timerAt < 60,
+    'the weather timer must remain next to its hidden-app guard');
+  const timer = clean.slice(timerAt, timerAt + 400);
+  assert.match(timer, /refreshWeatherQuietly\(\)/,
+    'the timer must still refresh the header');
+  assert.match(timer, /\}, WEATHER_REFRESH_MS\)/,
+    'and it must use WEATHER_REFRESH_MS rather than an invented number');
+  // The in-flight lock is what stops a faster cadence becoming several requests.
+  assert.match(stripComments(region('async function refreshWeather', 'function startWeatherWatch', APP_JS)),
+    /if \(weatherBusy\) return 'busy';/,
+    'one request per tick at most, which matters more now the tick is 6x more frequent');
+});
+
+test('WS48: a permanently denied location must be EXPLAINED, not silently ignored', () => {
+  // MEASURED on the owner's Safari tab: no reading, and iOS returns no position
+  // AND shows no dialog. A tap therefore reached `locate()`, got nothing, and
+  // gave up silently -- the owner saw a dimmed "Väder" that did nothing, which
+  // is indistinguishable from a broken app.
+  //
+  // A denied web permission is permanent: the OS returns nothing and raises
+  // nothing, so NO code in any website can recover it. Only the user can, in
+  // Settings. The honest response is to say so on the chip itself.
+  const now = stripComments(grab('refreshWeatherNow'));
+  assert.match(now, /explainNoLocation\(\)/,
+    'when nothing worked the app must say why, not fail silently');
+  assert.doesNotMatch(now, /if \(!pos\) return 'no-position';/,
+    'the early return removed before the by-name route was the original dead end');
+
+  const fn = stripComments(grab('explainNoLocation'));
+  assert.match(fn, /aria-label/,
+    'the explanation must reach assistive technology, not only sighted users');
+  assert.match(fn, /title/,
+    'and be available on hover for anyone who does not read the visible text');
+  assert.match(fn, /Settings/,
+    'it must name the place the fix lives, or the user cannot act on it');
+  assert.match(fn, /\.weather-place/,
+    'the visible chip text must change too -- a title attribute alone is not visible');
+});
