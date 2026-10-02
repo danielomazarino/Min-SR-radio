@@ -153,6 +153,33 @@ a:focus-visible {
 }
 .selected-item.dragging { opacity: 0.45; outline: 1.5px dashed var(--accent); }
 
+/* Swipe-to-remove (2026-10-02). The reveal sits BEHIND the row, so the row
+   itself slides left to uncover it -- the standard iOS pattern. Without a
+   visible cue the gesture is undiscoverable, and an undiscoverable
+   destructive gesture is worse than none. */
+.selected-item { position: relative; touch-action: pan-y; }
+.swipe-reveal {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 18px;
+  border-radius: var(--radius-sm);
+  background: var(--danger, #c0392b);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+}
+.selected-item.swiping { cursor: grabbing; }
+.selected-item.swiping .selected-grip { opacity: 0.4; }
+
+/* A long-press drag must still be possible, so the row only claims the
+   horizontal axis. pan-y leaves vertical panning to the scroller, which is
+   what Safari needs in order to stop fighting the page for the gesture. */
+
 .selected-grip {
   color: var(--text-secondary);
   flex: none;
@@ -213,6 +240,11 @@ a:focus-visible {
 }
 .selected-btn svg { width: 22px; height: 22px; }
 .selected-btn:disabled { opacity: 0.25; cursor: default; }
+
+/* The explicit remove control. Uses --danger (already defined at the top of
+   this file) rather than introducing a second red. */
+.selected-btn-remove { color: var(--danger); }
+.selected-btn-remove:active { background: rgba(179, 38, 30, 0.12); }
 
 .selected-empty {
   font-size: 13.5px;
@@ -1837,6 +1869,31 @@ body.player-gesture-lock {
   max-width: 88vw;
   text-align: center;
 }
+
+/* Undo toast (2026-10-02). A removal is destructive and easy to trigger by
+   accident, so it always offers a way back. The action is a real <button> so
+   it is reachable by keyboard and announced by a screen reader. */
+.toast-undo {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  text-align: left;
+}
+.toast-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.toast-action {
+  flex: none;
+  border: 1.5px solid currentColor;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  padding: 5px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  /* 44px is the accessible minimum target; the visual box is smaller. */
+  min-height: 32px;
+}
+.toast-action:active { background: rgba(255, 255, 255, 0.14); }
 
 /* ---------- narrow viewports (dev panels, small phones) ---------- */
 @media (max-width: 340px) {
