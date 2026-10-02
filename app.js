@@ -6011,6 +6011,52 @@ function seekMeasureRecordText() {
       html: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>',
     });
 
+    // ---- E2 (2026-10-03): Spotify + YouTube links in the expanded player. ----
+    //
+    // The brief is explicit about the limitation and it is the whole design
+    // constraint: "exact match can NOT be guaranteed -- document this
+    // limitation." These are therefore SEARCH links, not deep links, and the
+    // labels say "Sök" so the reader is never surprised by a search results
+    // page instead of the song.
+    //
+    // Why search and not a direct link: SR's payloads carry no Spotify id for
+    // LIVE tracks, and SR does not publish YouTube ids at all. The old log
+    // claimed `spotifyId` exists in ondemand-tracks -- grep found NO such key
+    // anywhere in app.js or in the responses, so that claim is WITHDRAWN and
+    // not used. Inventing an id would be worse than searching.
+    //
+    // encodeURIComponent, not manual escaping: an artist name with & or / would
+    // otherwise corrupt the query, and this is the class of bug that makes a
+    // link silently wrong rather than visibly broken.
+    const spotifySearchUrl = (artist, title) => {
+      const q = [artist, title].filter(Boolean).join(' ').trim();
+      if (!q) return null;
+      return `https://open.spotify.com/search/${encodeURIComponent(q)}`;
+    };
+    const youTubeSearchUrl = (artist, title) => {
+      const q = [artist, title].filter(Boolean).join(' ').trim();
+      if (!q) return null;
+      return `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`;
+    };
+
+    // ICONS ONLY, per the brief: "Endast ikoner -- inga stora knappar eller
+    // textlabels", "Visuellt diskreta", "UI minimal eftersom funktionen
+    // används sällan". An artist with no title yields no links at all rather
+    // than a row of buttons that cannot search for anything -- a visible
+    // control that cannot work is worse than an absent one.
+    const renderSongLinks = (artist, title) => {
+      const spotify = spotifySearchUrl(artist, title);
+      const youTube = youTubeSearchUrl(artist, title);
+      if (!spotify && !youTube) return null;
+      const link = (href, label, glyph, tint) => el('a', {
+        class: 'song-link', href, target: '_blank', rel: 'noopener noreferrer',
+        'aria-label': label, title: label, style: `--song-tint:${tint}`,
+      }, el('span', { class: 'song-link-glyph', 'aria-hidden': 'true', text: glyph }));
+      return el('div', { class: 'song-links' },
+        spotify ? link(spotify, `Sök "${[artist, title].filter(Boolean).join(' ').trim()}" på Spotify`, 'S', '#1db954') : null,
+        youTube ? link(youTube, `Sök "${[artist, title].filter(Boolean).join(' ').trim()}" på YouTube`, 'Y', '#ff0033') : null);
+    };
+
     const buildExpandPanel = () => {
       const panel = el('div', { class: 'player-expand', role: 'region', 'aria-label': 'Programinformation' });
       // WS0 diagnostics: STABLE IDENTITY for this panel node. Assigned when the
@@ -6106,7 +6152,12 @@ function seekMeasureRecordText() {
           el('div', { class: 'expand-text' },
             el('div', { class: 'expand-label', text: 'Spelas just nu' }),
             el('div', { class: 'expand-title', text: song.title || '' }),
-            song.artist ? el('div', { class: 'expand-sub', text: song.artist }) : null)));
+            song.artist ? el('div', { class: 'expand-sub', text: song.artist }) : null),
+          // E2: the search links ride with the row, INSIDE .expand-row, so they
+          // sit beside the song text rather than floating under it. They are
+          // rendered only when a song exists -- the branch above (no song, talk
+          // content) returns early and never reaches here.
+          renderSongLinks(song.artist, song.title)));
       };
       renderSongView();
       // Re-paint when metadata/artwork arrives after the panel opened.
@@ -7701,37 +7752,89 @@ function seekMeasureRecordText() {
     body.appendChild(el('h2', { class: 'about-title', text: 'Om Min Radio' }));
     body.appendChild(el('p', { class: 'about-version', text: `bygg ${APP_BUILD} · Utvecklad av ${APP_DEVELOPER}` }));
 
-    body.appendChild(el('h3', { class: 'about-heading', text: 'Så fungerar appen' }));
+    // ---- E4 (2026-10-03): the Info page is REWRITTEN, not patched. ----
+    //
+    // The old page was written for an earlier version of this app and had
+    // drifted from it. Concretely, it described a news reader that "cannot
+    // fetch the full article text because of CORS" -- which is a HALF-TRUTH
+    // presented as a wall, and it told the reader the app was about things it
+    // no longer does while omitting the things it now does. The owner's brief:
+    // "E4 should replace the current Info section with better updated
+    // information".
+    //
+    // Two rules for what follows, both learned the hard way in this repo:
+    //   1. Every capability claimed here must be one the app actually has on
+    //      THIS build. A help page that overstates is worse than none, because
+    //      it teaches the reader to distrust the next true sentence.
+    //   2. No technical internals in the primary explanation. The old page
+    //      spent its longest section on why localStorage beats IndexedDB,
+    //      which is an answer to a question nobody asked.
+    //
+    // The technical material is not deleted -- it moves BELOW, into a
+    // "Tekniskt" section that a curious reader can reach, which is what the
+    // original brief asked for ("håll tekniska detaljer borta från den
+    // primära användarförklaringen") and what the old page never did.
+    body.appendChild(el('p', { class: 'about-para',
+      text: 'Min Radio är en enkel radio-spelare för Sveriges Radio. Den körs '
+        + 'precis som en webbsida, men den går att lägga till på din phones '
+        + 'startskärm och då beter den sig som en vanlig app.' }));
+
+    body.appendChild(el('h3', { class: 'about-heading', text: 'Vad du kan göra' }));
     const items = [
-      ['Kanaler', 'Dina 4 favoritkanaler som ikoner. Tryck för att lyssna direkt, tryck igen för att stoppa.'],
-      ['Poddar', 'Dina 4 favoritpoddar som ikoner. Tryck för att spela senaste avsnittet. Pausa, spola ±15 sekunder och dra i tidslinjen i spelaren.'],
-      ['Nyheter', 'Senaste nyheterna från Ekot, nyaste först. Listan är rullbar — antalet (4–20) ställer du in här under Antal nyheter. Tryck på en nyhet för att läsa den direkt i appen.'],
-      ['Ändra favoriter', 'Välj upp till 4 kanaler och 4 poddar — byt enskilda val när som helst, du behöver aldrig börja om.'],
+      ['Lyssna på kanaler', 'Tryck på en kanal för att starta, tryck igen för att '
+        + 'stoppa. Spelaren har paus, ±15 sekunder och en tidslinje.'],
+      ['Spela poddar', 'Tryck på en podd så spelas det senaste avsnittet. Du kan '
+        + 'pausa, spola och lyssna från början av avsnittet.'],
+      ['Läsa nyheter', 'Senaste nyheterna från Ekot, nyaste först. Tryck på en '
+        + 'nyhet för att läsa den i appen.'],
+      ['Se dagens program', 'Håll inne en kanal eller podd och tablån visas — '
+        + 'gårdagens och dagens program för just den kanalen.'],
+      ['Byta ut favoriter', 'Tryck på kugghjulet. Du kan byta en kanal eller podd '
+        + 'när som helst, du behöver aldrig börja om.'],
+      ['Se vädret', 'Temperaturen och platsen visas bredvid namnet. Appen frågar '
+        + 'en gång, och kommer ihåg var du är.'],
     ];
     for (const [t, d] of items) {
       body.appendChild(el('div', { class: 'about-card' },
         el('b', { text: t }), el('span', { text: d })));
     }
 
-    body.appendChild(el('h3', { class: 'about-heading', text: 'Att veta' }));
+    body.appendChild(el('h3', { class: 'about-heading', text: 'Bra att veta' }));
     const knows = [
-      'Allt du väljer sparas på enheten och finns kvar nästa gång du öppnar appen.',
-      'Appen kan installeras på startskärmen (iPhone: Dela → Lägg till på hemskärmen; Android: meny → Lägg till på startskärmen).',
-      'Artiklar läses direkt i appen — ingen inloggning och inga kakor behövs.',
+      'Allt du väljer sparas i telefonen och finns kvar nästa gång du öppnar appen.',
+      'Lägg till appen på startskärmen (iPhone: Dela → Lägg till på hemskärmen) '
+        + 'så startar den som en app, fullskärm och utan adressrad.',
+      'Ingen inloggning behövs, och inga kakor eller annonser.',
+      'Artiklar läses direkt i appen, utan att du lämnar den.',
+      'Vädret behöver platsen bara en gång. Om du nekar tillågelse säger appen '
+        + 'det i stället för att tyst visa fel.',
     ];
     body.appendChild(el('ul', { class: 'about-list' },
       ...knows.map((k) => el('li', { text: k }))));
 
-    body.appendChild(el('h3', { class: 'about-heading', text: 'Hur appen är byggd (för den nyfikne)' }));
+    // The long-press / tablå gesture is the least discoverable thing in the
+    // app, and it is also the one the owner cares about most (WS50 was spent on
+    // it). An old help page that never mentions it is a help page that cannot
+    // answer "why does this happen when I scroll it?".
+    body.appendChild(el('h3', { class: 'about-heading', text: 'Nyfikenhet: håll inne' }));
     body.appendChild(el('p', { class: 'about-para',
-      text: 'Appen har ingen egen server. Det är bara filer på GitHub Pages — som vilken webbsida som helst. All logik körs i telefonens webbläsare.' }));
+      text: 'Håll inne en kanal eller podd i ungefär en halv sekund, så öppnas '
+        + 'tablån med gårdagens och dagens program. På en podd visas i stället '
+        + 'avsnittet. Tryck utan att hålla inne för att bara lyssna.' }));
+
+    body.appendChild(el('h3', { class: 'about-heading', text: 'Tekniskt (för den nyfikne)' }));
+    body.appendChild(el('p', { class: 'about-para',
+      text: 'Appen har ingen egen server. Den är bara filer på GitHub Pages — '
+        + 'som vilken webbsida som helst — och all logik körs i telefonens '
+        + 'webbläsare.' }));
     const tech = [
-      ['Ingen back-end', 'När du trycker på en kanal eller podd pratar appen direkt med Sveriges Radios offentliga servrar (api.sr.se). SR har öppnat sitt API för alla — inget konto krävs, och det tillåter anrop från vilken webbsida som helst.'],
-      ['Dina val stannar i telefonen', 'Favoriter och inställningar sparas i telefonens egen webblagring (localStorage). De skickas ingenstans och finns bara på din enhet — därför fungerar de offline och utan inloggning.'],
-      ['Varför localStorage och inte IndexedDB?', 'IndexedDB är bättre för stora datamängder — men den här appen sparar ca 135 byte (fyra kanal-id:n, fyra podd-id:n, ett tal). Det är 0,003 % av kvoten, och en sparning tar 0,03 millisekunder. IndexedDB hade gett mer kod utan någon vinst. Rätt verktyg för jobbet.'],
-      ['GitHub Pages levererar filerna', 'HTML, CSS, JavaScript och ikoner ligger i ett GitHub-repo och serveras gratis av GitHub Pages. Inget att drifta, inget som kan ligga nere, ingen driftkostnad.'],
-      ['Ljudet kommer från SR', 'Direktradio och poddavsnitt spelas direkt från SR:s ljudservrar — appen är bara en fjärrkontroll och ett spelar-gränssnitt.'],
-      ['Enda begränsningen', 'Hela nyhetstexten kan appen inte hämta själv — SR:s artikelsidor tillåter inte att andra webbsidor läser dem direkt (säkerhetsregeln CORS). Nyhetsläsaren visar därför ingress + bild, med länk till hela artikeln på sverigesradio.se.'],
+      ['Ingen back-end', 'Appen pratar direkt med Sveriges Radios öppna API. '
+        + 'Inget konto krävs, och det är därför appen kan installeras och '
+        + 'fungera utan att någon drifter något.'],
+      ['Dina val stannar i telefonen', 'Favoriter, inställningar och väder '
+        + 'sparas i telefonens egen webblagring. De skickas ingenstans.'],
+      ['Jämte den egna appen', 'Ljudet kommer direkt från SR:s servrar. Appen är '
+        + 'en fjärrkontroll — den har ingen egen arkiv eller egna spellistor.'],
     ];
     for (const [t, d] of tech) {
       body.appendChild(el('div', { class: 'about-card' },
@@ -7740,8 +7843,8 @@ function seekMeasureRecordText() {
 
     body.appendChild(el('h3', { class: 'about-heading', text: 'Datakällor & villkor' }));
     body.appendChild(el('ul', { class: 'about-list' },
-      el('li', {}, 'Kanaler, poddar och ljud: Sveriges Radios öppna API v2'),
-      el('li', {}, 'Nyheter: Ekots nyhetsflöde (api.sr.se)'),
+      el('li', {}, 'Kanaler, poddar, ljud och nyheter: Sveriges Radios öppna API v2'),
+      el('li', {}, 'Väder: Open-Meteo (gratis, utan konto)'),
       el('li', {}, 'Data från ',
         el('a', { href: 'https://www.sverigesradio.se', target: '_blank', rel: 'noopener', text: 'Sveriges Radio' }),
         '. Appen är oberoende av och inte utgiven av Sveriges Radio.')));
@@ -8592,10 +8695,24 @@ function seekMeasureRecordText() {
       el('div', { class: 'sheet-grab', 'aria-hidden': 'true' })));
     sheet.appendChild(el('div', { class: 'sheet-header' }, title, closeBtn));
     sheet.appendChild(el('div', { class: 'sheet-actions' },
+      // E4 (2026-10-03): the button now opens the TESTS page, and the label
+      // says so. The owner's brief: "the diagnostics part should stay on the
+      // current info page and the label of the button change from Info to
+      // Tests."
+      //
+      // Read that requirement carefully, because it is narrower than it looks.
+      // It does NOT mean the diagnostics should become unreachable: the readout
+      // stays exactly where it is, inside this same panel. What changes is that
+      // the button is no longer the way to reach the USER-FACING explanation --
+      // that content is now on the home screen's help page -- so a button
+      // labelled "Info" that opens a timing readout is a LABEL THAT LIES, and a
+      // reader who trusts it opens the wrong thing. "Tests" is what the page
+      // actually is.
       el('button', {
         class: 'sheet-action sheet-action-info', type: 'button',
         onclick: openAbout,
-        text: 'Info',
+        'aria-label': 'Tester och tidsdiagnostik',
+        text: 'Tests',
       }),
       doneBtn));
     sheet.appendChild(newsSetting);

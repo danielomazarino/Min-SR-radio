@@ -120,9 +120,15 @@ function grab(name, src = APP_JS) {
   assert.notEqual(parenEnd, -1, `unbalanced parameter list for ${name}`);
   const braceAt = src.indexOf('{', parenEnd);
   assert.notEqual(braceAt, -1, `no body found for ${name}`);
-  assert.ok(src.slice(parenEnd + 1, braceAt).trim() === '',
+  // What may sit between `)` and the body brace: nothing (a `function`
+  // declaration), or `=>` (an arrow const, which grab() also supports). Anything
+  // else -- notably `{ axis = 'x' }` from a destructured parameter default, which
+  // is INSIDE the parens and so already accounted for -- means the brace we
+  // found is not the body.
+  const gap = src.slice(parenEnd + 1, braceAt).trim();
+  assert.ok(gap === '' || gap === '=>',
     `extraction of ${name} stopped at a brace that is not the body -- ` +
-    'a destructured parameter default was mistaken for it');
+    `found ${JSON.stringify(gap)} between the parameters and the brace`);
   let depth = 0;
   for (let i = braceAt; i < src.length; i += 1) {
     if (src[i] === '{') depth += 1;
@@ -137,12 +143,22 @@ function grab(name, src = APP_JS) {
   throw new Error(`unbalanced braces for ${name}`);
 }
 
-/** Build a callable from an extracted function, with injected dependencies. */
+/**
+ * Build a callable from an extracted function, with injected dependencies.
+ *
+ * WS51: arrow consts were already extracted correctly, but they have no name,
+ * so `return ${name}` failed with "X is not defined" -- a harness error that
+ * reads like a missing export in app.js. An arrow is now recognised and
+ * returned directly. Same class as the destructured-parameter trap: the
+ * extractor half-worked, and only the loud failure kept it cheap.
+ */
 function makeFn(name, deps = {}) {
   const body = stripComments(grab(name));
   const keys = Object.keys(deps);
+  const isArrow = /^\s*(?:async\s*)?\(?[^)]*\)?\s*=>/.test(body);
+  const tail = isArrow ? `return (${body.trim().replace(/;$/, '')});` : `return ${name};`;
   // eslint-disable-next-line no-new-func
-  return new Function(...keys, `${body}\nreturn ${name};`)(...keys.map((k) => deps[k]));
+  return new Function(...keys, `${body}\n${tail}`)(...keys.map((k) => deps[k]));
 }
 
 const safeStr = makeFn('safeStr');
@@ -2384,4 +2400,130 @@ test('WS50: the x axis still closes rightward only', async () => {
   const left = fakePanel();
   const rl = await driveSwipe(left, [[300, 200], [260, 200], [210, 200], [200, 200]], { axis: 'x', W: 400 });
   assert.equal(rl.closed, false, 'a leftward flick must not close an x sheet');
+});
+
+// ---------------------------------------------------------------------------
+// WS51 — E2 (Spotify/YouTube search links) and E4 (Info page rewritten).
+//
+// Both are EXECUTED where possible, because §2 is right that a test proving the
+// wrong property is worse than no test. The URL builders are pure and are run
+// against real strings; the Info page is asserted on the properties a reader
+// would actually notice.
+// ---------------------------------------------------------------------------
+
+// --- E2: the search URL builders are pure and correct. ----------------------
+const spotifySearchUrl = makeFn('spotifySearchUrl');
+const youTubeSearchUrl = makeFn('youTubeSearchUrl');
+
+test('E2: spotify search url encodes the artist and title', () => {
+  const url = spotifySearchUrl('Alice Babs', 'Sunshine');
+  assert.equal(url, 'https://open.spotify.com/search/Alice%20Babs%20Sunshine');
+});
+
+test('E2: youtube search url uses search_query', () => {
+  const url = youTubeSearchUrl('Alice Babs', 'Sunshine');
+  assert.equal(url, 'https://www.youtube.com/results?search_query=Alice%20Babs%20Sunshine');
+});
+
+// The bug this guards: an unescaped & or / silently corrupts the query, so the
+// link still opens and still looks right, but searches for the wrong thing.
+test('E2: names containing & or / are encoded, not pasted in raw', () => {
+  const url = spotifySearchUrl('Simon & Garfunkel', 'Sounds of Silence');
+  assert.ok(url.includes('%26'), `& must be encoded, got ${url}`);
+  const y = youTubeSearchUrl('AC/DC', 'Back in Black');
+  assert.ok(!y.slice(y.indexOf('?search_query=') + 14).includes('/'), 'slash must be encoded');
+  assert.ok(y.includes('%2F'), `slash must be percent-encoded, got ${y}`);
+});
+
+// A control that cannot work is worse than an absent one, so an empty query
+// must produce NO url -- never a link to a blank search page.
+test('E2: an empty artist and title yields no url at all', () => {
+  assert.equal(spotifySearchUrl('', ''), null);
+  assert.equal(spotifySearchUrl(null, null), null);
+  assert.equal(youTubeSearchUrl(undefined, undefined), null);
+});
+
+test('E2: a title alone is enough to search', () => {
+  assert.ok(spotifySearchUrl(null, 'Sunshine').includes('Sunshine'));
+  assert.ok(youTubeSearchUrl('', 'Sunshine').includes('Sunshine'));
+});
+
+// The rendered row needs a REAL DOM -- `renderSongLinks` calls the app's own
+// `el()`, which calls document.createElement. A stub would let the row "build"
+// while proving nothing about the markup, so this half is verified in the
+// browser against the rendered DOM instead (see the WS51 browser assertions).
+// What is checkable here is the SHAPE: the helper must be wired to the row and
+// must bail out before building anything when there is nothing to search for.
+const expandPanel = stripComments(region('const buildExpandPanel', 'return panel;', APP_JS));
+test('E2: the song row renders the links, and only in the song branch', () => {
+  assert.match(expandPanel, /renderSongLinks\(song\.artist, song\.title\)/,
+    'the links must hang off the resolved song, not a closure over stale state');
+  // The no-song branch RETURNS EARLY, so a talk channel can never show search
+  // buttons for a song that is not playing.
+  const noSongAt = expandPanel.indexOf('if (!song || !song.title)');
+  const linksAt = expandPanel.indexOf('renderSongLinks(song.artist');
+  assert.ok(noSongAt !== -1 && linksAt > noSongAt,
+    'the links must come after the no-song early return');
+});
+
+test('E2: the helper returns null when there is nothing to search for', () => {
+  const src = stripComments(region('const renderSongLinks', 'return el(\'div\'', APP_JS));
+  assert.match(src, /if \(!spotify && !youTube\) return null;/,
+    'a control row that cannot work is worse than no row');
+  // And the two platforms must both be present, because the brief asks for both.
+  assert.match(src, /spotify/i);
+  assert.match(src, /youTube/i);
+});
+
+// E4: the Info page. Asserted on content, not on the old wording.
+test('E4: the Info page explains the long-press tablå gesture', () => {
+  const about = stripComments(region('function openAbout', 'about.appendChild(body)', APP_JS));
+  assert.match(about, /håll inne/i,
+    'the least discoverable feature must be documented somewhere');
+});
+
+test('E4: the Info page documents the weather permission honestly', () => {
+  const about = stripComments(region('function openAbout', 'about.appendChild(body)', APP_JS));
+  assert.match(about, /väder|plats/i, 'the header weather chip is part of the app');
+  assert.match(about, /en gång|behöver platsen bara en gång/i,
+    'the one-time location prompt is the surprising part and must be stated');
+});
+
+// The old page told the reader the news text could not be fetched "because of
+// CORS", presented as a hard wall. The app DOES read articles in-app, so a
+// reader who meets that sentence learns to distrust the page.
+test('E4: the Info page no longer claims CORS blocks the news text', () => {
+  const about = stripComments(region('function openAbout', 'about.appendChild(body)', APP_JS));
+  assert.doesNotMatch(about, /CORS/,
+    'a stale half-truth about CORS must not survive the rewrite');
+});
+
+// The internals dump (localStorage vs IndexedDB) is the thing the owner asked to
+// keep out of the primary explanation. It may still exist BELOW, so the check
+// is that it did not lead.
+test('E4: IndexedDB internals are not in the user-facing half', () => {
+  const about = stripComments(region('function openAbout', 'about.appendChild(body)', APP_JS));
+  const techAt = about.indexOf('Tekniskt');
+  assert.notEqual(techAt, -1, 'the technical section must still exist');
+  assert.ok(about.indexOf('IndexedDB') === -1 || about.indexOf('IndexedDB') > techAt,
+    'IndexedDB rationale belongs below the fold, not in the explanation');
+});
+
+// The diagnostics must NOT have been removed by the rewrite. This is the part
+// of the brief most likely to be broken by a careless "replace the Info page".
+test('E4: the diagnostics readout survived the Info rewrite', () => {
+  const about = region('function openAbout', 'about.appendChild(body)', APP_JS);
+  assert.match(about, /Visa tidsdiagnostik/, 'the diagnostics switch must remain');
+  assert.match(about, /syncSwitch\(\)/, 'and it must still be wired');
+  assert.match(about, /startReadout|stopReadout/, 'and still start/stop on open');
+});
+
+// The button label is the owner's explicit instruction.
+test('E4: the sheet button is labelled Tests, not Info', () => {
+  const sheet = stripComments(region('function openSheet', 'swipeSurface', APP_JS));
+  assert.match(sheet, /text: 'Tests'/, 'the button must read Tests');
+  assert.doesNotMatch(sheet, /text: 'Info'/, 'the old Info label must be gone');
+  // And it must still be the same handler -- renaming a button must not
+  // silently unhook the page it opens.
+  assert.match(sheet, /onclick: openAbout/, 'Tests must still open the same panel');
 });
