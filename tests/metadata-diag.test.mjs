@@ -74,6 +74,82 @@ function region(startMarker, endMarker, src = APP_JS) {
   return src.slice(a, b);
 }
 
+// ---------------------------------------------------------------------------
+// Executed-branch harness (added 2026-10-02, iTunes integration).
+//
+// WHY THIS EXISTS, in the repo's own terms: app.js is a 9000-line IIFE and the
+// suite asserts on SOURCE TEXT. That can prove a call exists; it cannot prove
+// the branch runs. So for the one place where a new branch was inserted in
+// front of an existing, settled behaviour (the podcast icon tap), the only
+// honest guard is to EXTRACT the real expression and RUN it.
+//
+// Three traps this harness is written to avoid, all of which have bitten this
+// repo before (AGENTS.md §7):
+//   1. A regex that silently matches nothing is read as "the code is gone".
+//      Extraction is positional and asserts on both anchors.
+//   2. A harness that runs zero times still exits 0. `onclickCanary` is a
+//      counter the EXTRACTED code increments, asserted on every run.
+//   3. `new Function(body)` with a function *declaration* as the body is
+//      hoisted and never invoked. We wrap the extracted ARROW BODY and call it.
+// ---------------------------------------------------------------------------
+
+// Counts executions of extracted code. Printed by the canary test.
+let onclickCanary = 0;
+
+/**
+ * Pull the arrow body out of `onclick: () => (...)` by paren matching.
+ * Returns the body including its wrapping parens.
+ */
+function extractOnclick(src) {
+  const anchor = src.indexOf('onclick: () => (');
+  assert.notEqual(anchor, -1, 'onclick: () => (...) not found in buildIconSection');
+  const open = src.indexOf('(', anchor + 'onclick: ()'.length);
+  assert.notEqual(open, -1, 'could not find the opening paren of the onclick body');
+  let depth = 0;
+  for (let i = open; i < src.length; i += 1) {
+    if (src[i] === '(') depth += 1;
+    else if (src[i] === ')') {
+      depth -= 1;
+      if (depth === 0) return src.slice(open, i + 1);
+    }
+  }
+  throw new Error('unbalanced parens in the onclick body -- extraction is broken, '
+    + 'NOT a finding about app.js');
+}
+
+/**
+ * Execute an extracted onclick body with the given state and report which
+ * playback function it reached.
+ */
+function runOnclick(expr, isPod, isExtPod, item) {
+  const fn = new Function(
+    'isPod', 'isExtPod', 'item', 'playPodcast', 'playExternalPodcast',
+    'toggleTrack', 'liveCandidates',
+    `return () => ${expr};`
+  );
+  return fn(
+    isPod, isExtPod, item,
+    (id) => { onclickCanary += 1; return `playPodcast(${id})`; },
+    (pod) => { onclickCanary += 1; return `playExternalPodcast(${pod.id})`; },
+    () => { onclickCanary += 1; return 'toggleTrack'; },
+    () => []
+  )();
+}
+
+test('CANARY: the executed-branch harness really runs app.js code', () => {
+  // If this fails, every assertion made with extractOnclick/runOnclick above is
+  // void -- they would have "passed" without executing anything at all.
+  const expr = extractOnclick(stripComments(
+    region('function buildIconSection(', '$main.appendChild(buildIconSection')
+  ));
+  const before = onclickCanary;
+  const got = runOnclick(expr, true, false, { id: 1 });
+  assert.equal(onclickCanary, before + 1,
+    'the extracted code must actually execute -- a counter that does not move '
+    + 'means the harness proved nothing');
+  assert.equal(got, 'playPodcast(1)');
+});
+
 const HOOK = region(
   '// ================= WS0: metadata diagnostics hook =================',
   '// ---------------- boot ----------------'
@@ -3610,8 +3686,35 @@ test('WS20: the podcast icon must be UNCHANGED, and tap still plays the latest',
   // The behaviour that IS by design, asserted so a future pass cannot change it
   // by accident: a tap plays the newest episode, and the long-press episode
   // list is untouched.
-  assert.ok(/onclick: \(\) => \(isPod \? playPodcast\(item\.id\)/.test(build),
-    'a tap must play the latest episode: that is the original design (WS20)');
+  //
+  // RESTATED 2026-10-02 (iTunes integration), and strengthened rather than
+  // weakened. The old assertion was a literal pattern:
+  //   /onclick: \(\) => \(isPod \? playPodcast\(item\.id\)/
+  // which went red because an external branch was added in FRONT of the SR
+  // call, not because the SR behaviour changed. The requirement (a tap plays
+  // the newest episode) is UNCHANGED and NOT superseded.
+  //
+  // A pattern is the wrong instrument here: it cannot tell "the SR tap still
+  // plays the podcast" from "some text resembling that still exists". This now
+  // EXTRACTS the real onclick expression out of app.js and EXECUTES it for all
+  // three cases. Per AGENTS.md §7a, proving the old text was gone is not
+  // evidence the new text is right -- so this asserts the new path is REACHED,
+  // and the canary below proves the harness ran the extracted code at all.
+  const onclickExpr = extractOnclick(build);
+  const srTap = runOnclick(onclickExpr, true, false, { id: 164 });
+  assert.equal(srTap, 'playPodcast(164)',
+    'a tap must play the latest episode: that is the original design (WS20). '
+    + 'The external branch must not have displaced the SR one.');
+
+  // Same guarantee for the NEW path, so adding it is not a free ride.
+  const extTap = runOnclick(onclickExpr, true, true, { id: 251955878 });
+  assert.equal(extTap, 'playExternalPodcast(251955878)',
+    'an external podcast tap must reach playExternalPodcast, not fall through '
+    + 'to the SR endpoint with a collectionId');
+  const chanTap = runOnclick(onclickExpr, false, false, { id: 132 });
+  assert.equal(chanTap, 'toggleTrack',
+    'a channel tap must still play the live stream (WS20)');
+
   assert.ok(/addLongPress\(btn, \(\) => \(isPod \? openPodcastCard/.test(build),
     'the long-press episode list must survive untouched (WS20)');
   assert.ok(/Spela senaste avsnittet av/.test(build),

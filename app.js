@@ -239,6 +239,288 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     };
   }
 
+  // ---------------- external podcasts (Apple/iTunes), ADDITIVE ----------------
+  // A SECOND source, not a replacement. Everything above this line is the
+  // Sveriges Radio path and is deliberately untouched.
+  //
+  // WHY THIS EXISTS: iTunes Search (media=podcast) returns ONE record per
+  // podcast -- no episode data at all. But the Lookup API with
+  // `entity=podcastEpisode` returns real episode records INCLUDING a direct
+  // `episodeUrl`, verified 2026-10-02 to be the FULL file (one case: 3474 s
+  // declared, content-length 55,603,624 = 128 kbps x 57.9 min, exact).
+  // That bypasses the publisher's RSS feed entirely, which matters because
+  // only 121 of 272 sampled Swedish feeds send CORS headers.
+  //
+  // ID SPACE: SR podcast ids are small integers (78..6706); iTunes
+  // collectionIds are large (e.g. 251955878). They are kept in SEPARATE
+  // storage (below) rather than namespaced into one array, so no id can
+  // ever resolve against the wrong catalogue and the existing SR favourites
+  // stay byte-for-byte compatible.
+  const ITUNES_API = 'https://itunes.apple.com';
+  // Only search once the user has typed enough to be deliberate. Below 3
+  // characters this would fire on every keystroke against a catalogue we
+  // never preload.
+  const EXT_SEARCH_MIN_CHARS = 3;
+  const EXT_SEARCH_LIMIT = 20;
+  const EXT_EPISODE_LIMIT = 20;
+  // Episode lists change on a podcast's own schedule (daily at best), so a
+  // 30 min cache is generous and keeps repeat opens cheap.
+  const EXT_EPISODE_TTL_MS = 30 * 60 * 1000;
+  const EXTERNAL_PODCASTS_KEY = 'minradio.podcasts.ext.v1';
+
+  // Session caches. Deliberately module-level Maps, NOT localStorage: these
+  // are cheap to rebuild and must never be able to outlive a schema change.
+  const extSearchCache = new Map();
+  const extEpisodeCache = new Map(); // collectionId -> { at, episodes }
+
+  /**
+   * A composite playback-guard key. The SR path already keyed on the raw
+   * podcast id; prefixing BOTH providers means an SR id and an iTunes
+   * collectionId can never compare equal, which is the whole point -- a bare
+   * `251955878` must not be able to satisfy a guard meant for `164`.
+   */
+  function extGuardKey(provider, id) {
+    return `${provider}:${id}`;
+  }
+
+  /** Normalise an iTunes artwork URL to a size the 64 px rows can use. */
+  function extArtwork(url) {
+    if (typeof url !== 'string' || !url) return null;
+    return safeStr(url.replace('600x600', '100x100'), 800) || null;
+  }
+
+  /**
+   * Map one iTunes search record onto the SAME row shape the SR catalogue
+   * already produces (id / name / image / description) so every existing
+   * renderer works unchanged. Provider extras ride along for playback.
+   *
+   * Returns null for a malformed row rather than throwing: one bad record
+   * must not lose the other nineteen results.
+   */
+  function mapExtSearchRow(x) {
+    if (!x || typeof x !== 'object') return null;
+    const id = x.collectionId;
+    if (!Number.isInteger(id) || id <= 0) return null;
+    const name = safeStr(x.collectionName, 120);
+    if (!name) return null;
+    return {
+      id,
+      name,
+      image: extArtwork(x.artworkUrl600),
+      description: safeStr(x.primaryGenreName, 200) || null,
+      provider: 'itunes',
+      artist: safeStr(x.artistName, 120) || null,
+      feedUrl: safeStr(x.feedUrl, 800) || null,
+    };
+  }
+
+  /**
+   * Search the iTunes catalogue. Never throws and never rejects: an
+   * unavailable second source must not be able to fail the SR search, so
+   * every failure path resolves to an empty list.
+   */
+  async function extSearch(query) {
+    const q = (query || '').trim();
+    if (q.length < EXT_SEARCH_MIN_CHARS) return [];
+    if (extSearchCache.has(q)) return extSearchCache.get(q);
+    let out = [];
+    try {
+      const res = await fetch(
+        `${ITUNES_API}/search?term=${encodeURIComponent(q)}` +
+        `&media=podcast&limit=${EXT_SEARCH_LIMIT}&country=SE`
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const rows = Array.isArray(data?.results) ? data.results : [];
+        out = rows.map(mapExtSearchRow).filter(Boolean);
+      }
+    } catch {
+      out = []; // silent by design -- see above
+    }
+    extSearchCache.set(q, out);
+    return out;
+  }
+
+  /**
+   * Sort episodes newest-first, with a deterministic tie-break.
+   *
+   * The tie-break is not decoration. Lookup can return SEVERAL episodes
+   * sharing one releaseDate -- observed once for a daily-bulletin podcast
+   * early on 2026-10-02 (4 episodes on one date). A later 9-podcast sweep
+   * did NOT reproduce it (0 duplicates), so how common this is remains
+   * UNMEASURED. It is kept because it is cheap, and because the failure it
+   * prevents -- order silently depending on server order -- is invisible to
+   * the user rather than obviously wrong. trackId is a large monotonic
+   * integer in practice, so descending trackId resolves same-day entries
+   * deterministically.
+   */
+  function sortExtEpisodes(list) {
+    return [...(Array.isArray(list) ? list : [])].sort((a, b) => {
+      const at = Date.parse(a?.releaseDate || '') || 0;
+      const bt = Date.parse(b?.releaseDate || '') || 0;
+      if (bt !== at) return bt - at;
+      return (Number(b?.trackId) || 0) - (Number(a?.trackId) || 0);
+    });
+  }
+
+  /** Map one iTunes episode record onto the existing episode/card model. */
+  function mapExtEpisode(e) {
+    if (!e || typeof e !== 'object') return null;
+    const title = safeStr(e.trackName, 200);
+    let audioUrl = safeStr(e.episodeUrl || e.previewUrl, 800);
+    // A minority of enclosures are http://. On an https page that is mixed
+    // content, which iOS Safari refuses outright, so upgrade it here rather
+    // than letting the player fail opaquely.
+    if (audioUrl.startsWith('http://')) audioUrl = `https://${audioUrl.slice(7)}`;
+    if (!title || !audioUrl) return null;
+    return {
+      title,
+      description: safeStr(e.description, 600) || safeStr(e.shortDescription, 600) || null,
+      publishDateUtc: Date.parse(e.releaseDate || '') || null,
+      duration: Number.isFinite(e.trackTimeMillis) ? e.trackTimeMillis / 1000 : null,
+      audioUrl,
+      id: Number.isInteger(e.trackId) ? e.trackId : null,
+      artwork: extArtwork(e.artworkUrl600),
+    };
+  }
+
+  /**
+   * Fetch + cache a podcast's episodes. Resolves to an array (possibly
+   * empty) and never rejects: an empty array means "no episodes", which is
+   * ALSO what a bad collectionId returns (HTTP 200, resultCount 0), so the
+   * UI must word that state truthfully rather than calling the podcast
+   * invalid.
+   */
+  async function extEpisodes(collectionId) {
+    const id = Number(collectionId);
+    if (!Number.isInteger(id) || id <= 0) return [];
+    const hit = extEpisodeCache.get(id);
+    if (hit && (Date.now() - hit.at) < EXT_EPISODE_TTL_MS) return hit.episodes;
+    let episodes = [];
+    try {
+      const res = await fetch(
+        `${ITUNES_API}/lookup?id=${id}&entity=podcastEpisode&country=SE&limit=${EXT_EPISODE_LIMIT}`
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const rows = Array.isArray(data?.results) ? data.results : [];
+        episodes = sortExtEpisodes(
+          rows.filter((r) => r && r.wrapperType === 'podcastEpisode')
+        ).map(mapExtEpisode).filter(Boolean);
+      }
+    } catch {
+      episodes = []; // silent: caller renders the empty state
+    }
+    extEpisodeCache.set(id, { at: Date.now(), episodes });
+    return episodes;
+  }
+
+  // ---- external favourites: a SEPARATE key, never the numeric SR array ----
+  function loadExternalPodcasts() {
+    try {
+      const raw = localStorage.getItem(EXTERNAL_PODCASTS_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .filter((p) => p && Number.isInteger(p.id) && typeof p.name === 'string')
+        .slice(0, HARD_CAP)
+        .map((p) => ({
+          id: p.id,
+          name: safeStr(p.name, 120),
+          image: safeStr(p.image, 800) || null,
+          description: safeStr(p.description, 200) || null,
+          provider: 'itunes',
+          artist: safeStr(p.artist, 120) || null,
+          feedUrl: safeStr(p.feedUrl, 800) || null,
+        }));
+    } catch (err) {
+      console.warn('External podcasts storage corrupted, resetting:', err);
+      return [];
+    }
+  }
+
+  function saveExternalPodcasts(list) {
+    try {
+      localStorage.setItem(EXTERNAL_PODCASTS_KEY, JSON.stringify(
+        (Array.isArray(list) ? list : []).slice(0, HARD_CAP)
+      ));
+      return true;
+    } catch (err) {
+      console.warn('Could not save external podcasts:', err);
+      return false;
+    }
+  }
+
+  /** Add or remove an external podcast. Returns true when it is now favourited. */
+  function toggleExternalPodcast(pod) {
+    const list = loadExternalPodcasts();
+    const idx = list.findIndex((p) => p.id === pod?.id);
+    let favourited;
+    if (idx >= 0) {
+      list.splice(idx, 1);
+      favourited = false;
+    } else {
+      if (list.length >= HARD_CAP) {
+        showToast('Du kan inte välja fler. Ta bort en först.');
+        return false;
+      }
+      list.push({
+        id: pod.id, name: pod.name, image: pod.image,
+        description: pod.description, feedUrl: pod.feedUrl, artist: pod.artist,
+      });
+      favourited = true;
+    }
+    saveExternalPodcasts(list);
+    return favourited;
+  }
+
+  /**
+   * Reorder inside the external list. Mirrors moveFavorite(), which is
+   * deliberately left alone: it operates on the SR favourites object.
+   */
+  function moveExternalPodcast(id, direction) {
+    const list = loadExternalPodcasts();
+    const idx = list.findIndex((p) => p.id === id);
+    if (idx === -1) return false;
+    const target = direction === 'up' ? idx - 1 : idx + 1;
+    if (target < 0 || target >= list.length) return false;
+    [list[idx], list[target]] = [list[target], list[idx]];
+    saveExternalPodcasts(list);
+    return true;
+  }
+
+  /** The external rows currently rendered in a reorder group. */
+  function extRows(group) {
+    return [...group.querySelectorAll('.selected-item[data-ext]')];
+  }
+
+  /** Persist a reordered external list straight from the DOM (drag/drop). */
+  function persistExternalOrder(group) {
+    const order = [...group.querySelectorAll('.selected-item[data-ext]')]
+      .map((r) => Number(r.dataset.id));
+    const list = loadExternalPodcasts();
+    const byId = new Map(list.map((p) => [p.id, p]));
+    // Only reorder rows that are still in storage; a row deleted mid-drag
+    // must not resurrect itself.
+    const next = order.map((id) => byId.get(id)).filter(Boolean);
+    for (const p of list) if (!order.includes(p.id)) next.push(p);
+    saveExternalPodcasts(next);
+  }
+
+  /**
+   * Resolve ONE provider's row for rendering. `provider` is explicit on
+   * purpose: SR ids and iTunes collectionIds are both bare integers, so a
+   * shared lookup would let a colliding id render the wrong podcast. Each
+   * list therefore has exactly one source and one writer.
+   */
+  function resolvePodcastRow(catalogue, id, provider) {
+    if (provider === 'itunes') {
+      return loadExternalPodcasts().find((p) => p.id === id) || null;
+    }
+    return catalogue?.find?.((c) => c.id === id) || null;
+  }
+
   function unescapeXml(s) {
     return String(s)
       .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
@@ -6698,6 +6980,67 @@ function seekMeasureRecordText() {
     }
   }
 
+  /**
+   * Play the latest episode of an EXTERNAL (iTunes) podcast.
+   *
+   * Deliberately a separate function rather than a widened playPodcast():
+   * playPodcast() is guarded by tests that assert it compares _podProgramId
+   * and podFetchInFlight against the raw numeric SR id. Widening it would
+   * have put a new branch inside the one function the existing suite most
+   * tightly constrains, for no gain -- the two paths fetch from different
+   * endpoints and share nothing but playTrack().
+   *
+   * GUARD REUSE, and why it is safe: it uses the same two slots, but writes
+   * the PREFIXED key from extGuardKey(). playPodcast() compares those slots
+   * against `programId`, which is always a number on the SR path, so
+   * 'itunes:251955878' === 164 is false -- the SR function simply falls
+   * through to its own fetch, which is the correct behaviour anyway. And both
+   * slots are already cleared by stopAndClosePlayer(), so no stale-flag bug
+   * is introduced by reusing them.
+   */
+  async function playExternalPodcast(pod) {
+    if (!pod || !Number.isInteger(pod.id)) return;
+    const key = extGuardKey('itunes', pod.id);
+    if (audioEl._podProgramId === key && state.current) {
+      // Already loaded and still playing: this tap is pause/resume.
+      if (state.current.kind === 'episode') {
+        toggleTrack(state.current);
+        return;
+      }
+    }
+    // In-flight guard: a second tap before the first resolves is a duplicate.
+    if (podFetchInFlight === key) return;
+    podFetchInFlight = key;
+    showToast('Hämtar senaste avsnittet…', 2000);
+    try {
+      const eps = await extEpisodes(pod.id);
+      const ep = eps[0];
+      if (!ep || !ep.audioUrl) {
+        showToast('Inget avsnitt med ljud hittades.');
+        return;
+      }
+      audioEl._podProgramId = key;
+      playTrack({
+        kind: 'episode',
+        // A missing trackId would collide on `id` with a real episode id, so
+        // fall back to the collectionId rather than to undefined/null.
+        id: ep.id ?? pod.id,
+        title: ep.title || pod.name,
+        subtitle: pod.name,
+        audioUrl: ep.audioUrl,
+        duration: ep.duration,
+        artwork: ep.artwork || pod.image,
+        description: ep.description || pod.description || null,
+        programName: pod.name,
+        image: pod.image || null,
+      });
+    } catch (err) {
+      showToast(err.message || 'Kunde inte hämta avsnittet.');
+    } finally {
+      if (podFetchInFlight === key) podFetchInFlight = null;
+    }
+  }
+
   function playNews(item) {
     if (!item.audioUrl) {
       // Text flash → open the in-app article reader
@@ -6880,7 +7223,10 @@ function seekMeasureRecordText() {
     // momentum scroll) and stops at the last icon — no placeholder slots.
     function buildIconSection(kind, title, catalogue) {
       const isPod = kind === 'podcasts';
-      const list = favs[kind];
+      // External favourites are appended to the SAME row, under the SAME
+      // header. No new section, no new heading: the owner chose one list.
+      const extList = isPod ? loadExternalPodcasts() : [];
+      const list = isPod ? [...favs[kind], ...extList.map((p) => p.id)] : favs[kind];
 
       const sec = el('section', { class: 'section', 'aria-label': title },
         el('h2', { class: 'section-title', text: title }));
@@ -6890,23 +7236,33 @@ function seekMeasureRecordText() {
         scroller.appendChild(el('div', { class: 'icon-empty', 'aria-hidden': 'true' }));
       }
       for (const id of list) {
-        const item = catalogue.find((c) => c.id === id);
+        // Provider-explicit: SR ids and iTunes collectionIds are both bare
+        // integers, so a colliding id must resolve against its OWN list.
+        const item = resolvePodcastRow(catalogue, id, isPod && extList.some((p) => p.id === id) ? 'itunes' : 'sr');
         if (!item) continue; // unknown id — skip silently
+        const isExtPod = isPod && item.provider === 'itunes';
         const btn = el('button', {
           class: `stream-icon${isPod ? ' pod-icon' : ''}`,
           type: 'button',
           role: 'listitem',
-          'data-stream-key': isPod ? `pod:${item.id}` : `live:${item.id}`,
+          // The external key is prefixed so a collectionId can never collide
+          // with an SR podcast id in the playing-mark lookup below.
+          'data-stream-key': isExtPod ? `xpod:${item.id}`
+            : (isPod ? `pod:${item.id}` : `live:${item.id}`),
           'data-stream-title': item.name,
           ...(isPod ? { 'data-stream-label': `Spela senaste avsnittet av ${item.name}` } : {}),
           'aria-pressed': 'false',
           'aria-label': isPod ? `Spela senaste avsnittet av ${item.name}` : `Spela ${item.name}`,
-          onclick: () => (isPod ? playPodcast(item.id) : toggleTrack({
-            kind: 'live', id: item.id, title: item.name, subtitle: 'Direkt',
-            audioUrl: item.liveaudioUrl, artwork: item.image,
-            description: item.tagline || null,
-            candidates: liveCandidates(item),
-          })),
+          // An external row is passed whole, because its episode list comes
+          // from a different endpoint. The SR call site is byte-identical.
+          onclick: () => (isPod
+            ? (isExtPod ? playExternalPodcast(item) : playPodcast(item.id))
+            : toggleTrack({
+              kind: 'live', id: item.id, title: item.name, subtitle: 'Direkt',
+              audioUrl: item.liveaudioUrl, artwork: item.image,
+              description: item.tagline || null,
+              candidates: liveCandidates(item),
+            })),
         });
         // Fas 5: long-press opens the context card (tablå for channels,
         // episode list for podcasts). Tap still plays.
@@ -7531,6 +7887,11 @@ function seekMeasureRecordText() {
   // Podcast card: recent episodes via episodes/index (SR quirk: page 1 is
   // empty for many programs — try page 2 as well).
   function openPodcastCard(pod) {
+    // An external podcast has no SR programme id, so the SR endpoint below
+    // would 404. Split FIRST, before any SR call is made -- otherwise an
+    // external id is sent to api.sr.se and the failure is reported as
+    // "episodes could not be fetched" instead of "no episodes".
+    if (pod?.provider === 'itunes') return openExternalPodcastCard(pod);
     openContextCard({
       title: pod.name,
       subtitle: 'Avsnitt',
@@ -7584,6 +7945,60 @@ function seekMeasureRecordText() {
     });
   }
 
+  /** Episode card for an EXTERNAL podcast, same chrome as the SR one. */
+  function openExternalPodcastCard(pod) {
+    openContextCard({
+      title: pod.name,
+      subtitle: 'Avsnitt',
+      image: pod.image || null,
+      buildBody: (body, close) => {
+        body.appendChild(el('div', { class: 'card-loading', text: 'Hämtar avsnitt…' }));
+        (async () => {
+          const eps = await extEpisodes(pod.id);
+          body.textContent = '';
+          // Worded as "none found", NOT "not found": a bad collectionId
+          // returns HTTP 200 with resultCount 0, i.e. an empty list, and
+          // telling the user the podcast does not exist would be a claim the
+          // response does not support.
+          if (!eps.length) {
+            body.appendChild(el('div', { class: 'state-msg', text: 'Inga avsnitt hittades.' }));
+            return;
+          }
+          const list = el('div', { class: 'card-list', role: 'list' });
+          for (const ep of eps) {
+            const row = el('button', {
+              class: `card-row${ep.audioUrl ? '' : ' no-audio'}`,
+              type: 'button', role: 'listitem',
+              'aria-label': `Spela ${ep.title}`,
+              disabled: !ep.audioUrl,
+            });
+            row.appendChild(el('span', { class: 'card-time', text: formatTime(ep.publishDateUtc) || '' }));
+            row.appendChild(el('span', { class: 'card-title', text: ep.title || '' }));
+            if (ep.duration) row.appendChild(el('span', { class: 'card-state', text: fmtDur(ep.duration) }));
+            if (ep.audioUrl) {
+              row.onclick = () => {
+                close();
+                playTrack({
+                  kind: 'episode', id: ep.id ?? pod.id,
+                  title: ep.title || pod.name,
+                  subtitle: pod.name,
+                  audioUrl: ep.audioUrl,
+                  duration: ep.duration,
+                  artwork: ep.artwork || pod.image,
+                });
+              };
+            }
+            list.appendChild(row);
+          }
+          body.appendChild(list);
+        })().catch(() => {
+          body.textContent = '';
+          body.appendChild(el('div', { class: 'state-msg', text: 'Avsnitten kunde inte hämtas.' }));
+        });
+      },
+    });
+  }
+
   // ---------------- bottom sheet (selection UI) ----------------
   function closeSheet() {
     $sheetRoot.textContent = '';
@@ -7611,20 +8026,39 @@ function seekMeasureRecordText() {
     let doneBtn;
 
     function updateCounter() {
-      const n = picks[tab].length;
+      // Counts BOTH providers. The external list is separate storage, so
+      // counting only picks[tab] reported "0 valda" while a row sat selected
+      // -- and, worse, left the Spara button disabled, so a user whose only
+      // pick was an external podcast could not save at all.
+      const n = picks[tab].length
+        + (tab === 'podcasts' ? loadExternalPodcasts().length : 0);
       counter.textContent = tab === 'channels'
         ? `Kanaler (${n} valda)`
         : `Poddar (${n} valda)`;
     }
 
     function doneBtnState() {
-      const total = picks.channels.length + picks.podcasts.length;
+      const total = picks.channels.length + picks.podcasts.length
+        + loadExternalPodcasts().length;
       doneBtn.disabled = total === 0;
       doneBtn.textContent = 'Spara';
       doneBtn.title = total === 0 ? 'Välj minst en kanal eller podd först' : '';
     }
 
     function togglePick(kind, id) {
+      // External podcasts never enter the numeric SR array -- they live in
+      // their own key, so saveFavorites()/Number.isInteger is not involved and
+      // the SR favourites stay byte-identical. add=true when the row being
+      // tapped is one the ext search just produced.
+      const extRow = items[kind]?.find((i) => i.id === id && i.provider === 'itunes');
+      if (kind === 'podcasts' && (extRow || loadExternalPodcasts().some((p) => p.id === id))) {
+        toggleExternalPodcast(extRow || { id });
+        updateCounter();
+        doneBtnState();
+        renderList();
+        rebuildSelected();
+        return;
+      }
       const arr = picks[kind];
       const idx = arr.indexOf(id);
       if (idx >= 0) {
@@ -7656,7 +8090,10 @@ function seekMeasureRecordText() {
         return;
       }
       for (const item of all) {
-        const selected = picks[tab].includes(item.id);
+        const isExt = item.provider === 'itunes';
+        const selected = isExt
+          ? loadExternalPodcasts().some((p) => p.id === item.id)
+          : picks[tab].includes(item.id);
         const btn = el('button', {
           class: `pick-item${selected ? ' selected' : ''}`,
           type: 'button',
@@ -7671,7 +8108,11 @@ function seekMeasureRecordText() {
         }
         const textWrap = el('div', {},
           el('div', { class: 'pick-name', text: item.name }));
-        const sub = tab === 'channels' ? item.channeltype : item.description;
+        // An external row's genre can be empty, so fall back to the artist
+        // rather than rendering a row with no second line at all.
+        const sub = tab === 'channels'
+          ? item.channeltype
+          : (item.description || item.artist);
         if (sub) textWrap.appendChild(el('div', { class: 'pick-sub', text: sub }));
         btn.appendChild(textWrap);
         btn.appendChild(el('span', { class: 'pick-check', 'aria-hidden': 'true', text: '✓' }));
@@ -7687,9 +8128,14 @@ function seekMeasureRecordText() {
           const all = await fetchPodcasts();
           // client-side search (SR's server-side name filter is broken)
           const q = (query || '').trim().toLowerCase();
-          items.podcasts = q
+          // SR FIRST, unchanged. The external source is appended after it and
+          // can only ever add rows -- extSearch never rejects, so an outage at
+          // Apple leaves this list exactly as it was.
+          const srRows = q
             ? all.filter((p) => p.name.toLowerCase().includes(q))
             : all;
+          const extRows = await extSearch(query);
+          items.podcasts = [...srRows, ...extRows];
         }
         loaded[kind] = true;
       } catch (err) {
@@ -7801,15 +8247,27 @@ function seekMeasureRecordText() {
     function buildSelectedGroup(kind, title, catalogue) {
       const group = el('div', { class: 'selected-group' },
         el('h4', { class: 'selected-group-title', text: title }));
-      const list = loadFavorites()[kind];
+      // One list, both providers, ONE heading. External rows are appended
+      // after the SR rows and marked, so the two storages never interleave
+      // silently and the SR order is preserved exactly.
+      const extList = kind === 'podcasts' ? loadExternalPodcasts() : [];
+      const srIds = loadFavorites()[kind];
+      const list = kind === 'podcasts'
+        ? [...srIds, ...extList.map((p) => p.id)]
+        : srIds;
       if (!list.length) {
         group.appendChild(el('div', { class: 'selected-empty', text: 'Inga valda ännu.' }));
         return group;
       }
       list.forEach((id, pos) => {
-        const item = catalogue.find((c) => c.id === id);
+        const isExt = extList.some((p) => p.id === id);
+        const item = resolvePodcastRow(catalogue, id, isExt ? 'itunes' : 'sr');
         if (!item) return;
-        const rowEl = el('div', { class: 'selected-item', draggable: 'true', 'data-id': String(id) },
+        const rowEl = el('div', {
+          class: 'selected-item', draggable: 'true', 'data-id': String(id),
+          // Marks the row for persistExternalOrder(), which selects on it.
+          ...(isExt ? { 'data-ext': '1' } : {}),
+        },
           el('span', { class: 'selected-grip', 'aria-hidden': 'true',
             html: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 5h2v2H9zM13 5h2v2h-2zM9 9h2v2H9zM13 9h2v2h-2zM9 13h2v2H9zM13 13h2v2h-2zM9 17h2v2H9zM13 17h2v2h-2z"/></svg>' }),
           el('span', { class: 'selected-pos', text: String(pos + 1) }),
@@ -7818,31 +8276,33 @@ function seekMeasureRecordText() {
             : el('span', { class: 'selected-logo selected-letter', text: item.name.slice(0, 1) }),
           el('span', { class: 'selected-name', text: item.name }));
         const controls = el('div', { class: 'selected-controls' });
+        // An external row must not be reordered inside the SR array, and an
+        // SR row must not be moved by the external list's mover -- each
+        // button writes to its OWN storage only.
+        const move = (direction) => {
+          if (isExt) {
+            if (moveExternalPodcast(id, direction)) rebuildSelected();
+            return;
+          }
+          const favs = loadFavorites();
+          if (moveFavorite(favs, kind, id, direction)) {
+            saveFavorites(favs);
+            rebuildSelected();
+          }
+        };
         controls.appendChild(el('button', {
           class: 'selected-btn', type: 'button',
           'aria-label': `Flytta ${item.name} uppåt`,
           disabled: pos === 0 ? '' : null,
           html: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 14l5-5 5 5z"/></svg>',
-          onclick: () => {
-            const favs = loadFavorites();
-            if (moveFavorite(favs, kind, id, 'up')) {
-              saveFavorites(favs);
-              rebuildSelected();
-            }
-          },
+          onclick: () => move('up'),
         }));
         controls.appendChild(el('button', {
           class: 'selected-btn', type: 'button',
           'aria-label': `Flytta ${item.name} nedåt`,
           disabled: pos === list.length - 1 ? '' : null,
           html: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 10l5 5 5-5z"/></svg>',
-          onclick: () => {
-            const favs = loadFavorites();
-            if (moveFavorite(favs, kind, id, 'down')) {
-              saveFavorites(favs);
-              rebuildSelected();
-            }
-          },
+          onclick: () => move('down'),
         }));
         rowEl.appendChild(controls);
         group.appendChild(rowEl);
@@ -7860,6 +8320,22 @@ function seekMeasureRecordText() {
       let dragId = null;
 
       const persist = () => {
+        // Rows come from BOTH providers. Writing every id into the SR array
+        // would push iTunes collectionIds into favourites.json, which
+        // favoritesFromRaw() drops as non-numbers -- the reorder would then
+        // be silently undone on the next load. So each provider's rows go
+        // back to their OWN storage.
+        if (extRows(group).length) {
+          persistExternalOrder(group);
+          const srOrder = [...group.querySelectorAll('.selected-item:not([data-ext])')]
+            .map(r => Number(r.dataset.id));
+          const favs = loadFavorites();
+          // Ids that were deleted mid-drag are dropped, not resurrected.
+          const known = new Set(favs[kind]);
+          favs[kind] = srOrder.filter((id) => known.has(id));
+          saveFavorites(favs);
+          return;
+        }
         const order = [...group.querySelectorAll('.selected-item')]
           .map(r => Number(r.dataset.id));
         const favs = loadFavorites();
@@ -8917,8 +9393,12 @@ function seekMeasureRecordText() {
   async function boot() {
     renderSkeletons();
     const favs = loadFavorites();
+    // External podcasts count as a selection too. Without this, a user whose
+    // ONLY pick came from the iTunes search was told they had chosen nothing
+    // and was returned to the welcome screen -- their pick silently vanished.
+    const hasExtPods = loadExternalPodcasts().length > 0;
 
-    if (favs.channels.length === 0 && favs.podcasts.length === 0) {
+    if (favs.channels.length === 0 && favs.podcasts.length === 0 && !hasExtPods) {
       $main.textContent = '';
       $main.appendChild(el('div', { class: 'state-msg' },
         el('div', { text: 'Välkommen! Välj dina favoritkanaler och poddar för att komma igång.' }),
