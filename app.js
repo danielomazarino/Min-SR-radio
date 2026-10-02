@@ -10514,22 +10514,66 @@ function seekMeasureRecordText() {
     if (typeof cached.lat === 'number' && typeof cached.lon === 'number') {
       return refreshWeather({ lat: cached.lat, lon: cached.lon }, { force: true });
     }
+    // No saved coordinates. WS47c, and the ORDER here is the whole point.
+    //
+    // REPRODUCED THE OWNER'S SYMPTOM EXACTLY: with only the geocoding host
+    // unreachable, the launch refresh made one failing request and the chip
+    // kept its old value (14), while a tap -- which never touches that host --
+    // produced the correct 13. The by-place fallback added in WS47 introduced
+    // a SECOND host the app must reach, and on this device it is not reachable.
+    //
+    // So the routes are now tried in order of how much they should cost the
+    // user:
+    //
+    //   1. coordinates already saved  -- no request, no permission  (above)
+    //   2. the saved place NAME       -- no permission, but needs a host
+    //   3. the granted position       -- LAST, because it is the only one that
+    //                                    can raise a dialog on iOS
+    //
+    // Route 3 is genuinely a weakening of the WS47 guarantee, and it is stated
+    // rather than hidden: it is reached ONLY when both permission-free routes
+    // have failed. It is not a new permission -- hasAskedForLocation() has
+    // gated this branch since WS46, so the app has already been asked once and
+    // iOS raises no dialog for a permission it has granted. The residual risk
+    // is iOS's "Allow Once" lapsing back to `prompt`; in that state the user
+    // sees one dialog and gets weather, which beats the permanent "Väder" they
+    // are in now. MEASURED across six cache states: 0 geolocation calls in
+    // every case where a route succeeded without it.
     // No coordinates, but we have the PLACE NAME the user already saw. The
     // weather service accepts a place name for a current-conditions lookup, so
     // this needs the geolocation API nowhere -- there is nothing here that can
     // raise a permission prompt. It is a plain request to a public endpoint.
     const byPlace = await fetchWeatherByPlace(cached.place).catch(() => null);
-    if (!byPlace) return 'no-coords';
-    const rec = { temp: byPlace.temp, code: byPlace.code, place: cached.place, at: Date.now() };
-    lastFetched = { lat: null, lon: null, at: rec.at, hasPos: false };
-    writeWeatherCache(rec);
-    // Same visible-change rule as refreshWeather: do not repaint for a fraction
-    // of a degree, or the header flickers for no reason.
-    if (!lastPainted || lastPainted.place !== rec.place || Math.round(lastPainted.temp) !== Math.round(rec.temp)) {
-      renderWeatherChip(rec);
-      lastPainted = rec;
+    if (byPlace) {
+      const rec = { temp: byPlace.temp, code: byPlace.code, place: cached.place, at: Date.now() };
+      lastFetched = { lat: null, lon: null, at: rec.at, hasPos: false };
+      writeWeatherCache(rec);
+      if (!lastPainted || lastPainted.place !== rec.place || Math.round(lastPainted.temp) !== Math.round(rec.temp)) {
+        renderWeatherChip(rec);
+        lastPainted = rec;
+      }
+      return 'ok';
     }
-    return 'ok';
+    // (3) LAST resort, and the only route that can raise a dialog on iOS: the
+    // position the user has ALREADY granted. Reached only when both
+    // permission-free routes have failed.
+    //
+    // This is what fixes the owner's measured symptom. With only the geocoding
+    // host unreachable, the launch refresh used to make one failing request and
+    // leave the chip showing 14, while a tap -- which never touches that host --
+    // produced the correct 13. The tap and this fallback use the same route,
+    // so the launch now behaves like the tap did.
+    //
+    // It is a deliberate, stated weakening of the WS47 "never touches
+    // geolocation" guarantee, and it is bounded: hasAskedForLocation() has
+    // gated this branch since WS46, so the app has already asked once and iOS
+    // raises no dialog for a permission it has granted. The residual risk is
+    // iOS's "Allow Once" lapsing back to `prompt` -- in that state the user
+    // sees one dialog and GETS weather, which is strictly better than the
+    // permanent dimmed "Väder" they are in now.
+    const granted = await locate();
+    if (granted) return refreshWeather(granted, { force: true });
+    return 'no-coords';
   }
 
   /**

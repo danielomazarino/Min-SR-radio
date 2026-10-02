@@ -1791,15 +1791,44 @@ test('WS47: a stale reading is refreshed WITHOUT asking for location again', () 
     `the called function must actually refresh something -- called: ${called}`);
 });
 
-test('WS47: a quiet refresh can never raise a permission prompt', () => {
-  // This is the whole point, and it is an ABSENCE: nothing on this path may
-  // touch getCurrentPosition or watchPosition. Asserted against the whole
-  // function AND its helper, because a helper is where such a call would hide.
+test('WS47: a quiet refresh reaches for location only as a LAST resort', () => {
+  // SUPERSEDED as an outright ban, restated as the BOUND that actually matters.
+  //
+  // This asserted that nothing on the quiet path may touch the geolocation API.
+  // WS47c deliberately broke that ban, because the owner's symptom could not be
+  // fixed any other way: with no saved coordinates the refresh had exactly one
+  // route -- turning the place NAME into coordinates -- and on his device that
+  // geocoding host is unreachable. MEASURED with only that host blocked: at open
+  // the chip kept 14, and only a tap produced 13.
+  //
+  // What must still hold, and is what the tests below now assert:
+  //   * no WATCHER is ever started on this path (that re-arms a prompt forever)
+  //   * the permission-free route is attempted BEFORE any geolocation call
+  //   * geolocation is reached only when that route returned nothing
+  // So the common case still costs the user nothing -- MEASURED across six cache
+  // states: zero geolocation calls, one weather request per open.
   const quiet = stripComments(region('async function refreshWeatherQuietly', 'function stopWeatherWatch', APP_JS));
-  assert.doesNotMatch(quiet, /locate\(\)|startWeatherWatch\(\)|navigator\.geolocation/,
-    'the quiet refresh must not touch the geolocation API -- that is what re-arms the prompt');
+  assert.doesNotMatch(quiet, /startWeatherWatch\(\)|navigator\.geolocation/,
+    'the quiet refresh must never start a watcher or touch the geolocation object directly');
+  assert.ok(quiet.indexOf('fetchWeatherByPlace(') < quiet.indexOf('await locate()'),
+    'the permission-free by-name route must be tried BEFORE geolocation');
+  // PROBE CORRECTION: this asserted the literal `if (!byPlace)`, but the code
+  // uses the EARLY-RETURN form -- `if (byPlace) { ...paint...; return 'ok'; }` --
+  // which is better code and guarantees the same property. Matching the literal
+  // would have forced a worse shape to satisfy a test. What is asserted instead
+  // is the control flow itself: the geolocation call must sit AFTER the block
+  // that returns on success.
+  const successReturn = quiet.indexOf("return 'ok';");
+  const geoAfter = quiet.indexOf('await locate()');
+  assert.ok(successReturn !== -1 && geoAfter > successReturn,
+    'geolocation must be reached only after the free route has succeeded and returned -- the guard is an early return, not an if-not');
   assert.match(quiet, /force: true/,
     'the quiet refresh is a deliberate, gates-bypassing read of current conditions');
+  // R5 -- a mutation that dropped `{ force: true }` from the fallback reported
+  // GREEN, because the `force: true` above was satisfied by the COORDINATE path
+  // and this test never checked the fallback specifically. Assert it there.
+  assert.match(quiet, /refreshWeather\(granted, \{ force: true \}\)/,
+    'the granted-position fallback must force the refresh, or the background gates can refuse it and the header stays stale');
 
   // The by-place helper is the fallback for a cache with no coordinates, which
   // is the state every WS45/WS46 install is in. Same rule: no geolocation.
@@ -1883,9 +1912,18 @@ test('WS47b: an open costs at most ONE request, and still no permission', () => 
     /if \(weatherBusy\) return 'busy';/,
     'the in-flight lock is what bounds an open to a single request');
 
+  // WS47c: restated from an outright ban to a BOUND. The fix for the owner's
+  // measured symptom deliberately reintroduces ONE geolocation call, as the last
+  // resort after both permission-free routes fail. What must still hold is that
+  // the request bound is unchanged and the free route is preferred, so the
+  // common case still costs the user nothing.
+  //
+  // MEASURED across six cache states with the geocoding host reachable: ZERO
+  // geolocation calls and one weather request per open. The fallback is not the
+  // normal path -- it is the path taken when the other two are unavailable.
   const quiet = stripComments(region('async function refreshWeatherQuietly', 'async function fetchWeatherByPlace', APP_JS));
-  assert.doesNotMatch(quiet, /navigator\.geolocation|locate\(\)/,
-    'refreshing at open must still never require a location permission -- the bound is worthless if it prompts');
+  assert.ok(quiet.indexOf('fetchWeatherByPlace(') < quiet.indexOf('await locate()'),
+    'the permission-free route must be preferred, or every open reaches for location');
 });
 test('WS47: the header refreshes while the app stays open', () => {
   // "it does not seem to update as it get colder outside" -- a header that is
