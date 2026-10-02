@@ -86,6 +86,23 @@ body {
   color: var(--text-secondary);
   font-size: 13px;
   white-space: nowrap;
+  /* WS46: tapping the chip forces a refresh, so it must LOOK tappable and
+     must have a real touch target. The transparent background is what stopped
+     the WS43b red-row overlay from bleeding into this element. */
+  background: transparent;
+  border: none;
+  padding: 4px 6px;
+  margin: 0 -6px;
+  border-radius: 8px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color 0.15s ease;
+}
+.weather:hover { background: var(--accent-soft); }
+.weather:active { background: var(--accent-soft); }
+.weather:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .weather-icon { display: flex; align-items: center; color: var(--accent); }
 .weather-icon svg { width: 17px; height: 17px; }

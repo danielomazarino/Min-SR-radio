@@ -1474,3 +1474,141 @@ test('WS45: the cold-start fetch is not force-bypassed', () => {
   assert.match(init, /refreshWeather\(pos\)/,
     'the cold-start refresh must use the gated path');
 });
+
+// ---------------------------------------------------------------------------
+// WS46 -- the location permission prompt must not reappear on every open.
+//
+// The owner's report, in their words: "each time i open the page or pwa app i
+// get the 'Would like to Use Your location' question".
+//
+// MEASURED in the browser before changing anything: every page open made TWO
+// geolocation calls (one watchPosition + one getCurrentPosition), even when the
+// cached reading was ONE MINUTE old. A cache the app already held, and a
+// request it had already paid for, were not enough to stop it asking.
+// ---------------------------------------------------------------------------
+
+test('WS46: a fresh cache must stop the app asking for location at all', () => {
+  // The guard is an ORDERING claim, so it is asserted as ordering: the early
+  // return has to appear BEFORE the first geolocation call site, otherwise the
+  // code asks and then decides it did not need to.
+  const init = stripComments(region('async function initWeather', 'async function boot', APP_JS));
+  const gate = init.indexOf('if (cached && age < WEATHER_FRESH_MS)');
+  const firstAsk = init.indexOf('startWeatherWatch()');
+  assert.ok(gate !== -1,
+    'a cache younger than WEATHER_FRESH_MS must end the function before any geolocation call');
+  assert.ok(firstAsk !== -1, 'the first-ask path must still ask, or first-run weather is dead');
+  assert.ok(gate < firstAsk,
+    'the fresh-cache early return sits AFTER the geolocation call, so it cannot prevent the prompt');
+});
+
+test('WS46: after the first ask the app must not ask again on a later open', () => {
+  const init = stripComments(region('async function initWeather', 'async function boot', APP_JS));
+  assert.match(init, /if \(hasAskedForLocation\(\)\)/,
+    'a second open must be able to tell that the user has already been asked');
+  const askedGate = init.indexOf('if (hasAskedForLocation())');
+  const mark = init.indexOf('markAskedForLocation()');
+  const ask = init.indexOf('startWeatherWatch()');
+  assert.ok(askedGate !== -1, 'the already-asked branch is missing entirely');
+  // The flag is recorded BEFORE the call, not after: a denial, a crash or a
+  // thrown exception must not leave the app free to ask again next time.
+  assert.ok(mark < ask,
+    'markAskedForLocation() must run BEFORE the geolocation call, or a crash re-arms the prompt');
+  assert.ok(askedGate < ask,
+    'the already-asked check must precede the geolocation call it exists to prevent');
+  // And the already-asked branch must actually leave, not fall through.
+  const branch = init.slice(askedGate, ask);
+  assert.match(branch, /return/,
+    'the already-asked branch must return; falling through re-asks the very thing it is avoiding');
+});
+
+test('WS46: the flag is set from a localStorage string, never navigator.permissions', () => {
+  // iOS Safari does not implement navigator.permissions. Building the fix on
+  // it would make the whole feature depend on a platform that is not there.
+  // This pins the choice so a later "improvement" cannot silently introduce it.
+  const helpers = stripComments(region('function hasAskedForLocation', 'function formatTemp', APP_JS));
+  assert.doesNotMatch(helpers, /navigator\.permissions/,
+    'navigator.permissions is unavailable on iOS Safari and must not gate the weather header');
+  assert.match(helpers, /localStorage\.getItem\(WEATHER_ASK_KEY\) === '1'/,
+    'the flag must be a plain localStorage read');
+});
+
+test('WS46: the asked-flag round-trips', () => {
+  // An EXECUTING test, not a source-text one. Both helpers are extracted from
+  // app.js and actually called -- the WS7 rule that a `function` declaration
+  // passed to `new Function` is never invoked is exactly what this avoids.
+  const store = new Map();
+  const fakeLocalStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+  };
+  const src = stripComments(grab('hasAskedForLocation')) + '\n' +
+              stripComments(grab('markAskedForLocation'));
+  const fns = new Function('localStorage', 'WEATHER_ASK_KEY',
+    `${src}\nreturn { hasAskedForLocation, markAskedForLocation };`)(fakeLocalStorage, 'minradio.weather.asked.v1');
+
+  assert.equal(fns.hasAskedForLocation(), false,
+    'a fresh install has never asked, so the first open must be allowed to ask');
+  fns.markAskedForLocation();
+  assert.equal(fns.hasAskedForLocation(), true,
+    'after the first ask a later open must be able to stay silent -- the whole point of WS46');
+  assert.equal(store.get('minradio.weather.asked.v1'), '1',
+    'the flag must survive a restart, which is the only way "once" can mean once');
+  // A corrupt value must not read as "asked" -- that would silently disable
+  // first-run weather.
+  store.set('minradio.weather.asked.v1', 'nonsense');
+  assert.equal(fns.hasAskedForLocation(), false,
+    'an unrecognised stored value must not count as asked');
+});
+
+test('WS46: tapping the chip refreshes on demand', () => {
+  // The whole change is only safe because a stale header has a manual cure.
+  // Without it, "ask less" would mean "no way to fix it without a reinstall".
+  // End marker must be a function that ACTUALLY exists -- an invented marker
+  // makes region() throw and the test fail for a reason unrelated to the chip.
+  const chip = stripComments(region('function renderWeatherChip', 'function distanceKm', APP_JS));
+  assert.match(chip, /addEventListener\('click'/,
+    'the chip must be clickable');
+  assert.match(chip, /role', 'button/,
+    'a clickable chip must be announced as a control');
+  assert.match(chip, /tabindex', '0'/,
+    'a control that only responds to clicks is unreachable by keyboard');
+  // Space must not scroll the page away from under the control.
+  assert.match(chip, /e\.preventDefault\(\)/,
+    'the Space key must be handled, or activating the chip scrolls the page');
+
+  const now = stripComments(grab('refreshWeatherNow'));
+  assert.match(now, /markAskedForLocation\(\)/,
+    'a deliberate tap counts as asking, so a later open stays silent');
+  assert.match(now, /force: true/,
+    'a person who just tapped must not be refused by the background gates');
+});
+
+test('WS46: the watcher must actually be stopped (it had no caller at all)', () => {
+  // WS7a in its purest form. `stopWeatherWatch()` was written in WS45 and
+  // grep proved it had ZERO callers -- correct code that never executes. If it
+  // is still uncalled, a backgrounded PWA holds the GPS open for a session
+  // nobody is looking at, which is the same complaint in a different costume.
+  const stop = stripComments(grab('stopWeatherWatch'));
+  assert.ok(stop, 'stopWeatherWatch must still exist');
+
+  const callers = (stripComments(APP_JS).match(/stopWeatherWatch\(\)/g) || []).length;
+  // One occurrence is the declaration itself. Any more means it is now called.
+  assert.ok(callers > 1,
+    `stopWeatherWatch has no call site -- it was dead code in WS45 and must not stay dead (found ${callers} occurrence(s), 1 = declaration only)`);
+
+  assert.match(stripComments(APP_JS), /addEventListener\('visibilitychange'/,
+    'the watch must be tied to visibility, or a hidden PWA keeps streaming positions');
+});
+
+test('WS46: the first-run path is not dead code', () => {
+  // The guard that could have failed silently: an early return that fires on
+  // every real install would mean a NEW user never sees weather at all. The
+  // fix must still ask exactly once for someone who has never been asked.
+  const init = stripComments(region('async function initWeather', 'async function boot', APP_JS));
+  assert.match(init, /await locate\(\)/,
+    'a never-asked install must still take a position');
+  assert.match(init, /await refreshWeather\(pos\)/,
+    'and must still fetch, or first-run weather is broken by this change');
+  assert.match(init, /startWeatherWatch\(\)/,
+    'the watcher is what makes the header follow a train; it must survive');
+});
