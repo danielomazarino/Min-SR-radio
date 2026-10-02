@@ -755,8 +755,18 @@ YouTube-ikoner i expanderade spelaren.
   är kandidater; exakt matchning kan INTE garanteras — dokumentera denna
   begränsning.)
 - Datakälla finns redan: live = rightnow (artist/title), episoder =
-  ondemand-tracks (artist/title). Spotify-id finns redan i ondemand-tracks
-  (`spotifyId`) — kan ge EXAKTA Spotify-länkar för arkiverade avsnitt.
+  ondemand-tracks (artist/title).
+- **RÅDTA FALL 2026-10-03 — detta påstående var FALSKT och har tagits
+  bort.** Det stod här att "Spotify-id finns redan i ondemand-tracks
+  (`spotifyId`) — kan ge EXAKTA Spotify-länkar". Mätt mot riktiga svar
+  2026-10-03: ondemand-tracks har exakt FYRA nycklar
+  (`artist, relativeEndTime, relativeStartTime, title`) och rightnow-sången
+  ETTA (8: `albumname, artist, composer, description, recordlabel,
+  starttimeutc, stoptimeutc, title`). **Ingen Spotify-id, ingen YouTube-id,
+  någonstans.** Se posten "E2 RECONSIDERED" i slutet av den här filen.
+  Det påståendet skrevs utan mätning och spreds vidare i två sessioner.
+  Exakt-länk är alltså **inte** byggbar från SR-data — sökvägar är det enda
+  datan medger.
 - UI minimal eftersom funktionen används sällan.
 
 ### E3 — Nyheter: utred uppspelningsbarhet / play-pill
