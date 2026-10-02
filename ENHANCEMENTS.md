@@ -7289,3 +7289,128 @@ Suite **462 → 472**. **12 mutations, 12 red.**
   *during the open session*, which is what this does.
 - The forecast is not implemented — this is current conditions only, which is
   what was asked for.
+
+---
+
+## 2026-10-02 (late) — WS49 closed, open list reconciled, and the tablå scroll
+ defect is **MEASURED, not a code reading any more**
+
+### WS49 closed
+
+The owner's question ("was that expected behaviour according to implementation")
+is answered: **both halves were expected**, and both were measured rather than
+argued. Location off + coordinates saved → 0 prompts, header stays `13° Göteborg`,
+which is correct — the app has the coordinates and no longer needs the GPS.
+Clearing history removed those coordinates, which is the only thing that can
+produce the empty state.
+
+Investigating it still found a real defect: `explainNoLocation()` was called from
+`refreshWeatherNow` and from **nowhere** in `initWeather`, so the empty state
+explained itself on tap and stayed mute on reload. Fixed. Suite 498 → 499,
+1 mutation red. Build `40870cf`, live `app.a26be8a4.js`.
+
+### Weather is left alone deliberately
+
+The owner is in the same place and the temperature has not moved, so **the
+5-minute refresh cannot be verified today.** Nothing about that is a defect; a
+metric that cannot fail is not a metric, and forcing a pass here would be
+manufacturing evidence. Build `40870cf` sits until the number changes on its own.
+
+### DEFECT A — tablå scroll lock: **the code reading was RIGHT. Now measured.**
+
+This has been carried as "unconfirmed since 2026-09-28". It is no longer a
+reading. Driven in the browser on the live site, build `40870cf`, P1 tablå card:
+
+| measurement | value |
+|---|---|
+| card rows rendered | **192** |
+| card scroll height | **8508 px** |
+| visible height | **430 px** |
+| scrollable? | yes — and **`.sheet` is the scroller, `.card-body` is `overflow: visible`** |
+| a **finger-UP** gesture | **card CLOSED** |
+| a **50 px** finger-up flick | **card CLOSED** |
+| close threshold | **171 px** (35 % of viewport height) |
+
+**A 50 px gesture closed a card whose threshold is 171 px.** That is the defect,
+and it is not the mechanism the log guessed. The real cause is one expression in
+`enableSwipeToClose`'s `finish()`:
+
+```js
+const flick = elapsed < 250 && Math.abs(d) > 40;
+```
+
+`Math.abs(d)` **throws away the direction.** On the `y` axis an upward gesture
+is `d < 0`, and `touchmove` correctly refuses to transform it (`if (d < 0)
+{ panel.style.transform = ''; return; }`) — but it never clears `d`, so
+`finish()` still sees `|−50| > 40`, calls it a flick, and closes the card.
+
+**Why this is exactly the reported symptom.** On iOS an upward flick *is* the
+scroll gesture. It is the fastest, most natural way to move down a programme
+list. Every fast scroll up therefore reads as "close the card", and the card
+disappears mid-scroll. That is the "flaky scrolling" — it is not flaky, it is
+deterministic on speed, which is why it seemed intermittent.
+
+**Two sites are affected**, both binding `enableSwipeToClose` with `axis: 'y'`:
+
+| site | surface | effect |
+|---|---|---|
+| `openContextCard` (8069) | the **whole** tablå / episode card | scroll-to-close, measured above |
+| expanded player panel (6136) | the **whole** expand panel | same |
+
+`openSheet` (9073) is **not** affected — it correctly binds only
+`.sheet-grab-zone`, which is BUG 1's own fix. This is the same defect class
+reaching a surface BUG 1's fix never reached, exactly as the log suspected, but
+by a different mechanism than it predicted.
+
+**The fix is one token:** `Math.abs(d)` → `d` in the `flick` line, so only a
+*downward* fast flick can close a `y` sheet. **Not yet applied** — the owner was
+asked whether to make this today's work.
+
+---
+
+## Open list, reconciled 2026-10-02 — what is NOT done
+
+### CRITICAL — one item, and it is the tablå scroll defect
+
+| # | item | why it ranks here |
+|---|---|---|
+| 1 | **tablå card closes when you scroll it** | **Measured today.** Makes the primary long-press feature — yesterday + today programme lists on every channel — unusable at speed. One-token fix. |
+
+### HIGH — real, but not blocking daily use
+
+| # | item | state |
+|---|---|---|
+| 2 | **Earbudspaus kan inte återuppta** | MediaSession resume path is **not wired**: all five handlers are registered once against the `audioEl` singleton and never re-bind after a track change. The "silent success" branch is also unhandled — a rejected-but-resolved play needs no toast and currently gives silence. |
+| 3 | **P2 FLAC → AAC 320 fallback** | `advanceCandidate()` walks a static candidate list and does fall back, but nothing measures bandwidth, so on weak Wi-Fi there is no *reason* to advance. Corporate-Wi-Fi observation is unreproduced. |
+| 4 | **Låsskärmens spelarknapp öppnar fel PWA** | Reported 2026-09-24 as a **regression** after appearing fixed. Never root-caused; needs a MediaSession-ownership reading on a device. |
+
+### MEDIUM — layout and data ceilings, all documented, none silently wrong
+
+| # | item | state |
+|---|---|---|
+| 5 | **320 px is not fixed** | `.player-meta` is 4.0 px and the pills paint outside their box. The 390 px iPhone 13 is fine; a 320 px device is not. Same mechanism as the 390 px defect that *was* fixed. |
+| 6 | **Header buttons are 32 px, below the 44 px iOS guidance** | Deliberate trade for programme-title width (222 px vs 202 px). Needs one real-device check before anyone calls it final. |
+| 7 | **7-button DVR state collapses the text column to 0 px** | Isolated by measurement to the **button count**. Needs an owner decision: accept, shrink the buttons, or let text win over one button. **Do not guess.** |
+| 8 | **Podcast songs never resolve** | Upstream: `web-api.sr.se/v1/player/ondemand` returns null track times for **18/18** tracks (pod 78) and 0 tracks for six other pods. Not our code. Consequence: mid-player song row and album cover for podcasts are **unverified on real data** — do not describe podcasts as working. |
+| 9 | **Programme-skip offset is VARIABLE (~10 s once, ~30 s another)** | Cause **not established**. No correction value exists in the code and a test rejects one by name. Instrumented (`?diag=metadata` → `dvr.streamEdge`), documented, **not fixed**. Do not record it as a constant. |
+
+### UNVERIFIABLE FROM HERE — not defects, environment limits
+
+| # | item | why |
+|---|---|---|
+| 10 | **Every DVR behaviour** — seek, title, song, cover | Chromium cannot load SR's DVR-capable HLS (CORS). Device-only, no substitute. |
+| 11 | **Android Chrome, Firefox desktop (TS-i-MSE)** | No Android device exists here. Low priority; the MP3 fallback works. |
+| 12 | **Pre-midnight title (WS21)** | The mechanism was given a reachable call site in WS26; **whether the title then updates on a real DVR seek is still unmeasured.** Do not re-derive the mechanism — read the code. |
+| 13 | **Tunnel stream stalls** | Deferred 2026-09-28, not reproducible that morning. |
+
+### Recommendation
+
+Do **#1 today**. It is the only item that is both *measured broken* and *in the
+path the owner actually uses*, and the fix is one token. #2–#4 should follow as
+a group, since each needs its own device reading rather than a code reading. #5–#9
+are known, documented, and not costing the owner anything today.
+
+**Note for the next session:** the raw empty-catch count in `app.js` is now **5**,
+and the comment-stripped count is still **3** — the two extra are comments that
+*mention* `audioEl.play().catch(() => {})` (lines 3260 and 10446). That is the
+**fifth** instance of the same trap, not a regression. Do not "fix" it.
