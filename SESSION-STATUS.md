@@ -717,3 +717,90 @@ Deploy: remote `4e8f5ac`, live serves `app.f671f30d.js` 200.
 
 **Blocked:** nothing. **Next:** owner to confirm build **`d6d4d67`** shows the
 correct temperature at launch on BOTH surfaces, with no dialog.
+
+## WS48 — tap must not prompt, coords must persist, 5-minute cadence — 2026-10-02T21:20:00+02:00
+
+**Started / baseline:** `npm test` → **494/494** (run). **Now 498/498.**
+**Owner report, verbatim:**
+1. *"the app started with 13 degrees and clicking on the weather pill opened the
+   ios toast for approving location services. is this expected?"*
+2. *"on safari [...] still the italic väder sign and no location services toast
+   when clicking on it"*
+3. *"update every 5th minute instead of every 30 minutes"*
+
+---
+
+### Point 1 — the location toast on tapping. **No, not expected. Fixed.**
+
+**Why it happened:** tapping was meant to be the *cheap* refresh, but it asked
+for your location **every single time** — even when the app already had your
+coordinates saved. Asking was exactly what saving them was supposed to avoid.
+
+**Measured before the fix:** with coordinates in the cache, a tap still made one
+`getCurrentPosition` call. On iOS that is the difference between a silent refresh
+and a system dialog.
+
+**Done:** a tap now uses the saved coordinates first. **0 location calls.**
+That is also why your PWA showed 13° at launch — the launch refresh was
+downloading your coordinates through the fallback route, and once they were
+saved, the tap had no reason to ask.
+
+### Point 2 — Safari's italic *Väder*. **Not a bug — and no app can fix it.**
+
+**Why it looks stuck:** with nothing saved and location unavailable, tapping
+reaches the position lookup, gets nothing, and gave up **silently**. A dimmed
+*Väder* that does nothing looks identical to a broken app.
+
+**What is actually happening:** your iPhone has location set to **denied** for
+Safari. A denied web permission is permanent — the system returns no position
+*and* shows no dialog. That is precisely why tapping did nothing **and** no
+toast appeared. No website on earth can recover from this; only you can.
+
+**Done:** the pill now says so instead of appearing broken —
+*"Ingen platsinfo. Tillåt i Settings > Safari > Plats."*
+Shown in the visible text, the `aria-label` and the tooltip. Deliberately **not**
+a toast, because a toast vanishes before most people look up.
+
+**To fix it:** iPhone **Settings → Apps → Safari → Location** (or the equivalent
+under Chrome), and allow it. Then reopen the tab.
+
+### Point 3 — refresh every 5 minutes. **Done.**
+
+`WEATHER_REFRESH_MS` 30 → 5 minutes. Worst-case staleness ~30 min → **~5 min**.
+Kept honest by three bounds: one request per tick, nothing at all while the app
+is hidden, and no repaint when nothing visible changed. Cost: ~6x the weather
+requests over a long session — a real trade, stated rather than hidden.
+
+---
+
+### Defect F found along the way
+
+The by-name lookup **resolved your coordinates and threw them away**. So it never
+made any future open cheaper — every open went back for location again. It now
+returns and stores them.
+
+**MEASURED after the fixes:**
+
+| case | location calls | result |
+|---|---|---|
+| tap, coordinates saved | **0** | toast gone |
+| open, coordinates saved | **0** | correct |
+| open, geocoder down, no coordinates | 1 | refreshes **and saves coordinates** |
+| next open, geocoder still down | **0** | still correct |
+| Safari, no reading, denied | 0 | chip now explains the Settings fix |
+
+### Two probe corrections worth recording
+
+Both produced convincing **wrong** answers before failing loudly, and both were
+my instruments, not the app:
+- omitting a closed-over binding throws a `ReferenceError` *inside* the
+  refresh's `try`, which its `catch` reports as `'failed'` — indistinguishable
+  from a real outage. The harness had already "found" a failure that way.
+- a stub for the by-name lookup that didn't return coordinates reported
+  "coordinates are not saved" as if the fix had failed.
+
+**Tests: 498. 8 mutations all RED.** Deploy: remote `a4284dc`, live serves
+`app.f82d2daf.js` 200.
+
+**Next:** owner to check build **`ed9f68e`** — tapping should no longer prompt,
+and Safari should name the Settings fix.
