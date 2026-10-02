@@ -526,3 +526,59 @@ green source-text tests, all found only by reading the rendered DOM:
    the worker and deleting the caches it ran `app.6e0b5230.js` with the fix.
    This repo has hit this before. Unstick on a phone: reload, or remove the
    Home-Screen app and add it again.
+
+## WS47 — weather stays current without asking again — 2026-10-02T19:05:00+02:00
+
+**Started / baseline:** `npm test` → **483/483** (run). **Now 490/490.**
+**Scope now:** three owner observations from the iPhone. IN scope: weather
+refresh behaviour and the geocoder dependency. OUT of scope: nothing else.
+
+**Owner report, verbatim:**
+1. *"in safari on ios i get a dimmed, italic 'Väder', for pwa app i get
+   correctly a sun icon, 14 degrees and Göteborg"*
+2. *"it does not seem to update as it get colder outside"*
+3. *"the closure of the pwa app and then opening again now doesn't evoke a new
+   location approval automatically"*
+
+**(3) is the WS46 fix working.** It is now pinned by test so it cannot regress.
+
+**Defects found (all measured before fixing):**
+
+| | defect | measured |
+|---|---|---|
+| A | stale reading never refreshed — WS46 conflated "never ask again" with "never update again" | 4 h-old cache, 0 requests, frozen at 16° while real weather was 2° |
+| B | failed place lookup discarded a real temperature (`if (!place) return 'no-place'`) | geocoder blocked → no weather at all; **this was the Safari symptom** |
+| C | WS46's visibilitychange handler called `startWeatherWatch()` on every foreground — re-arming the prompt on every app-switch | found by reading, not by a failing test |
+
+**Fix:** `refreshWeatherQuietly()` reuses saved coordinates, or resolves the
+saved place NAME via the Open-Meteo geocoding API. Neither path can raise a
+permission prompt — asserted as an absence across the whole call chain. Plus a
+`WEATHER_REFRESH_MS` timer while the app is open and visible, skipped when
+hidden (the constant WS45 defined and never used).
+
+**MEASURED (browser, SW + caches cleared; LOCATION_PROMPTS = get/watch):**
+
+| case | weather calls | prompts | chip |
+|---|---|---|---|
+| 4 h cache, no coords (owner's real state) | 1 | **0/0** | `2°Göteborg` |
+| 4 h cache, geocoder down (Safari) | 1 | **0/0** | `2°Göteborg` |
+| 10-min cache (must not refetch) | 0 | **0/0** | `16°Göteborg` |
+
+Re-verified live at `6cdde29`. Deploy checks: suite green 490 · remote head
+`5d9991a` · live serves `app.ca064cd0.js` 200 · hashed bundle contains all five
+fixes.
+
+**What it does NOT prove:** still nothing run on iOS. The place NAME is not
+refreshed on a quiet refresh (that would need a geocoder call per refresh), so
+on a journey the city stays the old one until the chip is tapped. Stated, not
+hidden.
+
+**Two mutations caught going GREEN / NO-OP on the first pass** — the reason this
+entry is longer than the fix:
+- renaming `refreshWeatherQuietly` left all 483 tests green, because they
+  asserted the CALL SITE. Now asserted as a closure.
+- a `readWeatherCache` mutation was a NO-OP: I had written the intent as a
+  comment in a different place and never made the change.
+
+**Blocked:** nothing. **Next:** owner to check build **`6cdde29`** on the phone —
+closing and reopening must NOT prompt, and the temperature must track reality.
