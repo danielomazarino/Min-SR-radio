@@ -6787,3 +6787,125 @@ Suite **453/453**. Note this also cleared a **pre-existing unrelated failure**
   deliberate fractions of the row, not fixed pixels — but no threshold has been
   checked against a real thumb.
 - Not committed, not pushed.
+
+---
+
+## 2026-10-02 — WS43b: CORRECTION — WS43 did NOT fix the red rows
+
+**Status: DONE — committed `1ce0114` + build `9b22b1f`, deployed, live-verified.**
+
+This block corrects two claims in the WS43 entry above. Naming what was claimed
+and what is now established, because both were wrong and both would have been
+inherited as fact.
+
+**CLAIM 1 (WS43): "the swipe panel COVERED the row — fixed", and the fix was
+"every content child is given `position: relative`".**
+
+**NOW: WRONG, and disproved by screenshot.** After WS43 was committed and
+deployed, a screenshot of the live site showed **every row still red at rest**.
+`position: relative` on the children lifted the **text** above the panel and
+made the name readable — which is why the browser check "row readable
+mid-swipe: yes" passed — but it did nothing for the row's **surface colour**.
+
+The CSS rule that makes that true: **a parent's own background is painted
+before any positioned child.** So an absolutely-positioned panel is always
+above the parent's background, no matter how the children are positioned. The
+white surface stayed underneath the red panel.
+
+**Fix:** the surface moved onto an inner `.selected-item-face`, a positioned
+layer with `z-index: 1` carrying `background: var(--surface)`, and the row
+itself became `background: transparent`. The face is also what the gesture
+translates, so the row travels as one piece with its contents.
+
+**CLAIM 2 (WS43): "this also cleared a pre-existing unrelated failure (WS38/
+WS47 seek assertion) that was already red before this work started".**
+
+**NOW: WRONG. There was no pre-existing failure.** Stashing every uncommitted
+file and running the suite against `HEAD` gives **451/451 green**. WS47's
+`ws47EffectiveEdgeS` was already committed in `6df011e`; the work was not
+in-flight, it was on `main`. The "cleared a failure" claim came from reading
+the log rather than from running the suite.
+
+### A second cause that only a screenshot could find
+
+With the face layer in place the guards passed and the computed styles were
+correct — and the rows were **still red down the right-hand side**.
+
+`.selected-item` is `display: flex`, and the face is its **only in-flow child**
+(the panel is absolutely positioned). A flex item sizes to its **content** by
+default, so the face was 360 px wide inside a 425 px row. Painting order was
+never the problem at this point; the face was simply **too narrow**.
+
+Found by building a minimal harness that loads the **real** `styles.css`, where
+screenshots do not time out on the app's 33 000 px sheet. Fix: `flex: 1` plus
+`min-width: 0` on `.selected-item-face`. The controls moved **inside** the face
+so they slide with the name instead of standing still over the panel.
+
+Measured after: face width 425 == row width 425, on the live site.
+
+### A test defect this exposed — the guards could not fail
+
+The guards written for the face layer used unanchored wildcards:
+
+```js
+assert.match(css, /\.selected-item-face \{[\s\S]*?flex: 1;/)
+```
+
+Deleting `flex: 1` from the CSS reported **GREEN**. `[\s\S]*?` runs past the
+rule's closing brace and finds a `flex: 1` in a **later** rule. This is the
+same trap as M20 in WS42b: a source-text assertion is only as strong as its
+anchor.
+
+Restated to extract each rule block (`region('.selected-item-face {',
+'.selected-item.swiping', css)`) and assert **inside** it.
+
+A second mutation, restoring `background: var(--surface)` on the row, was a
+**NO-OP** — a broken probe slicing the file with a literal-relative index, not
+a green test. Redone properly; it goes red.
+
+**7 mutations, 7 red** after the restatement: `flex: 1` removed, `min-width: 0`
+removed, `z-index: 1` removed, row background restored, face background
+removed, face wrapper renamed, controls re-parented onto the row.
+
+### Verified on the LIVE site, build `1ce0114`
+
+| check | result |
+|---|---|
+| build id under NYHETER | `bygg 1ce0114` |
+| served JS contains the face wrapper | yes (2 occurrences) |
+| served CSS carries `flex: 1` / `min-width: 0` / `z-index: 1` on the face | yes |
+| row background at rest | `rgba(0, 0, 0, 0)` — transparent |
+| face background at rest | `rgb(255, 255, 255)` |
+| face width vs row width | 425 == 425, face covers the row |
+| harness screenshot at rest | white rows, **no red visible** |
+| harness screenshot mid-swipe | row 150 px left, red panel + trash glyph exposed, name still readable |
+| live swipe removes an iTunes podcast | yes — SR storage `[6706]` untouched, order key rewritten, toast "Borttaget: Dear Young Person" |
+| undo | restores the podcast and its position |
+| rightward / 25 px leftward / vertical | inert, membership and storage unchanged |
+| reorder after the restructure | works, and survives reload |
+
+Suite **453 → 453** (no new tests; two guards restated, two added).
+
+### Not proven / not done
+
+- **Device feel is NOT verified.** Layering and geometry are proven by
+  screenshot, computed style and measured widths on the live site. The *feel*
+  of the slide, and whether iOS Safari's gesture recognition cooperates with
+  `touch-action: pan-y`, still needs the owner's phone.
+- The commit threshold is a fraction of the row: ~149 px at 425 px, ~123 px at
+  ~350 px. Deliberately relative, never checked against a thumb.
+- A residual `-25px` computed transform after a short swipe was investigated
+  and is **not** a defect: the inline transform is cleared and a `CSSTransition`
+  is running, but headless Chromium throttles `requestAnimationFrame`. Forcing
+  the transition to finish returns `transform: none` and the animation list
+  empties.
+
+### Process note — a §8 violation, self-inflicted and recovered
+
+While restoring mutations I used `git checkout -- app.js` on a file with
+uncommitted edits, which **destroyed the face wrapper**. This is the exact
+failure AGENTS.md §8 warns about, committed by me in the same session.
+
+Recovered from the already-built bundle `app.82a67d87.js` by re-applying both
+edits with `assert s.count(marker) == 1`. Every later mutation in this
+workstream used `cp` from a `/tmp` snapshot and compared checksums, never git.

@@ -299,3 +299,49 @@ untouched by this work and remains parked as an experiment.
 - Not committed, not pushed.
 
 **Next:** owner reviews, then tests the slide on the phone.
+
+## WS43b — live verification + deploy — 2026-10-02T06:20:00Z
+
+**Baseline:** `npm test` → **453/453 pass** (run at the start of this block)
+**Scope now:** correct the WS43 claim that the red overlay was fixed. Files
+touched: `app.js` (face wrapper + controls re-parented), `styles.css` (row
+transparent, `.selected-item-face` positioned + `flex: 1`), and the layering
+test in `tests/itunes-podcast.test.mjs`. **OUT of scope:** every DVR/HLS path,
+`fetchPodcasts`, `playTrack`, `enableDragSort`, `src/favorites.mjs`.
+**Decision:** the surface colour had to move off the row onto an inner
+positioned layer, *and* that layer had to be given `flex: 1`. Painting order
+alone left rows red down the right-hand side.
+**Test count:** 453 → 453 (two guards restated, two added, none deleted)
+**Working tree:** clean apart from six pre-existing untracked `WS*-PROMPT.md`
+files that were already there.
+
+**MEASURED, live site, build `1ce0114`:**
+- served JS contains `selected-item-face`; served CSS carries `flex: 1`,
+  `min-width: 0`, `z-index: 1`, `background: var(--surface)` on the face
+- at rest: row `rgba(0,0,0,0)`, face `rgb(255,255,255)`, face width 425 ==
+  row width 425, on both rows
+- harness screenshot at rest: white rows, no red. Mid-swipe: 150 px offset,
+  red panel with trash glyph exposed, name readable
+- live swipe → removed the iTunes podcast; SR storage `[6706]` untouched;
+  toast "Borttaget: Dear Young Person"; order key rewritten
+- undo restores podcast and position. Rightward / 25 px / vertical all inert
+- reorder works after the restructure and survives reload
+- 7 mutations, 7 red
+
+**What this does NOT prove:** device feel. Whether iOS Safari cooperates with
+`touch-action: pan-y`, and whether the slide *feels* right, needs the owner's
+iPhone. Screenshots and computed styles prove layering, not gesture quality.
+
+**Two of my own earlier claims were wrong and are corrected in
+`ENHANCEMENTS.md`:** (1) WS43 did not fix the red rows — a live screenshot
+disproved it; (2) there was never a pre-existing WS47 test failure — `HEAD` was
+451/451 green.
+
+**A §8 violation, self-inflicted:** `git checkout -- app.js` on a file with
+uncommitted edits destroyed the face wrapper. Recovered from the built bundle
+and re-applied with `assert s.count(marker) == 1`. All later mutations used
+`/tmp` snapshots and checksum comparison.
+
+**Blocked:** nothing
+**Next:** owner to check build `1ce0114` on the iPhone — swipe a podcast left,
+confirm it feels like Mail/WhatsApp and that the row is white at rest.
