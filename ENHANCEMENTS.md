@@ -7490,3 +7490,81 @@ only with `x` pinned, so every x-axis gesture was zero-length.
 - The two **other** `Math.abs` flick sites — mini-bar expand (`app.js:7072`) and
   sheet-order drag (`app.js:9027`) — were **read** and are already
   direction-guarded on their commit branches. Left alone deliberately.
+
+---
+
+## 2026-10-03 — E2 RECONSIDERED: is there exact-match metadata after all?
+### REPORT ONLY. No code changed.
+
+**Owner, verbatim:** *"For E2 i was also under the impression when the
+enhancement was written that there is metadata available that should open the
+exact recording in youtube and on spotify. so you need to search for the source
+data and report"*
+
+The old E2 entry said: *"Spotify-id finns redan i ondemand-tracks (`spotifyId`)
+— kan ge EXAKTA Spotify-länkar för arkiverade avsnitt."* **That claim is
+withdrawn. It is false.** Measured against real payloads, not inferred.
+
+### MEASURED — every song-bearing field SR actually returns
+
+| source | endpoint | keys on the song/track object | spotify / youtube id? |
+|---|---|---|---|
+| live now-playing | `api.sr.se/api/v2/playlists/rightnow?channelid=2562` | `albumname, artist, composer, description, recordlabel, starttimeutc, stoptimeutc, title` — **8 keys** | **NO** |
+| episode track list | `web-api.sr.se/v1/player/ondemand?id=2865162&type=episode` | `artist, relativeEndTime, relativeStartTime, title` — **4 keys** | **NO** |
+| episode item | same, `item` block | `audio, duration, eyebrow, id, imageSrc, program, publishDate, slug, subtitle, title, trackingProps` | **NO** |
+| tablå row | `api.sr.se/api/v2/scheduledepisodes?...` | `episodeid, title, description, starttimeutc, endtimeutc, program, channel, imageurl, imageurltemplate, photographer` | **NO** |
+
+Episode `2865162` is a real music episode and returned **11 real tracks** with
+real artists and titles (Taylor Swift, Maria Jane Smith) — so this is a genuine
+music sample, not an empty one. **Four keys. No identifier of any kind.**
+
+`trackingProps` carries `programName` and `audioId` — SR's own ids, not
+third-party ones.
+
+### Other candidates enumerated, not assumed
+
+| probe | result |
+|---|---|
+| `www.sr.se/api/v2` (second host) | **403** — does not exist for public use |
+| `api.sr.se/api/v2/search?query=spotify` | **500** — no search route |
+| `api.sr.se/api/v2/search?query=youtube` | **500** |
+| `api.sr.se/api/v2/videos` | **500** |
+| `api.sr.se/api/v2/` (route index) | **500** — no enumerable route list |
+| every host the app itself calls, captured live | `api.sr.se/api/v2/playlists/rightnow`, `ljud1-cdn.sr.se`, `roder.sr.se`, `static-cdn.sr.se`, `image-proxy.sr.se`, `web-api.sr.se` — **none serve metadata** |
+
+Per §6, the failures are the useful part: they are recorded so a future session
+does not re-run them.
+
+### The conclusion, and what it costs
+
+**SR does not publish Spotify or YouTube identifiers. Not in any payload, on any
+host, for live songs or archived episodes.** The exact-match feature the original
+E2 entry described **cannot be built from SR data**, and no amount of further
+endpoint enumeration will change that — the field does not exist upstream.
+
+**This means search links are not a shortcut or a fallback. They are the only
+option the data allows.** My WS51 implementation is therefore correct as written,
+and the `Sök` wording in the aria-labels is not over-hedging — it is the honest
+description of what the link does.
+
+### What would actually be needed, and it is out of scope
+
+An exact link requires an id **we** hold, from one of:
+- an SR field that does not exist today;
+- a third-party mapping service (a backend, an API key, or a maintained local
+  table) — the app is static-only by design, so this breaks that constraint;
+- **iTunes**, which the app **already queries** for album artwork. Its search
+  API returns a `collectionId`, and a Spotify id is *not* among its fields —
+  so even the one external source already in use yields no Spotify id.
+
+None of these is a code change; all are product decisions with a real cost. **Not
+done, named as not done.**
+
+### One correction this investigation forces on the record
+
+The E2 entry's `spotifyId` claim was **copied forward unverified** through at
+least two sessions and was still being cited as a reason exact links were
+achievable. It was never measured. That is the exact failure this repo's own
+rule warns about — an unverified claim about a data field, repeated until it
+read as established. It is corrected here at the source claim, not just in the
+newest entry, so the next reader cannot inherit it.
