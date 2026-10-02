@@ -10215,7 +10215,6 @@ function seekMeasureRecordText() {
     const bar = document.querySelector('.topbar');
     if (!bar) return;
     let chip = bar.querySelector('.weather');
-    if (!rec) return;                       // keep whatever is already there
     if (!chip) {
       // A NEW CHILD IS NOT ADDED TO .topbar. That bar is
       // `justify-content: space-between` and WS11 added a third child, which
@@ -10247,8 +10246,41 @@ function seekMeasureRecordText() {
         onChipActivate();
       });
     }
-    const glyph = weatherGlyph(rec.code);
+    // WS46: this branch is only reachable for a chip that has NEVER had a
+    // reading -- if one already showed a temperature, the guard below returns
+    // first. That is what keeps WS45's "a failed refresh never blanks the
+    // header" guarantee intact while still giving a user with no reading at
+    // all something to tap. The two requirements are not in conflict once the
+    // empty state is scoped this narrowly.
+    if (!rec) {
+      // An EMPTY chip is repainted here only because it is empty: a chip that
+      // already shows a reading must survive a failed refresh untouched
+      // (WS45's "never blanks the header"). `weather-empty` is what makes that
+      // distinction explicit and testable rather than a comment's promise.
+      // A chip that already renders SOMETHING must survive a failed refresh
+      // untouched (WS45). "Something" is measured by the DOM, not by a class:
+      // a freshly created chip has no children yet, so a class-based check
+      // fired on it and left the header blank -- measured as an empty
+      // `<div class="weather">` that could not even be tapped.
+      if (chip.childElementCount > 0) return;
+      chip.textContent = '';
+      chip.appendChild(el('span', { class: 'weather-icon', 'aria-hidden': 'true',
+        html: `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">${WEATHER_ICONS.cloudy}</svg>` }));
+      chip.appendChild(el('span', { class: 'weather-place', text: 'Väder' }));
+      chip.setAttribute('aria-label', 'Visa väder. Tryck för att läsa in plats.');
+      chip.setAttribute('title', 'Tryck för att visa väder här');
+      chip.classList.add('weather-empty');
+      return;
+    }
+    // DEFECT (measured in the browser, not reasoned about): this clear was
+    // removed while reshaping the no-reading branch, so every repaint APPENDED
+    // to the existing children. Measured: the chip read "16°Göteborg16°Göteborg"
+    // -- duplicated, and it would have grown on every refresh. Found only
+    // because the browser assertion read textContent rather than trusting the
+    // source; four rounds of green tests could not see it.
     chip.textContent = '';
+    chip.classList.remove('weather-empty');
+    const glyph = weatherGlyph(rec.code);
     chip.appendChild(el('span', { class: 'weather-icon', 'aria-hidden': 'true',
       html: `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">${WEATHER_ICONS[glyph.id]}</svg>` }));
     chip.appendChild(el('span', { class: 'weather-temp', text: formatTemp(rec.temp) }));
@@ -10433,6 +10465,11 @@ function seekMeasureRecordText() {
     // agent, and may be time based, session based, or even permanent", and iOS
     // grants web apps only "Allow Once" / "While Using" -- there is no always
     // allow. So if the dialog still appears, that is the OS, not this code.
+    // Build the chip on EVERY path, including when there is no reading at all,
+    // so there is always something to tap. This runs BEFORE the early returns
+    // on purpose: an earlier version put the call after them, which meant the
+    // empty state was unreachable on exactly the opens that needed it.
+    renderWeatherChip(cached || null);
     const age = cached ? Date.now() - cached.at : Infinity;
     if (cached && age < WEATHER_FRESH_MS) {
       return;                       // fresh enough: nothing to ask for

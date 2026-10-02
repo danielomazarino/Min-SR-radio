@@ -104,6 +104,10 @@ body {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+/* The no-reading state (WS46). Dimmed so it reads as "not known yet" rather
+   than as a real observation, but still a visible, tappable target. */
+.weather-empty { opacity: 0.65; }
+.weather-empty .weather-place { font-style: italic; }
 .weather-icon { display: flex; align-items: center; color: var(--accent); }
 .weather-icon svg { width: 17px; height: 17px; }
 .weather-temp {

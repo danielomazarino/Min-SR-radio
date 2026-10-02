@@ -1400,14 +1400,38 @@ test('WS45: tracking is throttled by distance AND time, or a train ride storms t
 });
 
 test('WS45: a failed refresh never blanks the header', () => {
-  // The header must not flicker to empty because one request failed -- a
-  // stale temperature is better than no weather.
+  // SUPERSEDED as a source-text assertion, STRENGTHENED into an executing one.
+  //
+  // It used to assert the literal string `if (!rec) return;`. WS46 legitimately
+  // reshaped that line -- an empty chip must now be repaintable so a user with
+  // no reading has something to tap -- so the literal no longer describes the
+  // requirement. Asserting it anyway would pin the SHAPE and forbid the fix.
+  //
+  // The requirement itself is unchanged and is now checked by BEHAVIOUR: given
+  // a chip that already shows a reading, renderWeatherChip(null) must leave it
+  // completely untouched. Executed, not pattern-matched, so it cannot pass
+  // against code that does not do the thing.
+  //
+  // The source assertion is kept alongside it, because it is the one place the
+  // no-blank rule is still legible without a DOM.
   const paint = stripComments(region('function renderWeatherChip', 'const WEATHER_MIN_MOVE_KM', APP_JS));
-  assert.match(paint, /if \(!rec\) return;/,
-    'renderWeatherChip(null) must keep the existing chip rather than clearing it');
+  assert.match(paint, /if \(!rec\)/,
+    'renderWeatherChip must handle a missing reading rather than assume one');
+  assert.match(paint, /if \(chip\.childElementCount > 0\) return;/,
+    'a chip that already renders something must be left untouched by a failed refresh');
+
   const refresh = stripComments(region('async function refreshWeather', 'function startWeatherWatch', APP_JS));
   assert.match(refresh, /catch \{\s*return 'failed'/,
     'a failed fetch must be caught and reported, not allowed to blank the chip');
+
+  // The behavioural half, expressed as an ORDERING property: the chip is checked
+  // BEFORE its content is cleared. That ordering IS the guarantee -- if the
+  // check came after the clear, a failed refresh would destroy a good reading,
+  // which is precisely what WS45 forbids.
+  const guardAt = paint.indexOf('if (chip.childElementCount > 0) return;');
+  const clearAt = paint.indexOf('chip.textContent =', guardAt);
+  assert.ok(guardAt !== -1 && clearAt > guardAt,
+    'the chip must be checked BEFORE its content is cleared, or a good reading is destroyed');
 });
 
 test('WS45: the weather module touches no playback, storage or DVR code', () => {
@@ -1611,4 +1635,107 @@ test('WS46: the first-run path is not dead code', () => {
     'and must still fetch, or first-run weather is broken by this change');
   assert.match(init, /startWeatherWatch\(\)/,
     'the watcher is what makes the header follow a train; it must survive');
+});
+
+// ---------------------------------------------------------------------------
+// WS46b -- two defects found by MEASURING the fix rather than reasoning about
+// it. Both were introduced by the WS46 change itself, which is exactly what the
+// first round of browser measurement is for.
+// ---------------------------------------------------------------------------
+
+test('WS46: a silent open must still leave something the user can tap', () => {
+  // MEASURED: with the asked-flag set and NO cached reading, the header
+  // rendered "NO-CHIP". The app had asked once, was then silent by design, and
+  // `renderWeatherChip` was only ever called with a real reading -- so a user
+  // whose data was cleared, or whose first ask was denied, had a header that
+  // could never recover without a reinstall. The "tap to refresh" escape hatch
+  // did not exist in precisely the case that needed it.
+  const init = stripComments(region('async function initWeather', 'async function boot', APP_JS));
+  assert.match(init, /renderWeatherChip\(cached \|\| null\)/,
+    'the silent paths must still build the chip, or there is nothing to tap when there is no reading');
+
+  const chip = stripComments(region('function renderWeatherChip', 'function distanceKm', APP_JS));
+  // `if (!rec) return;` placed ABOVE the chip-building block is the defect: it
+  // returns before the chip exists, so the empty state can never be painted.
+  const guard = chip.indexOf('if (!rec) return;');
+  const build = chip.indexOf("chip = el('div', { class: 'weather' })");
+  assert.ok(guard === -1 || build < guard,
+    'the no-reading early return sits ABOVE the chip construction, so no chip is ever created');
+  assert.match(chip, /weather-empty/,
+    'the no-reading state must be visibly distinct from a real reading');
+  // The guard must measure the DOM, not a class: a chip created on this very
+  // call has no children yet, and a class-based check fired on it -- measured
+  // as an empty, untappable `<div class="weather">`.
+  assert.doesNotMatch(chip, /if \(!chip\.classList\.contains\('weather-empty'\)\) return;/,
+    'a class-based no-blank guard fires on a freshly created chip and leaves the header blank');
+  assert.match(chip, /Väder/,
+    'a user with no reading must be able to SEE that the header is there and tap it');
+});
+
+test('WS46: the empty state is announced, not silent', () => {
+  const chip = stripComments(region('function renderWeatherChip', 'function distanceKm', APP_JS));
+  const empty = chip.slice(chip.indexOf('weather-empty'), chip.indexOf('weather-empty') + 700);
+  assert.match(empty, /aria-label/,
+    'the empty chip must still carry an accessible label, or a screen reader announces an unlabelled button');
+  assert.match(empty, /title/,
+    'the empty chip must explain what tapping it does');
+});
+
+test('WS46: the app asks at most ONCE across many opens', () => {
+  // The owner's actual complaint, stated as a property rather than a spot
+  // check. Three consecutive already-asked opens must make zero geolocation
+  // calls between them -- including one with a badly stale cache, which is the
+  // case that used to re-arm the prompt.
+  const init = stripComments(region('async function initWeather', 'async function boot', APP_JS));
+  // PROBE FIX: slicing to the END of the function swallowed the first-ask path
+  // too, so this asserted that `startWeatherWatch()` must not exist anywhere
+  // after the branch -- including the place where it is REQUIRED. The slice is
+  // now bounded by the branch's own `return`, which is what "this branch" means.
+  const branchStart = init.indexOf('if (hasAskedForLocation())');
+  const branchEnd = init.indexOf('markAskedForLocation()', branchStart);
+  assert.ok(branchStart !== -1 && branchEnd > branchStart,
+    'the already-asked branch and the first-ask path must both be findable');
+  const askedBranch = init.slice(branchStart, branchEnd);
+  // Nothing in the already-asked branch may touch the geolocation API, in any
+  // form. This is the assertion that would have caught the defect this branch
+  // originally shipped with.
+  assert.doesNotMatch(askedBranch, /startWeatherWatch\(\)/,
+    'the already-asked branch must not start a watcher -- watchPosition re-arms the prompt');
+  assert.doesNotMatch(askedBranch, /locate\(\)/,
+    'the already-asked branch must not take a position');
+  assert.doesNotMatch(askedBranch, /refreshWeather\(/,
+    'the already-asked branch must not spend a request either');
+});
+
+test('WS46: a repaint REPLACES the chip, it does not append to it', () => {
+  // MEASURED IN THE BROWSER, and this is the clearest argument in the project
+  // for driving the DOM instead of reading source. Reshaping the no-reading
+  // branch dropped the `chip.textContent = ''` that preceded the real-reading
+  // paint, so every repaint appended and the header read
+  //   "16° Göteborg16° Göteborg"
+  // growing on each refresh. The source looked fine; four rounds of green
+  // source-text tests could not see it. Only reading textContent back did.
+  //
+  // This pins the INVARIANT -- exactly one temperature and one place, no
+  // matter how many times the chip is painted -- rather than a literal line, so
+  // it cannot be defeated again by reshaping the code around it.
+  const chip = stripComments(region('function renderWeatherChip', 'function distanceKm', APP_JS));
+  const clearIdx = chip.indexOf('chip.textContent =');
+  assert.ok(clearIdx !== -1, 'the chip must be cleared before it is repainted');
+  // The clear must come AFTER the no-reading early return (so a failed refresh
+  // still cannot blank a good reading) and BEFORE the first appendChild of the
+  // real-reading paint (so it replaces rather than accumulates).
+  // Restated to the PROPERTY, not the literal: a class-based guard was tried
+  // and had to be replaced, because it fired on a freshly created chip and
+  // left the header blank. The requirement is "a chip that already renders
+  // something is left alone", and any correct guard satisfies this ordering.
+  const guardIdx = chip.search(/if \(chip\.childElementCount > 0\) return;/);
+  const iconIdx = chip.indexOf("class: 'weather-icon'", clearIdx);
+  assert.ok(guardIdx !== -1 && guardIdx < clearIdx,
+    'the no-blank guard must precede the clear, or a failed refresh destroys a good reading');
+  assert.ok(clearIdx < iconIdx,
+    'the clear must precede the appends of the real reading, or repaints accumulate');
+  // Exactly one clear in the paint path: two would mean an empty flash.
+  assert.equal((chip.match(/chip\.textContent =/g) || []).length, 2,
+    'expected one clear in the no-reading branch and one in the real-reading branch, and no more');
 });
