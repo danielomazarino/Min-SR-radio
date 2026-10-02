@@ -8608,13 +8608,25 @@ function seekMeasureRecordText() {
               class: 'swipe-reveal-icon',
               html: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>',
             })),
+          // THE FACE. The row's own surface colour has to live on a layer that
+          // paints ABOVE the delete panel, or the panel shows through at REST
+          // and every row reads as a red block when nothing is happening
+          // (observed in a screenshot on the live site, after an earlier fix
+          // that made the text readable but left the row red).
+          //
+          // Painting order is the whole problem: a parent's own background is
+          // painted before any positioned child, so an absolutely-positioned
+          // panel is ALWAYS above it. Making the content a positioned layer
+          // with the surface colour on it is what puts the white face above the
+          // red, and the face is what slides.
+          el('div', { class: 'selected-item-face' },
           el('span', { class: 'selected-grip', 'aria-hidden': 'true',
             html: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 5h2v2H9zM13 5h2v2h-2zM9 9h2v2H9zM13 9h2v2h-2zM9 13h2v2H9zM13 13h2v2h-2zM9 17h2v2H9zM13 17h2v2h-2z"/></svg>' }),
           el('span', { class: 'selected-pos', text: String(pos + 1) }),
           item.image
             ? el('img', { class: 'selected-logo', src: item.image, alt: '', loading: 'lazy' })
             : el('span', { class: 'selected-logo selected-letter', text: item.name.slice(0, 1) }),
-          el('span', { class: 'selected-name', text: item.name }));
+          el('span', { class: 'selected-name', text: item.name })));
         const controls = el('div', { class: 'selected-controls' });
         /**
          * Move a row one place within the WHOLE row -- crossing the SR/external
@@ -8681,7 +8693,9 @@ function seekMeasureRecordText() {
           html: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>',
           onclick: () => onRemoveRequest(id, isExt ? 'itunes' : 'sr', item.name),
         }));
-        rowEl.appendChild(controls);
+        // The controls live INSIDE the face so they slide with it. Appending
+        // them to the row would leave them stationary over the panel.
+        rowEl.querySelector('.selected-item-face').appendChild(controls);
         group.appendChild(rowEl);
       });
       enableDragSort(group, kind);

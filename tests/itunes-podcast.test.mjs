@@ -818,19 +818,51 @@ test('the swipe reveal is behind the row content, not painted over it', () => {
   // POSITIONED elements paint ABOVE all non-positioned siblings -- so writing
   // the panel first in the DOM does not put it behind.
   const css = stripComments(fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8'));
-  // Every content child must be lifted into the positioned layer, and source
-  // order then decides: panel first, content after, content on top.
-  assert.match(css,
-    /\.selected-item > \.selected-grip,[\s\S]*?\.selected-item > \.selected-controls \{\s*position: relative;/,
-    'the row content must be positioned, or the absolute panel paints over it');
-  // The slide must apply to the CONTENT, not the whole row: translating the row
-  // would drag the panel sideways and nothing would be uncovered.
+  const grp = stripComments(region('function buildSelectedGroup', 'function enableDragSort', APP_JS));
   const swipe = stripComments(region('function enableSwipeToRemove', 'function rebuildSelected', APP_JS));
-  assert.match(swipe, /const content = \[\.\.\.row\.children\]\.filter\(\(c\) => !c\.classList\.contains\('swipe-reveal'\)\)/,
+  // THE ROW ITSELF must be transparent and the SURFACE must live on an inner
+  // positioned layer. Giving the children `position: relative` is NOT enough:
+  // a parent's own background paints before any positioned child, so the
+  // panel still shows through and the row reads red at REST. That was measured
+  // on the live site after a fix that had made the text readable.
+  // MUTATION CAUGHT IT: the first version of these used /\.selected-item-face \{
+  // [\s\S]*?flex: 1;/ and reported GREEN when `flex: 1` was deleted, because
+  // the unanchored wildcard runs on past the rule's closing brace and finds a
+  // `flex: 1` in some LATER rule. Scoped to the block, every one goes red.
+  const faceRule = stripComments(region('.selected-item-face {', '.selected-item.swiping', css));
+  const rowRule = stripComments(region('.selected-item {', '.selected-item.dragging', css));
+  assert.ok(rowRule.includes('background: transparent'),
+    'the row must not paint a surface of its own -- it would sit under the panel');
+  assert.match(faceRule, /position: relative;/);
+  assert.match(faceRule, /z-index: 1;/,
+    'the face must be a stacking layer above the panel');
+  assert.match(faceRule, /background: var\(--surface\)/,
+    'the visible surface must live on a layer ABOVE the panel');
+  // FOUND IN A SCREENSHOT OF A HARNESS, after the first two fixes both passed:
+  // the face was correctly positioned and correctly coloured, and the rows were
+  // STILL red -- because the face is the row's ONLY in-flow child and sized to
+  // its content, leaving a bare red strip down the right-hand side. Painting
+  // order was correct; the face was simply too narrow. `flex: 1` is what makes
+  // it span the row. Without this the guard above passes on a broken layout.
+  assert.match(faceRule, /flex: 1;/,
+    'the face must FILL the row width -- sized to content it leaves the panel showing');
+  assert.match(faceRule, /min-width: 0;/,
+    'the face needs min-width:0 or .selected-name can never ellipsis inside it');
+  // The controls slide WITH the face. If they were re-parented onto the row they
+  // would sit still over the panel instead of travelling with the name.
+  assert.match(grp, /querySelector\('\.selected-item-face'\)\.appendChild\(controls\)/,
+    'the controls must be appended INSIDE the face, or they do not travel with it');
+  assert.match(grp, /class: 'selected-item-face'/,
+    'the row content must be wrapped in the face layer');
+  // The face is what slides, so the gesture must target it -- not each child.
+  assert.match(swipe,
+    /const content = \[\.\.\.row\.children\]\.filter\(\(c\) => !c\.classList\.contains\('swipe-reveal'\)\)/,
     'the gesture must capture the content layer, excluding the panel');
   assert.doesNotMatch(swipe, /s\.row\.style\.transform/,
     'the ROW must never be translated -- that moves the panel with it');
   assert.match(swipe, /s\.content\.forEach\(\(el\) => \{/);
+  // The slide must apply to the CONTENT, not the whole row: translating the row
+  // would drag the panel sideways and nothing would be uncovered.
 });
 
 test('the reveal carries an icon and no caption', () => {

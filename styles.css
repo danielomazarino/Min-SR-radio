@@ -144,8 +144,10 @@ a:focus-visible {
 .selected-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  background: var(--surface);
+  /* NO background here. The visible surface moved onto .selected-item-face so
+     it can paint ABOVE the delete panel; leaving a background on the row would
+     sit under the panel and the row would read red at rest. */
+  background: transparent;
   border-radius: var(--radius-sm);
   padding: 8px 10px;
   margin-bottom: 6px;
@@ -189,12 +191,35 @@ a:focus-visible {
 /* The content layer. `position: relative` with no offsets moves nothing; it
    only lifts these above the absolutely-positioned panel. Without this the
    panel paints over the name and logo (observed in a screenshot, not guessed). */
-.selected-item > .selected-grip,
-.selected-item > .selected-pos,
-.selected-item > .selected-logo,
-.selected-item > .selected-name,
-.selected-item > .selected-controls {
+/* THE FACE: the row's visible surface, on its own positioned layer ABOVE the
+   delete panel. This is the second half of the painting-order fix.
+
+   A parent's own background is painted BEFORE any positioned child, so an
+   absolutely-positioned panel is always above it -- giving the children
+   `position: relative` makes the TEXT readable but leaves the row's white
+   surface underneath, so the panel still shows through and every row reads as
+   a red block at rest. Moving the surface colour onto this inner layer is what
+   actually puts white above red. It slides as one piece with its contents. */
+.selected-item-face {
   position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface);
+  border-radius: var(--radius-sm);
+  /* Inherit the row's box so the padding lives on the face, not the row. */
+  padding: 8px 10px;
+  margin: -8px -10px;
+  min-height: 100%;
+  /* THE ROW IS display:flex and the face is its ONLY in-flow child (the
+     delete panel is absolute), so without flex-grow the face sizes to its
+     CONTENT and leaves the rest of the row bare -- which is exactly the red
+     strip that showed down the right-hand side of every row in the harness
+     screenshot. Growing to fill is what makes white cover red at rest.
+     min-width:0 lets .selected-name's own flex:1 ellipsis work. */
+  flex: 1;
+  min-width: 0;
 }
 
 .selected-item.swiping { cursor: grabbing; }
