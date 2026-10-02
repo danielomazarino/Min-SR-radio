@@ -6,12 +6,12 @@
  * Uses RELATIVE paths so the app works under any base path (e.g. /repo-name/).
  */
 
-const CACHE_NAME = 'minradio-b4dd0103';
+const CACHE_NAME = 'minradio-0e909dbe';
 const SHELL_ASSETS = [
   './',
   './index.html',
   './styles.cf78634e.css',
-  './app.51a014b7.js',
+  './app.f9ebb0d4.js',
   './src/episode-seek.mjs',
   './manifest.webmanifest',
   './icons/favicon.svg',

@@ -8858,8 +8858,13 @@ function seekMeasureRecordText() {
       group.addEventListener('touchstart', (e) => {
         const row = e.target.closest('.selected-item');
         if (!row || e.touches.length !== 1) return;
+        // The CONTENT layer: every child EXCEPT the delete panel. These are
+        // the elements that slide, captured once per gesture rather than
+        // re-queried on every move. The panel must never be transformed.
+        const content = [...row.children].filter((c) => !c.classList.contains('swipe-reveal'));
         s = {
           row,
+          content,
           id: Number(row.dataset.id),
           startX: e.touches[0].clientX,
           startY: e.touches[0].clientY,
@@ -8887,9 +8892,13 @@ function seekMeasureRecordText() {
         // other direction is inert rather than destructive.
         const d = Math.min(0, dx);
         s.d = d;
-        s.row.style.transition = 'none';
-        s.row.style.transform = `translateX(${d}px)`;
-        s.row.style.opacity = String(Math.max(0.35, 1 + d / s.width));
+        // Translate the CONTENT layer only. Moving the whole row would drag
+        // the coloured panel sideways with it, leaving nothing for the content
+        // to uncover -- which is the entire effect. The panel stays put.
+        s.content.forEach((el) => {
+          el.style.transition = 'none';
+          el.style.transform = `translateX(${d}px)`;
+        });
       }, { passive: true });
 
       const finish = () => {
@@ -8897,25 +8906,33 @@ function seekMeasureRecordText() {
         const st = s;
         s = null;
         st.row.classList.remove('swiping');
+        // Reset the CONTENT layer. Used on spring-back, on cancel and just
+        // before the list rebuilds, so a row restored later by undo never
+        // inherits a transform.
+        const clearContent = (transition) => {
+          st.content.forEach((el) => {
+            el.style.transition = transition;
+            el.style.transform = '';
+          });
+        };
         if (st.intent !== 'remove') {
           // Not a removal: leave the row exactly as the drag-sort left it.
-          st.row.style.transition = '';
-          st.row.style.transform = '';
-          st.row.style.opacity = '';
+          clearContent('');
           return;
         }
         const elapsed = Date.now() - st.t0;
         const flick = elapsed < 250 && Math.abs(st.d) > 40;
         const threshold = (st.width || 1) * 0.35;
-        st.row.style.transition = 'transform 0.18s ease';
         if (Math.abs(st.d) >= threshold || flick) {
-          st.row.style.transform = 'translateX(-100%)';
+          // Carry the content fully off, leaving the panel bare for a beat.
+          st.content.forEach((el) => {
+            el.style.transition = 'transform 0.18s ease';
+            el.style.transform = 'translateX(-100%)';
+          });
           const commit = () => {
-            // Style cleanup BEFORE the list rebuilds, so a row restored later
-            // by undo never inherits a transform.
-            st.row.style.transition = '';
-            st.row.style.transform = '';
-            st.row.style.opacity = '';
+            // Cleanup BEFORE the list rebuilds, so the row object that undo
+            // may resurrect is never left holding a transform.
+            clearContent('');
             // Read the name from the DOM: an SR favourite is stored as a bare
             // integer, so the row is the only place the name still exists.
             const name = st.row.querySelector('.selected-name')?.textContent || '';
@@ -8923,17 +8940,14 @@ function seekMeasureRecordText() {
           };
           setTimeout(commit, 170);
         } else {
-          st.row.style.transform = '';
-          st.row.style.opacity = '';
+          clearContent('transform 0.18s ease');
         }
       };
       group.addEventListener('touchend', finish);
       group.addEventListener('touchcancel', () => {
         if (!s) return;
         s.row.classList.remove('swiping');
-        s.row.style.transition = '';
-        s.row.style.transform = '';
-        s.row.style.opacity = '';
+        s.content.forEach((el) => { el.style.transition = ''; el.style.transform = ''; });
         s = null;
       });
     }
