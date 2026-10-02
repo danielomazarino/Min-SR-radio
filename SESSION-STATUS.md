@@ -906,3 +906,48 @@ cadence is **device-verified by the owner**, the last open WS48/WS49 item.
 **Next:** owner to check build **`eeebe4d`** — long-press a channel, flick the
 programme list fast, and confirm the card stays open. That is the one reading
 this workstream cannot substitute for.
+
+## WS53 — drag, Info page, brand icons — 2026-10-03T02:40:00+02:00
+
+**Baseline:** `npm test` → **518/518** (run). **Now 523/523.**
+**Owner report, verbatim:** three defects — "the spotify and youtube icons needs
+to be the official icons from the companies. the info page is not moved as
+stipulated in the requirements, i can only see the old info button being renamed
+to Tests… the Info och Anpassningar still doesn't drag down i see as it should,
+only the small horizontal mark is moving and the menu itself seems stale."
+
+**All three MEASURED before fixing**, two on the LIVE site at build `022f82b`:
+- drag: `sheet transform: none`, `zone transform: translateY(110px)`
+- Info page: no info button on the home screen; help text unreachable from it
+- icons: glyphs were the letters S and Y
+
+**Decision:** the drag's cause was the BUG 1 fix (2026-09-22) — it correctly
+scoped the gesture to `.sheet-grab-zone` but passed that zone as the element the
+transform is written to, so the scoping was right and the movement was left
+behind. `enableSwipeToClose` now takes `move` (what slides) separately from
+`panel` (what receives), defaulting to `panel` so three call sites are unchanged.
+
+**Test count:** 518 → 523. **5 mutations: 4 RED, 1 NO-OP reported.** The no-op was
+my measurement error (a `.replace` that matched a different `});`); the guard was
+sound, the mutation never applied. Re-mutated against the exact anchor → red.
+
+**Three test-side faults fixed, each of which reported a defect that did not
+exist:** a region ending one line before its call; `[^)]*` unable to span
+`onDone?.()`; and a flat regex counting 4 topbar children because it could not
+distinguish a wrapper from the buttons inside it.
+
+**One product-code crash found ONLY in the browser:** the SVG passed as a
+variadic child of `el()` threw "parameter 1 is not of type 'Node'" and took the
+expand panel down. 523 source-text assertions could not see it.
+
+**One CSS syntax error I introduced in WS52** — 8 orphaned declarations outside
+any rule, leaving the day labels unstyled — repaired, found via the owner's
+screenshot.
+
+**Deploy checks:** suite 523/523 **PASS** · remote `60358a9` **PASS** · live
+`app.78643850.js` **PASS** · served bundle **byte-identical to local**
+(`eedfc622`, md5-compared) **PASS**. An earlier poll showed a different hash; that
+was my own stale expected value, not a deploy fault — resolved by md5.
+
+**Next:** owner to check build **`022f82b`**. One reading settles all three: drag
+the Info sheet down and watch whether the whole panel follows the mark.
