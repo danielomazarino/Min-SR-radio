@@ -7578,3 +7578,108 @@ achievable. It was never measured. That is the exact failure this repo's own
 rule warns about — an unverified claim about a data field, repeated until it
 read as established. It is corrected here at the source claim, not just in the
 newest entry, so the next reader cannot inherit it.
+
+---
+
+## 2026-10-03 (later) — E2 DEEP SWEEP: is there exact-match metadata ANYWHERE?
+### REPORT ONLY, after the WS53 deploy. No code changed.
+
+**Owner, verbatim:** *"this 'Spotify-id finns redan i ondemand-tracks
+(spotifyId) — kan ge EXAKTA Spotify-länkar för arkiverade avsnitt.' is worth
+looking up more before we dismiss not finding the data needed, look for more end
+points and information and make a report"*
+
+The owner was right to push back: the first pass had only looked at the endpoints
+the app already calls. This sweep went wider. **The conclusion is unchanged, and
+now rests on a much larger set of measurements.**
+
+### A. The player API has exactly ONE route
+
+| probe | status |
+|---|---|
+| `web-api.sr.se/v1/player/ondemand` | **400** — route EXISTS (validation error on missing id) |
+| `v1/player/live` · `channels` · `program` · `suggestions` · `search` · `tracks` · `metadata` · `item` | **404** each |
+| `v1/track` · `v1/tracks` · `v2/tracks` | **404** each |
+
+`type=podcast` and `type=program` were both tried against `ondemand` — both 400.
+There is no richer variant hiding behind a different `type`.
+
+### B. A LIVE song, captured mid-playback — the strongest evidence
+
+Polled five music channels until one had a song actually playing:
+
+**P4 Barometern (202), rightnow at 00:45 — "Crocodile Rock", Elton John.**
+The COMPLETE song object:
+
+```json
+{ "title": "Crocodile Rock",
+  "description": "Elton John - Crocodile Rock",
+  "artist": "Elton John",
+  "composer": "Elton John",
+  "albumname": "Don't Shoot Me I'm Only The Piano Player",
+  "recordlabel": "Mercury",
+  "starttimeutc": "/Date(1790983546000)/",
+  "stoptimeutc": "/Date(1790983775000)/" }
+```
+
+**Eight keys. That is the whole object.** Every key in the entire payload was
+enumerated recursively — `playlist.previoussong.*`, `playlist.song.*`,
+`playlist.channel.{id,name}`. The only `id` anywhere is **SR's own channel id**.
+
+This is not an empty sample and not a talk programme: it is a canonical,
+unambiguous, well-known recording with album and label attached, and it still
+carries no third-party identifier.
+
+### C. MusicBrainz — a genuinely new candidate, and it does not work either
+
+`musicbrainz.org` answers **200** with `access-control-allow-origin: *`, so it IS
+reachable from GitHub Pages and needs no API key. That made it worth testing
+properly rather than dismissing:
+
+- `recording?query=recording:"Crocodile Rock" AND artist:"Elton John"` → **3
+  recordings found**, correct artist and title, with MBIDs.
+- `inc=url-rels` on the correct recording → **`relations: 0`**.
+- **The decisive probe:** `query=url:spotify:track:*` → **0 recordings**.
+
+**MusicBrainz does not index Spotify track URLs at all.** So it cannot supply a
+Spotify id even in principle, and it has no YouTube relation type either.
+
+Secondary blocker, recorded for completeness: MusicBrainz allows **400 requests
+/ second** but asks for a User-Agent and enforces an anonymous rate limit; this
+session measured `x-ratelimit-remaining: 138` on first contact. Not the blocker —
+the absence of the data is.
+
+### D. Everything else
+
+| probe | status |
+|---|---|
+| `api.sr.se/api/v2/music` · `/song` · `/tracks` · `/musicbrainz` | **500** each |
+| `api.spotify.com/v1/search` | **401** — needs a key |
+
+### The conclusion
+
+**SR does not publish Spotify or YouTube identifiers, on any endpoint, in any
+payload, for live songs or archived episodes. MusicBrainz — the one keyless,
+CORS-open third-party source that could have supplied them — does not index
+Spotify URLs.** The exact-match feature is not buildable from data available to
+this app.
+
+**Search links are not a fallback. They are the only thing the data allows.**
+
+### The honest path to exact links, if the owner wants one
+
+There is exactly one viable route, and it is a product decision, not a code
+change: **build and ship our own mapping table**, generated offline from a source
+that does have the ids, and served as a static JSON file alongside the app.
+
+- It preserves the static-only, no-backend, no-key constraint.
+- It must be **generated and committed by a human or an offline script** — an
+  offline pipeline is *not* "a backend", but it is real ongoing work.
+- It covers only what has been mapped: SR's own catalogue is large, and a table
+  covering today's playlist and yesterday's episodes would need rebuilding
+  continuously to stay useful.
+- Stale entries produce wrong links, which is worse than an honest search.
+
+**Not implemented. Named as not done.** The owner has not asked for it and it is
+a significant ongoing cost; it should be a deliberate decision, not a silent
+expansion of scope.
