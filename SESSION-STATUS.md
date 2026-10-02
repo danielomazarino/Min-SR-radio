@@ -804,3 +804,55 @@ my instruments, not the app:
 
 **Next:** owner to check build **`ed9f68e`** — tapping should no longer prompt,
 and Safari should name the Settings fix.
+
+## WS49 — "was that expected?" + explain the empty header on open — 2026-10-02T21:45:00+02:00
+
+**Started / baseline:** `npm test` → **498/498** (run). **Now 499/499.**
+**Owner report, verbatim:**
+*"switched on location services for safari and got 13 degrees Göteborg same as
+in the pwa app. when i switched it off and refreshed the webpage the 13 and
+Göteborg stayed. didn't show the italic väder until i cleared the history. was
+that expected behaviour according to implementation"*
+
+### Both halves were expected — MEASURED, not reasoned
+
+| scenario | prompts | header |
+|---|---|---|
+| location ON, coordinates saved | **0** | `13° Göteborg` |
+| location **OFF**, coordinates saved | **0** | `13° Göteborg` ← stayed |
+| history cleared, location OFF | 0 | italic `Väder` |
+
+**Why 13° stayed after switching location off — and this is correct.** Once
+coordinates are saved the app does not need the GPS at all. Weather for a city
+does not change because a permission was withdrawn. The whole point of saving
+them (WS48) was so the header keeps working without ever asking again — so
+withdrawing permission cannot make it stop. Turning location off and expecting
+the header to empty would mean the fix was never in place.
+
+**Why clearing history produced *Väder*.** Clearing removed the saved
+coordinates, which is the only thing that can produce the empty state. So the
+sequence the owner observed is exactly the sequence the implementation implies,
+and the fact that clearing was needed is itself evidence the saving works.
+
+### One real defect found, and fixed
+
+**DEFECT G.** MEASURED: `explainNoLocation()` was called from `refreshWeatherNow`
+and from **nowhere** in `initWeather`. So the empty state explained itself when
+reached by **tapping** and stayed mute when reached by **reloading** — two entry
+points into one dead end behaving differently, and no test covered the difference.
+Reloading is the path people actually take; the owner took it.
+
+Fix: the retry-FAILED branch in `initWeather` now explains itself too. The test
+asserts it sits on the FAILED branch, since calling it after a successful retry
+would overwrite a perfectly good reading.
+
+**What the user now sees in that state, on either entry path:**
+`Ingen platsinfo. Tillåt i Settings > Safari > Plats.` in the visible text, the
+`aria-label` and the tooltip — not a toast, which is transient.
+
+Tests: 499. 1 mutation RED, checksum restored.
+Deploy: remote `8b39005`, live serves `app.a26be8a4.js` 200.
+
+**Next:** owner to check build **`40870cf`**. To see the explanation, turn
+location off, clear the app's storage, and reload — the pill should now name the
+setting instead of looking broken.
