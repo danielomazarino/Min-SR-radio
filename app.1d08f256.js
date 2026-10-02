@@ -7370,9 +7370,22 @@ function seekMeasureRecordText() {
       dragging = false;
       panel.style.transition = 'transform 0.2s ease';
       const elapsed = Date.now() - t0;
-      const flick = elapsed < 250 && Math.abs(d) > 40;
+      // WS50: direction matters, and measuring |d| threw it away.
+      //
+      // `d` is SIGNED. Negative always means the gesture went the wrong way --
+      // the touchmove handler above already sprang the panel back and returned,
+      // because a sheet only ever closes DOWNWARD (y) or RIGHTWARD (x). But
+      // finish() then measured Math.abs(d), so that already-refused gesture was
+      // still counted as a valid close. Measured on the live site: on the tabla
+      // card an upward flick (|d| = 50 > 40) AND a slow 300 px upward drag
+      // (|d| = 300 > 171 px) both closed the card mid-scroll.
+      //
+      // Rule: only d > 0 may ever close. This is "one field, one writer"
+      // applied to a gesture -- the drag code and the release code must agree
+      // on what a valid close looks like.
+      const flick = elapsed < 250 && d > 40;
       const size = axis === 'x' ? W() : H();
-      if (Math.abs(d) > size * 0.35 || flick) {
+      if (d > size * 0.35 || flick) {
         const dir = axis === 'x' ? (d > 0 ? W() : -W()) : H();
         panel.style.transform = axis === 'x' ? `translateX(${dir}px)` : `translateY(${dir}px)`;
         setTimeout(close, 180);
