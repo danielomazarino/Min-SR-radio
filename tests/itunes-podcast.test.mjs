@@ -1112,3 +1112,141 @@ test('WS44: the reorder path has no other out-of-scope provider variable', () =>
       `${fn} reads names that are not parameters, locals, module declarations or globals: ${suspicious.join(', ')}`);
   }
 });
+
+/* ---------------------------------------------------------------------------
+ * WS44c — the podcast list is reachable only through the search box.
+ *
+ * OWNER (2026-10-02): "removing the long list of the swedish radio podcasts
+ * visually and how to make them visible only via the search box", then
+ * "changes are okey to implement as you propose, just make sure you test
+ * carefully that the search experience is find for both sources".
+ *
+ * The list rendered 371 SR programmes at 33 010 px (~89 screens). The empty
+ * state replaces that until the owner types.
+ *
+ * THE PROPERTY THAT MATTERS, and it is not "the list is short": the box and
+ * the list must never tell different stories. Clearing the box must bring the
+ * prompt back, and a stale row must never survive under a new query. That is
+ * the same defect class as R6 on a different surface.
+ * --------------------------------------------------------------------- */
+
+/**
+ * Run the REAL SR filter out of loadItems, against a fixture catalogue.
+ *
+ * The filter is extracted from the function body rather than retyped, because
+ * retyping it is how two workstreams reached opposite conclusions about this
+ * same code in the past.
+ */
+function srFilterHarness(catalogue) {
+  const body = stripComments(grab('loadItems'));
+  // The SR filter expression, verbatim, as it appears in loadItems.
+  const m = body.match(/const srRows = q[\s\S]*?: all;/);
+  assert.ok(m, 'the SR filter expression was not found in loadItems');
+  // eslint-disable-next-line no-new-func
+  const build = new Function('all', 'q', `${m[0]}\nreturn srRows;`);
+  // loadItems normalises the query BEFORE the filter runs
+  // (`const q = (query || '').trim().toLowerCase()`), so the harness must do
+  // the same or it is not testing the real behaviour. My first version passed
+  // raw text and reported a failure that was the harness's, not the code's.
+  return (q) => build(catalogue, (q || '').trim().toLowerCase());
+}
+
+const CATALOGUE = [
+  { id: 6706, name: 'P4 Psykologen', description: 'Vi har alla problem som gnuggar i skallen.' },
+  { id: 3437, name: 'Ekot granskar', description: 'Prisbelönta avslöjanden och gripande reportage.' },
+  { id: 90210, name: 'Spanarna', description: 'Aktuellt om brottsligheten och samhället.' },
+  // description carries the word, the NAME does not -- this is the whole point
+  { id: 5000, name: 'Funk i P1', description: 'Musik och studier om samhälle.' },
+  { id: 6000, name: 'Null', description: null },   // must not throw
+];
+
+test('WS44c: the SR search matches the description as well as the name', () => {
+  const f = srFilterHarness(CATALOGUE);
+  // by name
+  assert.deepEqual(f('psykolog').map((p) => p.id), [6706]);
+  assert.deepEqual(f('spanarna').map((p) => p.id), [90210]);
+  // by DESCRIPTION ONLY -- this is what the fix added. Before it, `samhälle`
+  // returned nothing at all, because no NAME contains the word.
+  assert.deepEqual(f('samhälle').map((p) => p.id).sort(), [5000, 90210],
+    'a word that appears only in a description must still find the programme');
+  // a null description must not throw
+  assert.doesNotThrow(() => f('null'));
+  // case-insensitive, as before
+  assert.deepEqual(f('GRANSKAR').map((p) => p.id), [3437]);
+  // empty query returns the whole catalogue (the unsearched state)
+  assert.equal(f('').length, CATALOGUE.length);
+});
+
+test('WS44c: the unsearched podcast list shows a prompt, not 371 rows', () => {
+  const renderList = stripComments(region('function renderList', 'async function loadItems', APP_JS));
+  // The gate must be on podcasts AND an empty query. Either half alone is wrong:
+  // gating on the tab alone would hide the channels list too.
+  assert.match(renderList, /if \(tab === 'podcasts' && !searchQuery\) \{/,
+    'the long list must be gated on the podcast tab and an empty query');
+  assert.match(renderList, /class: 'pick-empty'/,
+    'an empty state must be rendered in place of the rows');
+  // The count must come from the loaded catalogue, not a hardcoded number.
+  assert.match(renderList, /\$\{all\.length\} poddar/,
+    'the prompt must state how many podcasts exist, from the real catalogue');
+  // Channels are exempt and must NOT be gated: ~52 rows fit on a screen or two
+  // and a channel is picked by recognition, not by remembering its name.
+  const gate = renderList.slice(renderList.indexOf("tab === 'podcasts' && !searchQuery"));
+  const beforeChannels = gate.slice(0, gate.indexOf('for (const item of all)'));
+  assert.ok(!/tab === 'channels'/.test(beforeChannels),
+    'channels must stay browsable -- the gate is podcasts-only');
+});
+
+test('WS44c: clearing the search cannot strand the sheet on loading skeletons', () => {
+  // A REAL defect found in the browser while building this: clearing the box
+  // set `loaded.podcasts = false`, so renderList() took the skeleton branch with
+  // nothing scheduled to replace it, and the sheet showed five permanent grey
+  // bars instead of the prompt.
+  const inputHandler = stripComments(region(
+    "searchInput.addEventListener('input'", 'doneBtn = el(', APP_JS));
+  const clearBranch = inputHandler.slice(
+    inputHandler.indexOf('if (!q) {'),
+    inputHandler.indexOf('searchTimer = setTimeout'));
+  assert.doesNotMatch(clearBranch, /loaded\.podcasts = false/,
+    'marking the catalogue unloaded strands the list on skeletons -- the data is already in memory');
+  const clearSearch = stripComments(region('function clearSearch', '}', APP_JS));
+  assert.doesNotMatch(clearSearch, /loaded\.podcasts = false/,
+    'clearSearch must not strand the list on skeletons either');
+  // Both the box and the recorded query are cleared together.
+  assert.match(clearSearch, /searchQuery = ''/);
+  assert.match(clearSearch, /searchInput\.value = ''/,
+    'the box and the recorded query must be cleared together, or the list and the box disagree');
+});
+
+test('WS44c: a stale external row cannot be labelled a result for a new query', () => {
+  const inputHandler = stripComments(region(
+    "searchInput.addEventListener('input'", 'doneBtn = el(', APP_JS));
+  assert.match(inputHandler, /items\.podcasts = items\.podcasts\.filter\(\(r\) => r\.provider !== 'itunes'\)/,
+    'iTunes rows belong to the query that fetched them; keeping them would show an old hit under a new search');
+});
+
+test('WS44c: the empty state is actually styled', () => {
+  // Added after the CSS was lost twice in one session by a stale /tmp snapshot
+  // restore. The JS test above only asserts the class NAME is emitted; it
+  // cannot tell whether any rule styles it, so a prompt could render as
+  // unstyled default text and every other guard would still be green.
+  const css = stripComments(fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8'));
+  assert.match(css, /\.pick-empty \{/, 'the empty-state container must exist in the stylesheet');
+  assert.match(css, /\.pick-empty-title \{/, 'the prompt title must be styled');
+  assert.match(css, /\.pick-empty-sub \{/, 'the prompt sub-line must be styled');
+  // A prompt the owner has to hunt for is not a prompt.
+  const block = stripComments(region('.pick-empty {', '.retry-btn {', css));
+  assert.match(block, /text-align: center/, 'the prompt must be centred, not a stray left-aligned line');
+});
+
+test('WS44c: the empty-state text tells the owner what each source needs', () => {
+  // The thresholds are asymmetric and MEASURED: SR filters at 2 characters,
+  // iTunes needs 3 (EXT_SEARCH_MIN_CHARS). A prompt claiming "minst tre tecken"
+  // would imply two characters shows nothing, which is false.
+  const renderList = stripComments(region('function renderList', 'async function loadItems', APP_JS));
+  assert.match(renderList, /två tecken för Sveriges Radio, tre eller fler för att även söka iTunes/,
+    'the prompt must state the real per-source thresholds');
+  assert.doesNotMatch(renderList, /minst tre tecken/,
+    'the old wording implied two characters returns nothing -- measured, it returns 45 SR rows');
+  assert.match(APP_JS, /EXT_SEARCH_MIN_CHARS = 3;/,
+    'the iTunes threshold this text describes must still be 3');
+});

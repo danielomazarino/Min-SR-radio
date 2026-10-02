@@ -1705,6 +1705,26 @@ body.player-gesture-lock {
   color: var(--text-secondary);
 }
 
+/* The podcast list is search-gated (WS44c): 371 SR programmes rendered 33 000px
+   tall, so the unsearched state is a prompt rather than 89 screens of scroll.
+   The count is shown on purpose -- it tells the owner the list is not empty,
+   it is just further down a search box. */
+.pick-empty {
+  padding: 30px 20px;
+  text-align: center;
+}
+.pick-empty-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+.pick-empty-sub {
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
 .retry-btn {
   display: inline-block;
   margin-top: 12px;
