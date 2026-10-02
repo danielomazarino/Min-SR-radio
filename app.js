@@ -10125,6 +10125,34 @@ function seekMeasureRecordText() {
     try { localStorage.setItem(WEATHER_ASK_KEY, '1'); } catch { /* private mode */ }
   }
 
+  /**
+   * Has enough time passed to quietly retry a position that FAILED?
+   *
+   * A cooldown, not a permission: the app has already asked, so nothing here
+   * raises a prompt by itself -- iOS decides that. What it prevents is an
+   * unbounded retry loop from a user who relaunches repeatedly, which would
+   * burn battery and, on a denied permission, achieve nothing.
+   *
+   * 10 minutes is short enough that a transient failure (a tunnel, a cold GPS,
+   * an offline launch) clears within one coffee break, and long enough that
+   * repeated app opens cannot pile up.
+   */
+  const WEATHER_RETRY_MS = 10 * 60 * 1000;
+  const WEATHER_RETRY_KEY = 'minradio.weather.retry.v1';
+
+  function weatherRetryDue() {
+    try {
+      const last = Number(localStorage.getItem(WEATHER_RETRY_KEY) || 0);
+      return !(last > 0) || Date.now() - last >= WEATHER_RETRY_MS;
+    } catch {
+      return true;
+    }
+  }
+
+  function markWeatherRetry() {
+    try { localStorage.setItem(WEATHER_RETRY_KEY, String(Date.now())); } catch { /* private mode */ }
+  }
+
   function formatTemp(t) {
     // Round to a whole degree: "17°" is what a header wants, and a phone GPS
     // reading is not precise enough for "17.4°" to mean anything.
@@ -10432,8 +10460,27 @@ function seekMeasureRecordText() {
   async function refreshWeatherNow() {
     markAskedForLocation();
     const pos = await locate();
-    if (!pos) return 'no-position';
-    return refreshWeather(pos, { force: true });
+    if (pos) return refreshWeather(pos, { force: true });
+    // No position. That is exactly the state the owner was stuck in: an empty
+    // "Väder" chip, and a tap that silently did nothing. MEASURED before this
+    // change -- one geolocation call, zero weather requests, chip unchanged.
+    //
+    // So a tap now also tries the route that needs no permission at all. If
+    // there is no place name either, the tap has genuinely exhausted the
+    // options and says so rather than appearing to work.
+    markWeatherRetry();
+    const cached = readWeatherCache();
+    if (cached && typeof cached.place === 'string' && cached.place) {
+      const byPlace = await fetchWeatherByPlace(cached.place).catch(() => null);
+      if (byPlace) {
+        const rec = { temp: byPlace.temp, code: byPlace.code, place: cached.place, at: Date.now() };
+        writeWeatherCache(rec);
+        renderWeatherChip(rec);
+        lastPainted = rec;
+        return 'ok';
+      }
+    }
+    return 'no-position';
   }
 
   /**
@@ -10563,9 +10610,42 @@ function seekMeasureRecordText() {
     // on purpose: an earlier version put the call after them, which meant the
     // empty state was unreachable on exactly the opens that needed it.
     renderWeatherChip(cached || null);
+    // WS47b. There is no longer a "fresh enough, skip it" gate here. It existed
+    // to avoid spending a request per launch, and it cost the owner accuracy:
+    // MEASURED, a cache 29 minutes old made ZERO requests and painted a
+    // temperature that was a degree out, and 31 minutes old made one request
+    // and painted the correct one. The header was right only by luck, and a tap
+    // was the only way to find out. One request per app OPEN is cheap; showing
+    // a number that may be an hour old is not. The 30-minute timer below still
+    // bounds the cost during a long session.
     const age = cached ? Date.now() - cached.at : Infinity;
-    if (cached && age < WEATHER_FRESH_MS) {
-      return;                       // fresh enough: nothing to ask for
+    // WS47b. A FAILED position is not the user saying no. MEASURED over three
+    // consecutive opens with geolocation denying every call: the header stayed
+    // on the dimmed "Väder" chip, made zero weather requests and raised zero
+    // prompts, and tapping did nothing either. Permanently stuck.
+    //
+    // The cause is the combination of WS46's ask-once flag with WS47's
+    // coordinate-or-place-name refresh: with no reading at all there is no name
+    // to look up, so the quiet path has nothing to work from and the app is
+    // simultaneously silent and unable to recover.
+    //
+    // So a position failure gets a RETRY, on a cooldown, quietly. It is not a
+    // fresh permission question -- iOS decides that -- and a user who has
+    // genuinely denied location is no worse off than before, because a denied
+    // call returns nothing and we simply wait out the cooldown again.
+    if (!readWeatherCache() && weatherRetryDue()) {
+      markAskedForLocation();     // keep WS46's "asked" semantics intact
+      markWeatherRetry();
+      const retry = await locate();
+      if (retry) {
+        await refreshWeather(retry);
+      } else {
+        // Nothing was obtained. Back off, so the next open does not hammer a
+        // GPS that is plainly unavailable -- and so a genuinely denied
+        // permission costs nothing but one failed call per cooldown.
+        markWeatherRetry();
+      }
+      return;
     }
     if (hasAskedForLocation()) {
       // Already put it to the user once, so this open says nothing. Not even a

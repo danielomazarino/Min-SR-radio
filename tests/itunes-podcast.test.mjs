@@ -1511,20 +1511,29 @@ test('WS45: the cold-start fetch is not force-bypassed', () => {
 // request it had already paid for, were not enough to stop it asking.
 // ---------------------------------------------------------------------------
 
-test('WS46: a fresh cache must stop the app asking for location at all', () => {
-  // The guard is an ORDERING claim, so it is asserted as ordering: the early
-  // return has to appear BEFORE the first geolocation call site, otherwise the
-  // code asks and then decides it did not need to.
+test('WS46: an already-asked open must never call the geolocation API', () => {
+  // SUPERSEDED as written, restated to the requirement instead of the
+  // mechanism. It used to assert that a literal early return
+  // (`if (cached && age < WEATHER_FRESH_MS)`) sat BEFORE the first geolocation
+  // call. WS47b removed that gate on purpose: it saved one request per launch
+  // and cost the owner a wrong temperature at open, which they measured on a
+  // real phone (showed 14, truth was 13, only a tap corrected it).
+  //
+  // The requirement underneath is untouched and is now asserted STRONGER, as an
+  // ABSENCE across the whole already-asked path rather than as the position of
+  // one line. Deleting a `return` cannot weaken an assertion that never relied
+  // on it -- and this one previously COULD be satisfied by deleting the branch
+  // it guarded, which is not the same thing as the prompt being prevented.
   const init = stripComments(region('async function initWeather', 'async function boot', APP_JS));
-  const gate = init.indexOf('if (cached && age < WEATHER_FRESH_MS)');
-  const firstAsk = init.indexOf('startWeatherWatch()');
-  assert.ok(gate !== -1,
-    'a cache younger than WEATHER_FRESH_MS must end the function before any geolocation call');
-  assert.ok(firstAsk !== -1, 'the first-ask path must still ask, or first-run weather is dead');
-  assert.ok(gate < firstAsk,
-    'the fresh-cache early return sits AFTER the geolocation call, so it cannot prevent the prompt');
+  const askedAt = init.indexOf('if (hasAskedForLocation())');
+  const firstAsk = init.indexOf('markAskedForLocation()', askedAt);
+  assert.ok(askedAt !== -1 && firstAsk > askedAt,
+    'the already-asked branch and the first-ask path must both be findable');
+  assert.doesNotMatch(init.slice(askedAt, firstAsk), /startWeatherWatch\(\)|locate\(\)/,
+    'an already-asked open must not touch the geolocation API -- that call IS the prompt the owner complained about');
+  assert.doesNotMatch(init, /age < WEATHER_FRESH_MS/,
+    'the open-time freshness gate was removed deliberately; accuracy beat saving one request per launch');
 });
-
 test('WS46: after the first ask the app must not ask again on a later open', () => {
   const init = stripComments(region('async function initWeather', 'async function boot', APP_JS));
   assert.match(init, /if \(hasAskedForLocation\(\)\)/,
@@ -1853,19 +1862,31 @@ test('WS47: coordinates are stored so a later open can refresh', () => {
     'temperature and place remain the only required fields');
 });
 
-test('WS47: a fresh reading is left alone (no pointless request)', () => {
-  // The other half of the guard: refreshing everything on every open would
-  // spend an API call per launch, which is the thing the guards exist to
-  // prevent. MEASURED: a 10-minute-old cache made 0 requests and kept 16
-  // degrees while the API was being forced to say 2 -- correct, and it is the
-  // case that proves the gate can still decline.
+test('WS47b: an open costs at most ONE request, and still no permission', () => {
+  // SUPERSEDED. It asserted a fresh cache skips the request entirely. The owner
+  // then measured what that gate cost on a real phone: the PWA opened showing
+  // 14 while the true temperature was 13, and only a manual tap corrected it.
+  // Reproduced in the browser -- a 29-minute-old cache made ZERO requests and
+  // painted the stale value; 31 minutes old made one and painted the correct
+  // one. Saving one request per launch was the wrong trade.
+  //
+  // What replaces "skip it" is a BOUND: an open costs at most one request, and
+  // still zero prompts. The `weatherBusy` in-flight lock is what enforces it,
+  // so "always refresh" cannot quietly become "refresh several times".
   const init = stripComments(region('async function initWeather', 'async function boot', APP_JS));
-  const gate = init.indexOf('if (cached && age < WEATHER_FRESH_MS)');
-  const quiet = init.indexOf('refreshWeatherQuietly()');
-  assert.ok(gate !== -1 && gate < quiet,
-    'the fresh-cache early return must precede the quiet refresh, or every open spends a request');
-});
+  const askedAt = init.indexOf('if (hasAskedForLocation())');
+  const branch = init.slice(askedAt, init.indexOf('markAskedForLocation()', askedAt));
+  assert.equal((branch.match(/refreshWeatherQuietly\(\)/g) || []).length, 1,
+    'an already-asked open must refresh exactly once -- not zero (stale header) and not twice (wasted request)');
 
+  assert.match(stripComments(region('async function refreshWeather', 'function startWeatherWatch', APP_JS)),
+    /if \(weatherBusy\) return 'busy';/,
+    'the in-flight lock is what bounds an open to a single request');
+
+  const quiet = stripComments(region('async function refreshWeatherQuietly', 'async function fetchWeatherByPlace', APP_JS));
+  assert.doesNotMatch(quiet, /navigator\.geolocation|locate\(\)/,
+    'refreshing at open must still never require a location permission -- the bound is worthless if it prompts');
+});
 test('WS47: the header refreshes while the app stays open', () => {
   // "it does not seem to update as it get colder outside" -- a header that is
   // right at open and then frozen for the session is only accidentally right.
@@ -1891,4 +1912,130 @@ test('WS47: the header refreshes while the app stays open', () => {
   // It must be the interval WS45 defined and never used, not an invented number.
   assert.match(clean.slice(timerAt, timerAt + 400), /\}, WEATHER_REFRESH_MS\)/,
     'the timer must use WEATHER_REFRESH_MS, the constant already defined for this purpose');
+});
+
+// ---------------------------------------------------------------------------
+// WS47b -- two further owner reports, both MEASURED before fixing:
+//
+//   A. "the temperature updated to 13 from 14 degrees when i clicked on the
+//       weather pill manually ... so you need to check if there is a refresh
+//       missing at pwa app starts"
+//   B. "on safari [...] i still have the italic väder, and there is no
+//       location request popping up when launching the page or clicking the
+//       weather pill"
+//
+// B is the more serious: the app was PERMANENTLY stuck, with no route the user
+// could reach that would recover it.
+// ---------------------------------------------------------------------------
+
+test('WS47b: a failed position is retried, so the header cannot stay stuck empty', () => {
+  // MEASURED over three consecutive opens with geolocation denying every call:
+  // "Väder", "Väder", "Väder", zero weather requests, zero prompts, and
+  // permanently stuck. WS46's ask-once flag combined with WS47's
+  // coordinate-or-place-name refresh left the app silent AND unable to recover:
+  // with no reading there is no place name to look up either, so the quiet path
+  // had nothing at all to work from.
+  //
+  // A failed position is not the user saying no. It is transient -- a tunnel, a
+  // cold GPS, an offline launch, a denied prompt -- and the app must be able to
+  // try again without that becoming a prompt storm.
+  const init = stripComments(region('async function initWeather', 'async function boot', APP_JS));
+  assert.match(init, /weatherRetryDue\(\)/,
+    'with no reading at all, the app must be allowed to quietly try again');
+  assert.match(init, /markWeatherRetry\(\)/,
+    'the attempt must be recorded, or every open retries and drains the battery');
+  // PROBE CORRECTION: the block was bounded by searching forward for
+  // `markAskedForLocation()` -- but that call appears INSIDE the retry branch
+  // (it is there to preserve WS46's asked semantics), so the slice was empty
+  // and the test failed for a reason that had nothing to do with the code.
+  // The branch actually ends at the already-asked check that follows it.
+  const retryAt = init.indexOf('weatherRetryDue()');
+  const retryBlock = init.slice(retryAt, init.indexOf('if (hasAskedForLocation())', retryAt));
+  assert.match(retryBlock, /await locate\(\)/,
+    'the retry must actually attempt a position');
+  assert.match(retryBlock, /refreshWeather\(retry\)/,
+    'a successful retry must refresh with the position it obtained');
+  assert.match(retryBlock, /return;/,
+    'the retry branch must end the open -- falling through would attempt twice');
+  assert.ok(retryBlock.indexOf('weatherRetryDue()') < retryBlock.indexOf('await locate()'),
+    'the cooldown must be consulted BEFORE attempting a position');
+});
+
+test('WS47b: the retry cooldown is real and bounded', () => {
+  assert.match(stripComments(APP_JS), /const WEATHER_RETRY_MS = 10 \* 60 \* 1000;/,
+    'a failed position must back off, or repeated opens hammer an unavailable GPS');
+  const due = stripComments(grab('weatherRetryDue'));
+  assert.match(due, /WEATHER_RETRY_MS/,
+    'the cooldown helper must actually apply the interval');
+  // And it must be timestamp-based, not merely "never asked before" -- a flag
+  // would allow exactly one attempt ever, which is the defect being fixed.
+  assert.match(due, /Date\.now\(\) - last/,
+    'the cooldown must be measured against a timestamp, or the retry can happen only once');
+});
+
+test('WS47b: tapping the pill works with no reading AND no position', () => {
+  // MEASURED before this change: asked-flag set, no cache, geolocation denying
+  // every call -- tapping the "Väder" chip made ONE getCurrentPosition call,
+  // ZERO weather requests, and the chip stayed "Väder". The single control the
+  // user could reach did nothing in the one state where they needed it.
+  const now = stripComments(grab('refreshWeatherNow'));
+  assert.doesNotMatch(now.slice(0, 220), /if \(!pos\) return 'no-position';/,
+    'a tap must not give up the instant a position fails -- that is the dead end');
+  assert.match(now, /fetchWeatherByPlace\(/,
+    'a tap must fall back to the route that needs no permission');
+  assert.match(now, /renderWeatherChip\(rec\)/,
+    'the tap must PAINT what it obtained, not merely fetch it');
+  assert.match(now, /writeWeatherCache\(rec\)/,
+    'and store it, so the next open has a reading to work from');
+});
+
+test('WS47b: the cooldown must GATE the retry, and this test can prove it', () => {
+  // Q4 -- a mutation that made `weatherRetryDue()` return `true`
+  // unconditionally reported GREEN. Every other guard in this workstream was
+  // caught by deleting the code it guarded, but this one asserts only that the
+  // helper is CALLED, which a function that always returns true satisfies
+  // perfectly. A test that cannot fail is worse than no test.
+  //
+  // The fix is to assert the ORDER AND THE VALUE together: the gate must be
+  // consulted before the attempt, AND the helper must actually be able to
+  // decline. MEASURED, with the gate working: four rapid opens with geolocation
+  // denying every call produced geolocation calls of 1, 0, 0, 0 -- one attempt,
+  // then silence for the rest of the cooldown window. With the gate removed,
+  // that would be 1, 1, 1, 1.
+  const init = stripComments(region('async function initWeather', 'async function boot', APP_JS));
+  const gateAt = init.indexOf('weatherRetryDue()');
+  const attemptAt = init.indexOf('await locate()', gateAt);
+  assert.ok(gateAt !== -1 && attemptAt > gateAt,
+    'the cooldown must be consulted BEFORE a position is attempted');
+
+  // The helper must be able to DECLINE. An unconditional `return true` satisfies
+  // every other assertion in this file, which is exactly how Q4 stayed green.
+  //
+  // PROBE CORRECTION: asserting the literal text `return false` was wrong --
+  // the helper legitimately returns a boolean EXPRESSION, and matching the
+  // literal would have forced the code to be written a worse way to satisfy a
+  // test. Instead the real function is EXTRACTED AND CALLED with a fake
+  // localStorage, so the question asked is the behavioural one: does it return
+  // false while a recent attempt is still inside the cooldown window?
+  const src = stripComments(grab('weatherRetryDue'));
+  const mk = (retryValue) => {
+    const store = new Map();
+    if (retryValue !== null) store.set('minradio.weather.retry.v1', retryValue);
+    const fake = {
+      getItem: (k) => (store.has(k) ? store.get(k) : null),
+      setItem: (k, v) => store.set(k, String(v)),
+    };
+    const f = new Function('localStorage', 'WEATHER_RETRY_KEY', 'WEATHER_RETRY_MS',
+      `${src}\nreturn weatherRetryDue;`)(fake, 'minradio.weather.retry.v1', 10 * 60 * 1000);
+    return f();
+  };
+  // Never attempted -> a retry is due. Without this the fix would never run at all.
+  assert.equal(mk(null), true, 'with no previous attempt a retry must be allowed');
+  // Attempted a minute ago -> the cooldown must DECLINE. This is the assertion
+  // Q4 could not satisfy.
+  assert.equal(mk(String(Date.now() - 60 * 1000)), false,
+    'a retry one minute after a failure must be declined by the cooldown');
+  // Attempted long ago -> allowed again, so a transient failure can recover.
+  assert.equal(mk(String(Date.now() - 11 * 60 * 1000)), true,
+    'a retry after the cooldown must be allowed, or a transient failure is permanent');
 });
