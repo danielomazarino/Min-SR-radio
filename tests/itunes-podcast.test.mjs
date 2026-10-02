@@ -1250,3 +1250,227 @@ test('WS44c: the empty-state text tells the owner what each source needs', () =>
   assert.match(APP_JS, /EXT_SEARCH_MIN_CHARS = 3;/,
     'the iTunes threshold this text describes must still be 3');
 });
+
+/* ---------------------------------------------------------------------------
+ * WS45 — weather in the header.
+ *
+ * OWNER: "weather info in the header ... the typical weather icon for sun,
+ * clouds, rain... and the temperature in celsius followed by the location as
+ * tracked by the phone", then "just Göteborg or Lerum for example" and "it has
+ * to update as my tester is commuting by train ... expects the location to
+ * change as the train moves".
+ *
+ * Both facilities were MEASURED before any of this was written: Open-Meteo
+ * 200 + access-control-allow-origin: *, BigDataCloud 200 after a 307 the
+ * browser follows. Neither needs a key, so the static-only rule holds.
+ * --------------------------------------------------------------------- */
+
+/** Run the real functions out of app.js rather than retyping their logic. */
+function wxFn(name) {
+  const src = stripComments(grab(name));
+  return new Function(`${src}\nreturn ${name};`)();
+}
+
+test('WS45: the WMO code map covers every code with a sensible glyph', () => {
+  const glyph = wxFn('weatherGlyph');
+  // Spot checks across the published WMO table. These are the codes the owner
+  // named (sun, clouds, rain) plus the ones a Swedish winter produces.
+  assert.equal(glyph(0).id, 'clear');                       // sun
+  assert.equal(glyph(1).id, 'partly');
+  assert.equal(glyph(3).id, 'cloudy');                      // overcast
+  assert.equal(glyph(45).id, 'fog');                        // fog
+  assert.equal(glyph(53).id, 'drizzle');
+  assert.equal(glyph(61).id, 'rain');                       // rain
+  assert.equal(glyph(65).id, 'rain');
+  assert.equal(glyph(71).id, 'snow');                       // snow
+  assert.equal(glyph(75).id, 'snow');
+  assert.equal(glyph(95).id, 'storm');                      // thunder
+  // EVERY code must produce a glyph and a label -- no undefined leaking into
+  // the header, and no label left empty.
+  for (let c = 0; c <= 99; c++) {
+    const g = glyph(c);
+    assert.ok(g && typeof g.id === 'string' && g.id.length > 0, `code ${c} has no glyph id`);
+    assert.ok(typeof g.label === 'string' && g.label.length > 0, `code ${c} has no label`);
+  }
+  // Every glyph id must have an SVG, or the chip renders an empty box. The
+  // block is parsed rather than regex-matched: my first attempt assumed every
+  // entry had a leading newline, which is false for the FIRST one, so it
+  // reported a false failure on `clear`.
+  const iconsSrc = stripComments(region('const WEATHER_ICONS = {', '\n  };', APP_JS));
+  assert.ok(iconsSrc.length > 200, 'the WEATHER_ICONS block was not extracted');
+  const declared = new Set();
+  // Indentation-agnostic: an earlier version assumed exactly two spaces, and
+  // the entries are indented four. Asserting on layout instead of on the
+  // entries is a test that fails when a formatter is run.
+  for (const m of iconsSrc.matchAll(/^\s+([a-z]+):\s*'/gm)) declared.add(m[1]);
+  assert.ok(declared.size >= 8, `expected the full icon set, found ${declared.size}: ${[...declared]}`);
+  for (let c = 0; c <= 99; c++) {
+    const id = glyph(c).id;
+    assert.ok(declared.has(id), `glyph id "${id}" has no SVG in WEATHER_ICONS`);
+  }
+});
+
+test('WS45: place names are the short Swedish form the owner asked for', () => {
+  const pretty = wxFn('prettyPlace');
+  // MEASURED against the live geocoder with localityLanguage=sv. The kommun
+  // form is what it actually returns for a municipality, and the owner asked
+  // for "Lerum", not "Lerums kommun".
+  assert.equal(pretty('Lerums kommun'), 'Lerum');
+  assert.equal(pretty('Trelleborgs kommun'), 'Trelleborg');
+  assert.equal(pretty('Melleruds kommun'), 'Mellerud');
+  assert.equal(pretty('Ljusdals kommun'), 'Ljusdal');
+  // No trailing genitive s -> leave it alone (Älvkarleby must not become Älvkarleb)
+  assert.equal(pretty('Älvkarleby kommun'), 'Älvkarleby');
+  // A plain city name must pass through untouched -- this rule must never be
+  // able to alter one.
+  assert.equal(pretty('Göteborg'), 'Göteborg');
+  assert.equal(pretty('Stockholm'), 'Stockholm');
+  // Empties and junk must not throw, and must not produce a blank-looking name.
+  assert.equal(pretty(''), '');
+  assert.equal(pretty(null), '');
+  assert.equal(pretty(undefined), '');
+  // A trailing admin bracket is stripped.
+  assert.equal(pretty('Västra Götalands län [SE-14]'), 'Västra Götalands län');
+});
+
+test('WS45: fetchPlace asks the geocoder for Swedish, and never for a county', () => {
+  const body = stripComments(region('async function fetchPlace', 'async function fetchWeather', APP_JS));
+  // `en` returns "Gothenburg"; the owner wrote "Göteborg". Measured both.
+  assert.match(body, /localityLanguage=sv/,
+    'the geocoder must be asked for Swedish names -- `en` returns Gothenburg');
+  assert.match(body, /d\.city \|\| d\.locality/,
+    'city first, then the locality, so the header is never blank');
+  assert.doesNotMatch(body, /principalSubdivision/,
+    'the owner asked for NO county info -- it must not be used as a fallback');
+});
+
+test('WS45: the header gains a weather chip WITHOUT becoming a third flex child', () => {
+  // THE REGRESSION THIS WOULD REINTRODUCE, from the app's own history: WS11
+  // added a third child to `.topbar` and the cog jumped to the middle, which
+  // the owner reported and had to be undone. `.topbar` is
+  // `justify-content: space-between`, so anything placed between its two ends
+  // gets centred.
+  const paint = stripComments(region('function renderWeatherChip', 'let weatherBusy', APP_JS));
+  assert.match(paint, /class: 'topbar-left'/,
+    'the chip must be grouped with the brand inside a wrapper');
+  assert.match(paint, /holder\.appendChild\(brand\)/,
+    'the brand must move INTO the wrapper, so the bar keeps two children');
+  assert.doesNotMatch(paint, /bar\.appendChild\(chip\)/,
+    'appending the chip to .topbar directly would make it a third child and re-centre the cog');
+  // The real markup must still have exactly two children in .topbar.
+  const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+  const bar = html.slice(html.indexOf('<header class="topbar">'), html.indexOf('</header>'));
+  const childTags = (bar.match(/<h1|<button/g) || []).length;
+  assert.equal(childTags, 2,
+    '.topbar must carry exactly two children in the markup (brand + cog); the chip is built at runtime inside .topbar-left');
+});
+
+test('WS45: tracking is throttled by distance AND time, or a train ride storms the API', () => {
+  const body = stripComments(region('async function refreshWeather', 'function startWeatherWatch', APP_JS));
+  // The owner's requirement is "update as the train moves". That is an
+  // instruction to poll, and unbounded polling is how the app gets throttled.
+  assert.match(body, /weatherBusy/,
+    'an in-flight lock is required so a slow request cannot be stacked');
+  assert.match(body, /WEATHER_MIN_INTERVAL_MS/, 'a time gate is required');
+  assert.match(body, /WEATHER_MIN_MOVE_KM/, 'a distance gate is required');
+  assert.match(body, /distanceKm\(lastFetched, pos\) < WEATHER_MIN_MOVE_KM/,
+    'the distance gate must actually be consulted, not merely declared');
+  // The watcher must be a watch, not a one-shot getCurrentPosition -- that is
+  // what makes the header follow the train at all.
+  //
+  // MUTATION CAUGHT IT: this used to assert only /watchPosition/ anywhere in
+  // startWeatherWatch, and reported GREEN when the CALL was rewritten to
+  // getCurrentPosition -- because the capability guard on the line above
+  // (`if (!navigator.geolocation.watchPosition) return;`) still contains the
+  // word. The guard has to name the call site, not the word.
+  const watch = stripComments(region('function startWeatherWatch', 'function stopWeatherWatch', APP_JS));
+  assert.match(watch, /weatherWatchId = navigator\.geolocation\.watchPosition\(/,
+    'the watcher must actually CALL watchPosition -- a one-shot getCurrentPosition would never follow the train');
+  assert.doesNotMatch(watch, /weatherWatchId = navigator\.geolocation\.getCurrentPosition\(/,
+    'a one-shot fix cannot track a moving train');
+  // (A third assertion I added here, "the watcher needs its real success
+  // callback", was WRONG and I removed it: the ERROR callback is legitimately
+  // `() => {}` because a denied-location failure has nothing to report. A
+  // guard that forbids correct code is worse than no guard.)
+  assert.match(watch, /enableHighAccuracy: false/,
+    'a city-level fix is enough for a city name and is far cheaper on the battery');
+  // And the watch must be stoppable, so a backgrounded app is not polling.
+  const stop = stripComments(region('function stopWeatherWatch', 'async function initWeather', APP_JS));
+  assert.match(stop, /clearWatch/, 'the watch must be stoppable');
+});
+
+test('WS45: a failed refresh never blanks the header', () => {
+  // The header must not flicker to empty because one request failed -- a
+  // stale temperature is better than no weather.
+  const paint = stripComments(region('function renderWeatherChip', 'const WEATHER_MIN_MOVE_KM', APP_JS));
+  assert.match(paint, /if \(!rec\) return;/,
+    'renderWeatherChip(null) must keep the existing chip rather than clearing it');
+  const refresh = stripComments(region('async function refreshWeather', 'function startWeatherWatch', APP_JS));
+  assert.match(refresh, /catch \{\s*return 'failed'/,
+    'a failed fetch must be caught and reported, not allowed to blank the chip');
+});
+
+test('WS45: the weather module touches no playback, storage or DVR code', () => {
+  const mod = region('// ---------------- weather in the header (WS45)', 'async function boot()');
+  const clean = stripComments(mod);
+  assert.doesNotMatch(clean, /playTrack|toggleTrack|loadFavorites|saveFavorites|audioEl|hls|m3u8|seekable|renderPlayer/,
+    'the weather module must not reach into playback, favourites or DVR');
+});
+
+test('WS45: a restored cache must NOT silently disable the distance gate', () => {
+  // THE DEFECT, found by driving the real handlers in the browser and watching
+  // a 300 m GPS wobble spend an API call. initWeather() seeded `lastFetched`
+  // from the cache and then immediately overwrote it with null, so the gate had
+  // no previous position to measure against and EVERY callback fetched.
+  //
+  // This is the WS4x lesson again: the guards above all read the SOURCE, and
+  // the source said `distanceKm(lastFetched, pos) < WEATHER_MIN_MOVE_KM` --
+  // correct-looking code that could never fire.
+  const init = stripComments(region('async function initWeather', 'async function boot', APP_JS));
+  // Scoped to the assignment itself: `[^}]*` stops at the object's own `{`,
+  // which made this report a false failure against correct code.
+  const seedAssign = init.slice(init.indexOf('lastFetched = {'), init.indexOf('startWeatherWatch()'));
+  assert.match(seedAssign, /hasPos: false/,
+    'a cache has a timestamp but no coordinates, and the gate must know that');
+  // The seeding must NOT be immediately clobbered -- that was the bug.
+  assert.doesNotMatch(seedAssign, /lastFetched = null/,
+    'assigning lastFetched = null right after seeding it disables the distance gate entirely');
+  // And the gate must actually honour the flag.
+  const refresh = stripComments(region('async function refreshWeather', 'function startWeatherWatch', APP_JS));
+  assert.match(refresh, /lastFetched\.hasPos !== false && distanceKm\(lastFetched, pos\)/,
+    'the distance gate must be skipped when the previous position is unknown, not applied against null');
+  // A successful fetch must record that the position IS known, or the gate can
+  // never start working.
+  assert.match(refresh, /lastFetched = \{ lat: pos\.lat, lon: pos\.lon, at: now, hasPos: true \}/,
+    'after a fetch the position is known and the distance gate must be armed');
+});
+
+test('WS45: distanceKm measures real kilometres', () => {
+  // I twice concluded this function was broken when MY OWN probe was: I
+  // divided metres by 111320 to get degrees and then compared the result
+  // against 3 as if it were kilometres. The function is correct; the probe was
+  // not. This test pins the scale so that mistake cannot recur.
+  const dist = wxFn('distanceKm');
+  const A = { lat: 57.7089, lon: 11.9746 };          // Göteborg
+  const perDegLat = 111.32;                            // km per degree latitude
+  const north = (km) => ({ lat: A.lat + km / perDegLat, lon: A.lon });
+  assert.ok(Math.abs(dist(A, north(5)) - 5) < 0.05, '5 km north must measure ~5 km');
+  assert.ok(Math.abs(dist(A, north(1)) - 1) < 0.02, '1 km north must measure ~1 km');
+  // 0.3 km must be BELOW the 3 km gate, which is the whole point of it.
+  assert.ok(dist(A, north(0.3)) < 3, 'a 300 m wobble must fall under the distance gate');
+  // A real train hop must be well OVER it.
+  assert.ok(dist(A, { lat: 57.8000, lon: 12.3000 }) > 3,
+    'Göteborg -> Lerum is a genuine move and must exceed the distance gate');
+  assert.equal(dist(A, A), 0, 'the distance to itself is zero');
+});
+
+test('WS45: the cold-start fetch is not force-bypassed', () => {
+  // `force: true` skipped both gates. On a fresh cache it spent a call the
+  // gates exist to avoid, and it also reset lastFetched, which is what made
+  // the leak above hard to see.
+  const init = stripComments(region('async function initWeather', 'async function boot', APP_JS));
+  assert.doesNotMatch(init, /refreshWeather\(pos, \{ force: true \}\)/,
+    'the cold-start refresh must go through the gates, not force past them');
+  assert.match(init, /refreshWeather\(pos\)/,
+    'the cold-start refresh must use the gated path');
+});
