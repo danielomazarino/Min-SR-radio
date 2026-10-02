@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = 'ed9f68e';
+  const APP_BUILD = '40870cf';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -10742,6 +10742,13 @@ function seekMeasureRecordText() {
         // GPS that is plainly unavailable -- and so a genuinely denied
         // permission costs nothing but one failed call per cooldown.
         markWeatherRetry();
+        // WS49. The explanation existed ONLY on the tap path, so a user who
+        // switched location off and simply RELOADED -- the most natural thing to
+        // do, and exactly what the owner did -- got a bare italic "Väder" and
+        // no explanation, while the very same state reached by tapping explained
+        // itself. Two entry points into one dead end, behaving differently, and
+        // no test covered the difference.
+        explainNoLocation();
       }
       return;
     }
