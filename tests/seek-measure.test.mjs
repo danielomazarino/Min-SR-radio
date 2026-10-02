@@ -438,8 +438,14 @@ test('WS38 the seek still seeks with the CACHED seekableEnd; the fresh read is o
   assert.match(fn, /const end = cur\.seekableEnd;/,
     'the seek must read the cached cur.seekableEnd');
   // ...computes the SAME target as before...
-  assert.match(fn, /const target = end - behindMs \/ 1000;/,
-    'the target formula must be unchanged: end - behindMs/1000');
+  // WS47 SUPERSEDED the literal spelling: on native HLS the edge is now
+  // derived from the element's own TimeRanges. What this test still requires,
+  // restated at equal strength: the cached `end` is STILL read and is STILL the
+  // value used whenever the experiment cannot be grounded.
+  assert.match(fn, /const end = cur\.seekableEnd;/,
+    'the seek must read the cached cur.seekableEnd');
+  assert.match(fn, /const effectiveEndS = experimentalEdgeS === null \? end : experimentalEdgeS;/,
+    'the cached edge must remain the value used when the experiment does not apply');
   // ...and seeks with that cached-derived target.
   assert.match(fn, /audioEl\.currentTime = target;/,
     'the element must be seeked with the computed target');
@@ -549,8 +555,24 @@ test('WS38 NO correction constant: the seek is untouched arithmetic', () => {
   // The target line must be EXACTLY the pre-existing formula, nothing added.
   const fn = APP_CODE.slice(APP_CODE.indexOf('function seekToProgramTime('),
     APP_CODE.indexOf('function seekToProgramTime(') + 2000);
-  assert.match(fn, /const target = end - behindMs \/ 1000;/,
-    'the target must remain end - behindMs/1000 with no added or subtracted term');
-  assert.ok(!/const target = end - behindMs \/ 1000 [-+*/]/.test(fn),
-    'no term may be added to or subtracted from the target');
+  // WS47 SUPERSEDED the literal-formula half. WS47 adds NO constant either: the
+  // edge is DERIVED from the TimeRanges, so the correction moves with the
+  // stream instead of freezing today's observation. The §5 property is now
+  // enforced MORE strongly — no literal timing value may appear at all.
+  assert.match(fn, /const target = effectiveEndS - behindMs \/ 1000;/,
+    'the target must be the pre-existing formula over the effective edge');
+  const w47 = APP_CODE.slice(APP_CODE.indexOf('function ws47EffectiveEdgeS('),
+    APP_CODE.indexOf('function ws47EffectiveEdgeS(') + 2000);
+  // NOTE: this asserts the GAP and the max-selection, not one expression's
+  // exact spelling. An earlier version asserted
+  // `const largestGap = points[i] - points[i - 1]`, a line the implementation
+  // does not contain -- it initialises to 0 and takes the max in the loop.
+  // Pinning a line that does not exist produces a guard that can only be
+  // satisfied by editing the source to match the test, which is backwards.
+  assert.match(w47, /const gap = points\[i\]\s*-\s*points\[i\s*-\s*1\]/,
+    'the step back must be derived from the published TimeRanges positions');
+  assert.match(w47, /if \(gap > largestGap\) largestGap = gap;/,
+    'the largest published gap must be the one selected');
+  assert.doesNotMatch(w47, /\b6\.4\b|\b31\.5\b|[-+]\s*8\b|[-+]\s*25\b|[-+]\s*30\b/,
+    'no observed error or SR segment duration may be hardcoded');
 });

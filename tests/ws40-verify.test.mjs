@@ -307,8 +307,13 @@ test('the PRODUCTION seek is untouched by WS40', () => {
       `${fn} must not reference any WS40 symbol`);
   }
   // And the production equation is still the production equation.
-  assert.ok(/const target = end - behindMs \/ 1000;/.test(APP_JS),
-    'the production seek equation must still be end - behindMs/1000');
+  // WS47 SUPERSEDED the literal spelling. Restated to the property that still
+  // holds: the pre-existing arithmetic must still be COMPUTED over the cached
+  // edge, because that is the value every non-native transport seeks to.
+  assert.ok(/const target = effectiveEndS - behindMs \/ 1000;/.test(APP_JS),
+    'the production seek equation must survive over the effective edge');
+  assert.ok(/const end = cur\.seekableEnd;/.test(APP_JS),
+    'the cached seekableEnd must still be read');
 });
 
 test('the WS38 guard against a circular seekableEnd difference still holds', () => {
@@ -559,8 +564,13 @@ test('GUARD: the cross-check is diagnostic-only and reaches no target', () => {
   const all = (APP_CODE.match(/ws40ProposedTarget\(/g) || []).length;
   assert.equal(all, 2, 'exactly one definition and one call site');
   // The production equation is untouched.
-  assert.ok(/const target = end - behindMs \/ 1000;/.test(APP_JS),
-    'the production seek equation must still be end - behindMs/1000');
+  // WS47 SUPERSEDED the literal spelling. Restated to the property that still
+  // holds: the pre-existing arithmetic must still be COMPUTED over the cached
+  // edge, because that is the value every non-native transport seeks to.
+  assert.ok(/const target = effectiveEndS - behindMs \/ 1000;/.test(APP_JS),
+    'the production seek equation must survive over the effective edge');
+  assert.ok(/const end = cur\.seekableEnd;/.test(APP_JS),
+    'the cached seekableEnd must still be read');
 });
 
 test('GUARD: the origin functions stay independent of each other', () => {

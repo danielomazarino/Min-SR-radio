@@ -167,7 +167,10 @@ test('the seek equation still uses the old cached-edge model', () => {
   assert.notEqual(start, -1, 'seekToProgramTime must exist');
   const body = APP_JS.slice(start, APP_JS.indexOf('\n  function ', start + 10));
   assert.match(body, /const end = cur\.seekableEnd;/);
-  assert.match(body, /const target = end - behindMs \/ 1000;/);
+  // WS47 SUPERSEDED the literal formula: the native edge is now derived from
+  // the element's TimeRanges. The cached read above is unchanged and is what
+  // this test still guards.
+  assert.match(body, /const target = effectiveEndS - behindMs \/ 1000;/);
   assert.doesNotMatch(body, /playheadWallMs44/);
 });
 

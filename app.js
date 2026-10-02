@@ -2569,6 +2569,10 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // ReferenceError on every call, which is a far worse outcome than the
   // feature it instruments.
   const WS44_CANARY = null;
+  // WS47's canary: `null` in production, declared at module scope for the same
+  // reason as WS44's — an undeclared identifier would throw a ReferenceError on
+  // the very line that exists to prove the function executes.
+  const WS47_CANARY = null;
   //
   // WHAT QUESTION THIS ASKS. `HTMLMediaElement.getStartDate()` returns the
   // wall-clock instant that corresponds to media time 0 for a live stream.
@@ -2637,6 +2641,117 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       } catch { startDateMs = null; }
     }
     return ws44PlayheadWallMs(startDateMs, audioEl.currentTime, transport, fallback);
+  }
+
+  // ---- WS47 EXPERIMENT: the effective media edge, derived at runtime. ----
+  //
+  // WHAT IS BEING TESTED. The production equation uses `seekable.end` as "now":
+  //
+  //     target = end - (Date.now() - startMs) / 1000
+  //
+  // The hypothesis is that Safari's EFFECTIVE media edge — the point a seek
+  // actually resolves against — can sit AHEAD of `audio.seekable.end()`, by an
+  // amount that moves with the rolling playlist. That would make every target
+  // overshoot by a rolling amount, which is the shape of the observed error.
+  //
+  // WHAT IS *NOT* BEING ASSUMED. `seekable` is a `TimeRanges` collection. It
+  // does NOT expose HLS segment boundaries, and nothing here treats
+  // `start(n)`/`end(n)` as "the nth segment". Those are the only positions the
+  // element publishes, so they are the only inputs available. No literal
+  // duration appears anywhere below: SR's 6.4 s segments, the observed ~8 s,
+  // ~25 s and ~31.5 s errors, and every device-specific value are ABSENT by
+  // construction, and a test asserts their absence.
+  //
+  // HOW THE EDGE IS DERIVED. From the element's own TimeRanges at the moment of
+  // the seek: the largest gap between consecutive published positions is the
+  // coarsest subdivision the element discloses about its own timeline. Stepping
+  // the edge back by that amount is the one non-arbitrary correction the
+  // available data supports.
+  //
+  // If the range is too small to say anything about subdivision, the answer is
+  // null and the caller keeps its own arithmetic untouched. Falling back is a
+  // first-class outcome, not an error path.
+  //
+  // PURE BY CONSTRUCTION: the TimeRanges object is an argument. Nothing here
+  // reads `state`, `audioEl` or `Date`.
+  function ws47EffectiveEdgeS(ranges, fallbackEdge) {
+    if (WS47_CANARY) WS47_CANARY();
+    if (!Number.isFinite(fallbackEdge)) return null;
+    if (!ranges || typeof ranges.length !== 'number' || ranges.length < 1) return null;
+    // Collect every published position. Bounded so a malformed TimeRanges
+    // cannot spin here.
+    const points = [];
+    const cap = 512;
+    const n = Math.min(ranges.length, cap);
+    for (let i = 0; i < n; i += 1) {
+      let a;
+      let b;
+      try {
+        a = ranges.start(i);
+        b = ranges.end(i);
+      } catch {
+        // Some engines throw rather than return NaN for an out-of-range index.
+        return null;
+      }
+      if (!Number.isFinite(a) || !Number.isFinite(b) || b < a) return null;
+      points.push(a, b);
+    }
+    // A single TimeRange carries exactly two positions -- its own start and its
+    // own end -- so the "largest gap" between them is the ENTIRE DVR window,
+    // not a subdivision of it. Stepping the edge back by ~3 hours would be
+    // nonsense, so that case is refused rather than acted on.
+    //
+    // This is the honest limit of the available data: `seekable` is a
+    // TimeRanges collection and publishes no HLS segment boundaries. When the
+    // element offers no INTERNAL subdivision, there is no non-arbitrary step to
+    // take, and the experiment correctly declines to fire. The fallback runs
+    // the production equation unchanged.
+    if (points.length < 4) return null;
+    const lo = points[0];
+    const hi = points[points.length - 1];
+    // Sort, then take the LARGEST consecutive gap: the element's own coarsest
+    // statement about how its timeline is subdivided. A DVR range is normally
+    // a single interval, so this is the width of that interval -- derived, not
+    // assumed. Using the largest gap (rather than the first) means the value is
+    // the maximum step back the published data can justify, never more.
+    points.sort((a, b) => a - b);
+    let largestGap = 0;
+    for (let i = 1; i < points.length; i += 1) {
+      const gap = points[i] - points[i - 1];
+      if (gap > largestGap) largestGap = gap;
+    }
+    // A zero gap carries no information; an absurd one would not be a
+    // subdivision of a media timeline. Both fall back rather than guess.
+    // The bound rejects a gap so large it cannot be a subdivision of a media
+    // timeline. It is deliberately relative to the published range rather than
+    // an absolute number of seconds: an absolute one-hour cap was tried and
+    // rejected, because it silently excludes every realistic DVR step as soon
+    // as the window is wide -- which would make the experiment unreachable in
+    // production while every offline test still passed. Expressed against the
+    // range instead, the bound rejects exactly the case where the largest gap
+    // IS the whole window, rather than any legitimately large step.
+    const span = hi - lo;
+    if (!Number.isFinite(largestGap) || largestGap <= 0) return null;
+    if (span > 0 && largestGap >= span) return null;
+    const edge = fallbackEdge - largestGap;
+    // Never invent an edge outside the range the element published.
+    if (!Number.isFinite(edge) || edge < lo || edge > hi) return null;
+    return edge;
+  }
+
+  // The production accessor. Reads the LIVE TimeRanges rather than the cached
+  // `cur.seekableEnd`, because the experiment is about what the element reports
+  // right now. Returns null whenever the experiment cannot be grounded, so the
+  // caller's original arithmetic is used unchanged.
+  function ws47ExperimentalEdgeS() {
+    if (ws40Transport() !== 'native-hls') return null;
+    const cur = state.current;
+    if (!cur || !cur.dvrAvailable) return null;
+    if (!Number.isFinite(cur.seekableEnd)) return null;
+    const edge = ws47EffectiveEdgeS(audioEl.seekable, cur.seekableEnd);
+    // Returning null rather than the fallback keeps "the experiment could not
+    // be grounded" distinguishable from "the experiment applied".
+    return (edge === null || edge === cur.seekableEnd) ? null : edge;
   }
 
   // Select the entry whose [startMs, stopMs) contains the playhead. The same
@@ -5512,11 +5627,24 @@ function seekMeasureRecordText() {
     if (!Number.isFinite(end)) { d.lastBranch = 'non-finite-target'; d.lastTarget = null; d.lastAfter = null; return; }
     const behindMs = Date.now() - programmeStartMs;
     if (behindMs < 0) { d.lastBranch = 'future-programme'; d.lastTarget = null; d.lastAfter = null; return; }
-    const target = end - behindMs / 1000;
+    // WS47: mirrors seekToProgramTime() so the record reports the target the app
+    // really requested. A record of the un-experimented target would describe a
+    // seek that never happened, and the device result would be unreadable.
+    const experimentalEdgeS = ws47ExperimentalEdgeS();
+    const effectiveEndS = experimentalEdgeS === null ? end : experimentalEdgeS;
+    const target = effectiveEndS - behindMs / 1000;
     const start = Number.isFinite(cur.seekableStart) ? cur.seekableStart : 0;
     if (target < start) { d.lastBranch = 'out-of-window'; d.lastTarget = target; d.lastAfter = null; return; }
     d.lastBranch = 'seeked';
     d.lastTarget = target;
+    // ---- WS47: WHICH PATH PRODUCED THIS TARGET. ----
+    // Without this the device result is uninterpretable. An unchanged landing
+    // means "the hypothesis is refuted" if the experiment fired, and "the
+    // experiment never ran" if it did not -- and those lead to opposite next
+    // steps. Read-only, one boolean, on the record that already exists.
+    d.ws47Applied = experimentalEdgeS !== null;
+    d.ws47EdgeS = experimentalEdgeS === null ? null : experimentalEdgeS;
+    d.ws47CachedEdgeS = Number.isFinite(end) ? end : null;
     // Read back on the next microtask: the handler has not assigned
     // currentTime yet at this point in the call stack.
     Promise.resolve().then(() => {
@@ -5548,7 +5676,15 @@ function seekMeasureRecordText() {
     if (!Number.isFinite(end)) return;
     const behindMs = Date.now() - startMs;
     if (behindMs < 0) return; // future programme — nothing to seek to yet
-    const target = end - behindMs / 1000;
+    // ---- WS47 EXPERIMENT ----
+    // `target` below is the PRODUCTION equation, kept byte-for-byte intact and
+    // used verbatim whenever the experiment cannot be grounded (null). On
+    // native HLS with a usable TimeRanges, the edge is instead derived from the
+    // element's own published positions. Every other transport is untouched, so
+    // the hls.js/Edge seek costs this experiment nothing.
+    const experimentalEdgeS = ws47ExperimentalEdgeS();
+    const effectiveEndS = experimentalEdgeS === null ? end : experimentalEdgeS;
+    const target = effectiveEndS - behindMs / 1000;
     const start = Number.isFinite(cur.seekableStart) ? cur.seekableStart : 0;
     if (target < start) {
       showToast('Programmet ligger utanför spolbart område (3 timmar).');
@@ -8460,10 +8596,18 @@ function seekMeasureRecordText() {
           // Marks the row for persistExternalOrder(), which selects on it.
           ...(isExt ? { 'data-ext': '1' } : {}),
         },
-          // The red "Swipe to remove" cue, BEHIND the row (see .swipe-reveal).
-          // It is aria-hidden because the removal is also reachable without
-          // sight of it -- see the note below on the non-gesture fallback.
-          el('div', { class: 'swipe-reveal', 'aria-hidden': 'true', text: 'Ta bort' }),
+          // The delete action revealed BEHIND the row as it slides left, in the
+          // iOS Mail / WhatsApp idiom: a plain coloured panel with an ICON and
+          // NO text label. An earlier version put a full-width red block with
+          // the word "Ta bort" behind the row; the owner rejected it because it
+          // did not read like a message app. The icon is the language here --
+          // a trash glyph is understood without translation, while a caption
+          // would also compete visually with the podcast name sliding away.
+          el('div', { class: 'swipe-reveal', 'aria-hidden': 'true' },
+            el('span', {
+              class: 'swipe-reveal-icon',
+              html: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>',
+            })),
           el('span', { class: 'selected-grip', 'aria-hidden': 'true',
             html: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 5h2v2H9zM13 5h2v2h-2zM9 9h2v2H9zM13 9h2v2h-2zM9 13h2v2H9zM13 13h2v2h-2zM9 17h2v2H9zM13 17h2v2h-2z"/></svg>' }),
           el('span', { class: 'selected-pos', text: String(pos + 1) }),
