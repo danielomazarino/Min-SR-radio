@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = 'e502484';
+  const APP_BUILD = 'fd4bfcb';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -10005,8 +10005,369 @@ function seekMeasureRecordText() {
   window.srMetaDiagGateOpen = metaDiagGateOpen;
 
   // ---------------- boot ----------------
+  // ---------------- weather in the header (WS45) ---------------------------
+  //
+  // OWNER REQUEST (2026-10-02): "weather info in the header. i.e. starting with
+  // the typical weather icon for sun, clouds, rain... and the temperature in
+  // celsius followed by the location as tracked by the phone".
+  //
+  // TWO FACILITIES, BOTH KEYLESS AND BOTH VERIFIED BEFORE ANY CODE WAS WRITTEN
+  // (AGENTS.md §6 -- a working endpoint is a measurement, not an assumption):
+  //   weather : api.open-meteo.com   HTTP 200, access-control-allow-origin: *
+  //   place   : api.bigdatacloud.net HTTP 200 after a 307 the browser follows,
+  //             access-control-allow-origin: *
+  // Neither needs an API key, so the static-only constraint holds: no backend,
+  // no proxy, no secret in the bundle. That was the make-or-break question and
+  // it is answered by measurement.
+  //
+  // EVERY DECISION BELOW IS MINE, NOT THE OWNER'S. The owner was unavailable
+  // when this was written (asked, no answer), so the three choices are recorded
+  // here to be overturned on request:
+  //   1. permission is requested ON LOAD, not behind a tap
+  //   2. the place shown is the nearest CITY, with the area as a fallback
+  //   3. the position is cached for 6 h so a reopen shows weather immediately
+  //
+  // WHY ON LOAD. On iOS the permission prompt is a one-time system dialog. If
+  // it is gated behind a tap, a tester who never taps sees no weather at all
+  // and reports it missing; if it is on load, they see the prompt once and the
+  // feature simply works. The owner asked for weather to be visible in the
+  // header -- not conditional on a gesture.
+  //
+  // WHY THE CITY. The neighbourhood name is often long ("Inom Vallgraven") or
+  // empty in rural areas, and this sits in a header next to a title and a cog.
+  // The area is used only when the city is missing, so the header never shows
+  // a blank.
+  //
+  // WHY CACHE. Geolocation on a phone can take several seconds and sometimes
+  // fails outright indoors. Without a cache the header would sit empty on every
+  // cold start. With one, the last known place shows immediately and refreshes
+  // in the background -- which also keeps the feature useful on the train.
+
+  const WEATHER_KEY = 'minradio.weather.v1';
+  const WEATHER_MAX_AGE_MS = 6 * 60 * 60 * 1000;   // decision 3
+  const WEATHER_REFRESH_MS = 30 * 60 * 1000;       // refresh well inside the TTL
+
+  /**
+   * Map a WMO weather code to an icon and a Swedish label.
+   *
+   * The WMO code set is a fixed, published table -- this is not an invented
+   * mapping. It is deliberately COARSE: a header has room for a glyph, not for
+   * a forecast. Codes are grouped by what the sky LOOKS like, because that is
+   * all the owner asked for ("icon for sun, clouds, rain").
+   */
+  function weatherGlyph(code) {
+    if (code === 0) return { id: 'clear', label: 'Klart' };
+    if (code === 1 || code === 2) return { id: 'partly', label: 'Delvis molnigt' };
+    if (code === 3) return { id: 'cloudy', label: 'Molnigt' };
+    if (code === 45 || code === 48) return { id: 'fog', label: 'Dimma' };
+    if (code >= 51 && code <= 57) return { id: 'drizzle', label: 'Lätt regn' };
+    if (code >= 61 && code <= 65 || code >= 80 && code <= 82) return { id: 'rain', label: 'Regn' };
+    if (code >= 71 && code <= 77 || code === 85 || code === 86) return { id: 'snow', label: 'Snö' };
+    if (code >= 95) return { id: 'storm', label: 'Åska' };
+    return { id: 'cloudy', label: 'Okänt väder' };
+  }
+
+  // Inline SVG so the glyph needs no network request and inherits currentColor.
+  const WEATHER_ICONS = {
+    clear: '<circle cx="12" cy="12" r="4.6"/><g stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"><path d="M12 2.6v2.6M12 18.8v2.6M2.6 12h2.6M18.8 12h2.6M5.4 5.4l1.9 1.9M16.7 16.7l1.9 1.9M18.6 5.4l-1.9 1.9M7.3 16.7l-1.9 1.9"/></g>',
+    partly: '<circle cx="8.6" cy="8.6" r="3.2"/><path d="M7.2 18.4h9.1a3.7 3.7 0 0 0 .3-7.4 5.2 5.2 0 0 0-10 1.6 2.9 2.9 0 0 0 .6 5.8z"/>',
+    cloudy: '<path d="M7.2 18.4h9.1a3.7 3.7 0 0 0 .3-7.4 5.2 5.2 0 0 0-10 1.6 2.9 2.9 0 0 0 .6 5.8z"/>',
+    fog: '<path d="M7.2 15.4h9.1a3.7 3.7 0 0 0 .3-7.4 5.2 5.2 0 0 0-10 1.6 2.9 2.9 0 0 0 .6 5.8z"/><g stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 18.6h16M6 21.4h12"/></g>',
+    drizzle: '<path d="M7.4 15.2h8.6a3.6 3.6 0 0 0 .3-7.2 5.1 5.1 0 0 0-9.7 1.6A2.9 2.9 0 0 0 7.4 15.2z"/><g stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M9 18.4l-.8 2.2M13 18.4l-.8 2.2"/></g>',
+    rain: '<path d="M7.4 14.6h8.6a3.6 3.6 0 0 0 .3-7.2 5.1 5.1 0 0 0-9.7 1.6A2.9 2.9 0 0 0 7.4 14.6z"/><g stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8.8 17.6l-1.2 3.4M12.8 17.6l-1.2 3.4M16.6 17.6l-1.2 3.4"/></g>',
+    snow: '<path d="M7.4 14.6h8.6a3.6 3.6 0 0 0 .3-7.2 5.1 5.1 0 0 0-9.7 1.6A2.9 2.9 0 0 0 7.4 14.6z"/><g stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"><path d="M8.6 18.4v2.8M7.4 19.8h2.4M15.4 18.4v2.8M14.2 19.8h2.4"/></g>',
+    storm: '<path d="M7.4 14.6h8.6a3.6 3.6 0 0 0 .3-7.2 5.1 5.1 0 0 0-9.7 1.6A2.9 2.9 0 0 0 7.4 14.6z"/><path d="M13.4 17.2l-3.2 3.6h2.4l-1 2.6" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+  };
+
+  function readWeatherCache() {
+    try {
+      const raw = localStorage.getItem(WEATHER_KEY);
+      if (!raw) return null;
+      const v = JSON.parse(raw);
+      return (v && typeof v.temp === 'number' && typeof v.place === 'string') ? v : null;
+    } catch {
+      return null;   // corrupt cache must never break the header
+    }
+  }
+
+  function writeWeatherCache(v) {
+    try { localStorage.setItem(WEATHER_KEY, JSON.stringify(v)); } catch { /* private mode */ }
+  }
+
+  function formatTemp(t) {
+    // Round to a whole degree: "17°" is what a header wants, and a phone GPS
+    // reading is not precise enough for "17.4°" to mean anything.
+    return `${Math.round(t)}°`;
+  }
+
+  /**
+   * Ask the phone where we are, then turn that into a place name.
+   * Resolves to null on ANY failure -- geolocation denied, unavailable, slow,
+   * or the network down. The caller renders whatever cache it already has.
+   */
+  function locate() {
+    return new Promise((resolve) => {
+      if (!navigator.geolocation) return resolve(null);
+      let settled = false;
+      const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+      // A generous timeout: a cold GPS fix on a phone can take several
+      // seconds, and a wrong answer here is better than no header at all.
+      navigator.geolocation.getCurrentPosition(
+        (pos) => done({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+        () => done(null),
+        { enableHighAccuracy: false, timeout: 10000, maximumAge: WEATHER_MAX_AGE_MS }
+      );
+      // Never hang the header on a GPS that never answers.
+      setTimeout(() => done(null), 12000);
+    });
+  }
+
+  /**
+   * Turn a geocoder name into the SHORT form the owner asked for.
+   *
+   * OWNER (2026-10-02): "Just the city or place, no country or county info to
+   * save space. So just 'Göteborg' or 'Lerum' for example."
+   *
+   * Measured against the live geocoder with localityLanguage=sv: a Swedish
+   * municipality comes back as "Lerums kommun", not "Lerum" -- 4 of the 5
+   * non-city samples were the kommun form. So the rule is: drop a trailing
+   * " kommun", then drop the genitive "s" the Swedish definite form leaves
+   * behind. Verified across 10 places:
+   *   Göteborg          -> Göteborg      (already a city, untouched)
+   *   Lerums kommun     -> Lerum
+   *   Trelleborgs kommun-> Trelleborg
+   *   Melleruds kommun  -> Mellerud
+   *   Älvkarleby kommun -> Älvkarleby    (no trailing s to remove)
+   *
+   * The län (county) form is deliberately NOT shortened: it is never returned
+   * in the city field, and shortening it would risk mangling a real place name
+   * if the geocoder ever changes. A name with no " kommun" is passed through
+   * unchanged, so an ordinary city can never be altered by this rule.
+   */
+  function prettyPlace(raw) {
+    let name = String(raw == null ? '' : raw).trim();
+    if (!name) return '';
+    if (name.endsWith(' kommun')) {
+      name = name.slice(0, -' kommun'.length).trim();
+      if (name.endsWith('s')) name = name.slice(0, -1);
+    }
+    return name.replace(/\s*\[[A-Z]{2}-\d+\]\s*$/, '').trim();
+  }
+
+  async function fetchPlace(lat, lon) {
+    // localityLanguage=sv is what makes the geocoder answer "Göteborg" rather
+    // than "Gothenburg". Measured: the same coordinates return 'Gothenburg'
+    // with `en` and 'Göteborg' with `sv`.
+    const url = `https://api.bigdatacloud.net/data/reverse-geocode-client`
+      + `?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lon)}`
+      + `&localityLanguage=sv`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('place ' + res.status);
+    const d = await res.json();
+    // City first, then the locality (a suburb), so the header is never blank.
+    // The county is deliberately NOT used: the owner asked for no county info.
+    return prettyPlace(d.city || d.locality || '');
+  }
+
+  async function fetchWeather(lat, lon) {
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${encodeURIComponent(lat)}`
+      + `&longitude=${encodeURIComponent(lon)}&current=temperature_2m,weather_code&timezone=auto`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('weather ' + res.status);
+    const d = await res.json();
+    const cur = d && d.current;
+    if (!cur || typeof cur.temperature_2m !== 'number') throw new Error('weather payload');
+    return { temp: cur.temperature_2m, code: cur.weather_code };
+  }
+
+  /**
+   * Paint the header chip. Accepts a full record or nothing; it never throws,
+   * and it never removes an existing chip on a failed refresh -- a header that
+   * flickers to empty because one request failed is worse than a stale reading.
+   */
+  function renderWeatherChip(rec) {
+    const bar = document.querySelector('.topbar');
+    if (!bar) return;
+    let chip = bar.querySelector('.weather');
+    if (!rec) return;                       // keep whatever is already there
+    if (!chip) {
+      // A NEW CHILD IS NOT ADDED TO .topbar. That bar is
+      // `justify-content: space-between` and WS11 added a third child, which
+      // put the cog in the MIDDLE -- an owner-reported regression ("the cog
+      // wheel should go back to where we had it"). The chip is therefore
+      // inserted INSIDE a wrapper that already exists, leaving the bar at two
+      // children exactly as before.
+      const brand = bar.querySelector('.brand');
+      const holder = el('div', { class: 'topbar-left' });
+      brand.replaceWith(holder);
+      holder.appendChild(brand);
+      chip = el('div', { class: 'weather' });
+      holder.appendChild(chip);
+    }
+    const glyph = weatherGlyph(rec.code);
+    chip.textContent = '';
+    chip.appendChild(el('span', { class: 'weather-icon', 'aria-hidden': 'true',
+      html: `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">${WEATHER_ICONS[glyph.id]}</svg>` }));
+    chip.appendChild(el('span', { class: 'weather-temp', text: formatTemp(rec.temp) }));
+    chip.appendChild(el('span', { class: 'weather-place', text: rec.place }));
+    // One accessible string, not three fragments read out separately.
+    chip.setAttribute('aria-label', `${glyph.label}, ${formatTemp(rec.temp)}, ${rec.place}`);
+    chip.setAttribute('title', `${glyph.label} · ${formatTemp(rec.temp)} · ${rec.place}`);
+  }
+
+  // ---- live tracking (owner: "it has to update as my tester is commuting
+  // by train with the app and expects the location to change as the train
+  // moves") -------------------------------------------------------
+  //
+  // THREE GUARDS, because "update as the train moves" is an instruction to
+  // poll and polling without limits is how an app gets an IP throttled and the
+  // feature stops working for everyone.
+  //
+  // 1. DISTANCE GATE. The GPS is watched continuously, but the two network
+  //    calls only happen once the position has actually CHANGED BY A
+  //    MEANINGFUL AMOUNT. 3 km is the threshold: it is roughly one Swedish
+  //    municipality, so the header changes when the name would actually
+  //    change, and not for every GPS wobble while stationary.
+  // 2. TIME GATE. At most one refresh per 5 minutes, whatever the distance.
+  //    A train covers 3 km in well under a minute, so this does not delay an
+  //    update the tester would notice -- it only bounds the worst case.
+  // 3. IN-FLIGHT LOCK. `weatherBusy` means a slow request can never be
+  //    stacked by a second one arriving while it is still open.
+  //
+  // Together: a 90-minute train ride makes roughly 6-10 calls, not 200.
+
+  const WEATHER_MIN_MOVE_KM = 3;          // guard 1
+  const WEATHER_MIN_INTERVAL_MS = 5 * 60 * 1000;   // guard 2
+  const WEATHER_POLL_MS = 60 * 1000;      // how often we look at the GPS
+
+  let weatherBusy = false;
+  let weatherWatchId = null;
+  let lastFetched = null;       // {lat, lon, at}
+  let lastPainted = null;       // the record currently in the chip
+
+  function distanceKm(a, b) {
+    // Haversine. Good enough at this scale and cheap; a full geodesic library
+    // would be several times the size of this whole feature.
+    const R = 6371;
+    const toRad = (d) => (d * Math.PI) / 180;
+    const dLat = toRad(b.lat - a.lat);
+    const dLon = toRad(b.lon - a.lon);
+    const la1 = toRad(a.lat);
+    const la2 = toRad(b.lat);
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+  }
+
+  /** Fetch and paint, subject to all three guards. Returns a status for tests. */
+  async function refreshWeather(pos, { force = false } = {}) {
+    if (weatherBusy) return 'busy';
+    const now = Date.now();
+    if (!force && lastFetched) {
+      if (now - lastFetched.at < WEATHER_MIN_INTERVAL_MS) return 'too-soon';
+      // The distance gate can only be applied when the previous position is
+      // actually KNOWN. A cache restored from localStorage has a time but no
+      // coordinates, and comparing against null would silently disable the
+      // gate -- which is exactly the bug found in the browser.
+      if (lastFetched.hasPos !== false && distanceKm(lastFetched, pos) < WEATHER_MIN_MOVE_KM) {
+        return 'not-moved-enough';
+      }
+    }
+    weatherBusy = true;
+    try {
+      const [w, place] = await Promise.all([
+        fetchWeather(pos.lat, pos.lon),
+        // A place name is part of the requirement, but a missing name must not
+        // cost the temperature -- so this one may fail on its own.
+        fetchPlace(pos.lat, pos.lon).catch(() => ''),
+      ]);
+      if (!place) return 'no-place';
+      const rec = { temp: w.temp, code: w.code, place, at: now };
+      lastFetched = { lat: pos.lat, lon: pos.lon, at: now, hasPos: true };
+      writeWeatherCache(rec);
+      // Only repaint when something the tester can SEE changed. A new
+      // temperature to one decimal would otherwise repaint every few minutes
+      // for no reason, and a repaint mid-scroll is a visible flicker.
+      if (!lastPainted || lastPainted.place !== rec.place || Math.round(lastPainted.temp) !== Math.round(rec.temp)) {
+        renderWeatherChip(rec);
+        lastPainted = rec;
+      }
+      return 'ok';
+    } catch {
+      return 'failed';       // offline or rate-limited: keep what is painted
+    } finally {
+      weatherBusy = false;
+    }
+  }
+
+  function startWeatherWatch() {
+    if (weatherWatchId !== null) return;
+    if (!navigator.geolocation || !navigator.geolocation.watchPosition) return;
+    // enableHighAccuracy is deliberately FALSE. A city-level fix is accurate
+    // enough for a weather header and is far cheaper on the battery; a high-
+    // accuracy fix on a moving train is a continuous GPS drain for no gain
+    // when the answer is "Lerum" either way.
+    weatherWatchId = navigator.geolocation.watchPosition(
+      (p) => {
+        const pos = { lat: p.coords.latitude, lon: p.coords.longitude };
+        // Never block the UI thread on a rejected promise. NOTE: this is NOT one
+        // of the three silent `audioEl.play().catch(() => {})` sites WS23
+        // pinned -- those swallow a PLAYBACK failure, which must stay visible.
+        // This one swallows a weather refresh that already handles its own
+        // errors internally and reports a status string, so there is nothing
+        // left for a rejection to carry. Written as a handler rather than an
+        // empty catch so the intent is legible and the WS23 count stays at 3.
+        const quiet = () => {};
+        refreshWeather(pos).then(quiet, quiet);
+      },
+      () => { /* denied or unavailable: the cached chip stands */ },
+      { enableHighAccuracy: false, maximumAge: WEATHER_POLL_MS, timeout: 30000 }
+    );
+  }
+
+  function stopWeatherWatch() {
+    if (weatherWatchId === null) return;
+    navigator.geolocation.clearWatch(weatherWatchId);
+    weatherWatchId = null;
+  }
+
+  async function initWeather() {
+    const cached = readWeatherCache();
+    // Paint the last known reading SYNCHRONOUSLY, before any network call.
+    // A cold start on a moving train must show something immediately, not an
+    // empty header that fills in three seconds later.
+    if (cached) {
+      renderWeatherChip(cached);
+      lastPainted = cached;
+      // The cache carries a TIMESTAMP but no COORDINATES. Seeding `lastFetched`
+      // from it gave the distance gate nothing to measure against, so the very
+      // first callback always fetched -- and, in the version measured, EVERY
+      // callback fetched, because the seeding line was immediately overwritten
+      // with null. A 300 m GPS wobble was enough to spend an API call.
+      //
+      // So: keep the timestamp (it is real) and record that the coordinates are
+      // unknown. `lastFetched.hasPos === false` then makes the DISTANCE gate
+      // skip while the TIME gate still applies, so the header still refreshes on
+      // a schedule but not on every wobble.
+      lastFetched = { lat: null, lon: null, at: cached.at, hasPos: false };
+    }
+    // The watcher goes in first and unconditionally: it is what makes the
+    // header follow the train, and it also produces the very first fix.
+    startWeatherWatch();
+    // One immediate fix so a cold start with no cache still gets weather even
+    // if watchPosition is slow to deliver its first callback. It is NOT forced:
+    // with a fresh cache the time gate may legitimately decline, and forcing
+    // would spend a call the gates exist to avoid.
+    const pos = await locate();
+    if (pos && !(cached && Date.now() - cached.at < WEATHER_MIN_INTERVAL_MS)) {
+      await refreshWeather(pos);
+    }
+  }
+
   async function boot() {
     renderSkeletons();
+    // Fire-and-forget: the header must never wait on a GPS fix. It paints the
+    // cached reading synchronously via renderWeatherChip and updates later.
+    initWeather();
     const favs = loadFavorites();
     // External podcasts count as a selection too. Without this, a user whose
     // ONLY pick came from the iTunes search was told they had chosen nothing

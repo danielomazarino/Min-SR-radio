@@ -59,11 +59,47 @@ body {
   padding: 10px 20px 6px;
 }
 
+/* WS45: the weather lives in a wrapper that HOLDS the brand, so `.topbar`
+   keeps exactly two children. WS11 added a third child to this bar and the
+   cog jumped to the middle -- an owner-reported regression. `.topbar` is
+   `justify-content: space-between`, so anything placed between its two ends
+   gets centred. Grouping inside `.topbar-left` cannot do that. */
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;   /* let the brand ellipsis instead of pushing the cog off-screen */
+}
+
 .brand {
   font-size: 22px;
   font-weight: 700;
   letter-spacing: -0.02em;
   white-space: nowrap;
+}
+
+.weather {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.weather-icon { display: flex; align-items: center; color: var(--accent); }
+.weather-icon svg { width: 17px; height: 17px; }
+.weather-temp {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+/* The place can be a long name ("Inom Vallgraven"). Truncate rather than
+   pushing the cog off the right edge on a narrow phone. */
+.weather-place {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 11ch;
 }
 
 .edit-btn {
