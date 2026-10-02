@@ -6048,13 +6048,44 @@ function seekMeasureRecordText() {
       const spotify = spotifySearchUrl(artist, title);
       const youTube = youTubeSearchUrl(artist, title);
       if (!spotify && !youTube) return null;
-      const link = (href, label, glyph, tint) => el('a', {
+      // ---- E2, second pass (2026-10-03): the OFFICIAL brand marks. ----
+      //
+      // The owner: "the spotify and youtube icons needs to be the official icons
+      // from the companies." The first pass used the letters S and Y precisely
+      // because I judged that shipping the real trademarks would be using marks
+      // the app has no licence for. That was me substituting my own judgement
+      // for the owner's decision -- the same class of error as inventing an
+      // offset. These two glyphs are the standard brand marks, kept at 12 px so
+      // they read as the logos they are.
+      //
+      // They stay inside an <a> whose aria-label begins "Sök", so the link still
+      // announces itself as a search. A recognisable logo must not be allowed to
+      // imply an exact match the data cannot deliver.
+      const SPOTIFY_GLYPH = 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm4.59 14.42a.62.62 0 0 1-.86.21c-2.35-1.44-5.3-1.76-8.79-.96a.62.62 0 1 1-.28-1.22c3.81-.87 7.08-.5 9.71 1.11.3.18.39.57.22.86zm1.22-2.72a.78.78 0 0 1-1.07.26c-2.69-1.65-6.79-2.13-9.97-1.17a.78.78 0 1 1-.45-1.49c3.63-1.1 8.15-.57 11.24 1.33.37.22.48.7.25 1.07zm.11-2.85C14.7 9.06 8.9 8.77 5.7 9.69a.94.94 0 1 1-.54-1.79C8.76 6.86 15.1 7.2 19 9.02c.46.22.64.78.42 1.24a.94.94 0 0 1-1.24.42l-.16-.11z';
+      const YOUTUBE_GLYPH = 'M23.5 6.2a3.02 3.02 0 0 0-2.12-2.14C19.5 3.55 12 3.55 12 3.55s-7.5 0-9.38.51A3.02 3.02 0 0 0 .5 6.2C0 8.07 0 12 0 12s0 3.93.5 5.8a3.02 3.02 0 0 0 2.12 2.14c1.88.51 9.38.51 9.38.51s7.5 0 9.38-.51a3.02 3.02 0 0 0 2.12-2.14C24 15.93 24 12 24 12s0-3.93-.5-5.8zM9.55 15.57V8.43L15.82 12l-6.27 3.57z';
+      // The SVG is the `html` ATTRIBUTE of the <a> itself, not a child.
+      //
+      // WS53, found by driving the real DOM and NOT by the suite: el() treats
+      // `html` as an attribute (`node.innerHTML = v`) and appends every variadic
+      // child with appendChild. Passing `{ html: '<svg…>' }` as a CHILD therefore
+      // reached appendChild with a plain object and threw
+      // "parameter 1 is not of type 'Node'" -- which took down renderSongView,
+      // so the expand panel rendered nothing at all. 518 green tests could not
+      // see it: every E2 assertion was on source text or on the pure URL
+      // builders, and the crash lives in the seam between them.
+      //
+      // This is the §14 case exactly -- a state/DOM question the browser answers
+      // and a source-text test cannot.
+      const link = (href, label, glyphPath, tint) => el('a', {
         class: 'song-link', href, target: '_blank', rel: 'noopener noreferrer',
         'aria-label': label, title: label, style: `--song-tint:${tint}`,
-      }, el('span', { class: 'song-link-glyph', 'aria-hidden': 'true', text: glyph }));
+        // Trusted inline SVG: glyphPath and tint are module constants, never
+        // user input, which is the same contract the rest of the app relies on.
+        html: `<svg class="song-link-glyph" viewBox="0 0 24 24" fill="${tint}" aria-hidden="true" focusable="false"><path d="${glyphPath}"/></svg>`,
+      });
       return el('div', { class: 'song-links' },
-        spotify ? link(spotify, `Sök "${[artist, title].filter(Boolean).join(' ').trim()}" på Spotify`, 'S', '#1db954') : null,
-        youTube ? link(youTube, `Sök "${[artist, title].filter(Boolean).join(' ').trim()}" på YouTube`, 'Y', '#ff0033') : null);
+        spotify ? link(spotify, `Sök "${[artist, title].filter(Boolean).join(' ').trim()}" på Spotify`, SPOTIFY_GLYPH, '#1db954') : null,
+        youTube ? link(youTube, `Sök "${[artist, title].filter(Boolean).join(' ').trim()}" på YouTube`, YOUTUBE_GLYPH, '#ff0000') : null);
     };
 
     const buildExpandPanel = () => {
@@ -7381,7 +7412,29 @@ function seekMeasureRecordText() {
    * Vertical scrolling inside .reader-body is unaffected (horizontal intent
    * is detected by comparing axis deltas).
    */
-  function enableSwipeToClose(overlay, panel, close, { axis = 'x' } = {}) {
+  // ---- WS53: `move` is the element that VISIBLY slides; `panel` is the one
+  // that RECEIVES the gesture. They used to be the same node, and that was the
+  // bug. ----
+  //
+  // MEASURED on the live site (build 022f82b), dragging the Info sheet down:
+  //   sheet  transform: none
+  //   zone   transform: matrix(1,0,0,1,0,110)   <- only the grab MARK moved
+  // which is exactly the owner's report: "only the small horizontal mark is
+  // moving and the menu itself seems stale until it goes away".
+  //
+  // WHY: BUG 1 (2026-09-22) correctly stopped the swipe logic being bound to
+  // the whole scrollable sheet -- that killed touch scrolling on iOS -- and
+  // scoped it to `.sheet-grab-zone`. But the same call passes the ZONE as the
+  // `panel` argument, and `panel` is what the transform is written to. So the
+  // scoping was right and the movement was left behind: one fix, one new defect.
+  //
+  // The two jobs are genuinely different, so they get two parameters. The
+  // gesture is still scoped to the zone (so list touches never reach the drag
+  // logic), while the SHEET slides -- which is what the user sees moving.
+  function enableSwipeToClose(overlay, panel, close, { axis = 'x', move = null } = {}) {
+    // Defaults to the gesture surface, so all pre-existing call sites keep
+    // their exact current behaviour.
+    const mover = move || panel;
     let startX = 0, startY = 0, d = 0, dragging = false, intent = null, t0 = 0;
     const W = () => window.innerWidth;
     const H = () => window.innerHeight;
@@ -7394,7 +7447,7 @@ function seekMeasureRecordText() {
       d = 0;
       dragging = true;
       intent = null;
-      panel.style.transition = 'none';
+      mover.style.transition = 'none';
     }, { passive: true });
 
     panel.addEventListener('touchmove', (e) => {
@@ -7410,16 +7463,16 @@ function seekMeasureRecordText() {
       if (!intent || intent !== axis) return;
       d = axis === 'x' ? adx : ady;
       if (d < 0) { // wrong direction — spring back immediately
-        panel.style.transform = '';
+        mover.style.transform = '';
         return;
       }
-      panel.style.transform = axis === 'x' ? `translateX(${d}px)` : `translateY(${d}px)`;
+      mover.style.transform = axis === 'x' ? `translateX(${d}px)` : `translateY(${d}px)`;
     }, { passive: true });
 
     const finish = () => {
       if (!dragging) return;
       dragging = false;
-      panel.style.transition = 'transform 0.2s ease';
+      mover.style.transition = 'transform 0.2s ease';
       const elapsed = Date.now() - t0;
       // WS50: direction matters, and measuring |d| threw it away.
       //
@@ -7438,10 +7491,10 @@ function seekMeasureRecordText() {
       const size = axis === 'x' ? W() : H();
       if (d > size * 0.35 || flick) {
         const dir = axis === 'x' ? (d > 0 ? W() : -W()) : H();
-        panel.style.transform = axis === 'x' ? `translateX(${dir}px)` : `translateY(${dir}px)`;
+        mover.style.transform = axis === 'x' ? `translateX(${dir}px)` : `translateY(${dir}px)`;
         setTimeout(close, 180);
       } else {
-        panel.style.transform = '';
+        mover.style.transform = '';
       }
     };
     panel.addEventListener('touchend', finish);
@@ -7722,33 +7775,40 @@ function seekMeasureRecordText() {
   }
 
   // ---------------- in-app about/help overlay ----------------
-  function openAbout() {
-    const overlay = el('div', { class: 'reader-overlay', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Om appen' });
-    const about = el('article', { class: 'reader' });
-    // WS29: the readout's interval is declared here so `close` can clear it.
-    // Declared before `close` is defined because `close` closes over it.
-    let readoutTimer = null;
-    // WS30: the sample interval is declared HERE, beside the paint interval and
-    // for the same reason — `close` closes over it, so a declaration further
-    // down would be a temporal-dead-zone error on a fast close.
-    let sampleTimer = null;
-    const close = () => {
-      // WS29: no timer may outlive the sheet. Verified by a driven test.
-      if (readoutTimer) { clearInterval(readoutTimer); readoutTimer = null; }
-      // WS30: nor may the sampler. Two fetches per panel open, forever, is
-      // exactly the battery bug the paint interval was fixed for.
-      if (sampleTimer) { clearInterval(sampleTimer); sampleTimer = null; }
-      overlay.remove();
-      document.body.style.overflow = '';
-    };
-    const closeBtn = el('button', {
-      class: 'reader-close', type: 'button', 'aria-label': 'Stäng', text: '✕', onclick: close,
-    });
-    about.appendChild(el('div', { class: 'reader-topbar' },
-      el('div', { class: 'reader-brand', text: 'Min Radio' }), closeBtn));
-
+  // ---- E4, second half (2026-10-03): the USER-FACING help page. ----
+  //
+  // The owner, verbatim: "the info page is not moved as stipulated in the
+  // requirements, i can only see the old info button being renamed to Tests,
+  // please check the requirements again."
+  //
+  // Re-read, the original E4 brief says: "appen ska förklara sig själv via en
+  // tydlig INFO-ikon ÖVERST PÅ STARTSIDAN -- inte via Inställningar." The first
+  // pass rewrote the text but left it BEHIND the settings cog, which is exactly
+  // what the brief says NOT to do. Renaming that button to "Tests" and calling
+  // the job done satisfied the letter of "change the label" and broke the point
+  // of the whole entry: the help must be reachable from the home screen.
+  //
+  // So the content now lives in this function, opened from an Info button in the
+  // topbar, and the settings sheet's "Tests" button keeps ONLY the diagnostics.
+  // One content block, two homes would be two copies that drift -- so the text
+  // lives here once and the Tests panel keeps just the instrumentation.
+  function openUserHelp() {
+    const overlay = el('div', { class: 'reader-overlay', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Om Min Radio' });
+    const article = el('article', { class: 'reader' });
+    const close = () => { overlay.remove(); document.body.style.overflow = ''; };
+    article.appendChild(el('div', { class: 'reader-topbar' },
+      el('div', { class: 'reader-brand', text: 'Min Radio' }),
+      el('button', { class: 'reader-close', type: 'button', 'aria-label': 'Stäng', text: '✕', onclick: close })));
     const body = el('div', { class: 'reader-body about-body' });
-
+    article.appendChild(body);
+    overlay.appendChild(article);
+    document.body.appendChild(overlay);
+    document.body.style.overflow = 'hidden';
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    document.addEventListener('keydown', function esc(e) {
+      if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc); }
+    });
+    enableSwipeToClose(overlay, article, close, { axis: 'y' });
     body.appendChild(el('h2', { class: 'about-title', text: 'Om Min Radio' }));
     body.appendChild(el('p', { class: 'about-version', text: `bygg ${APP_BUILD} · Utvecklad av ${APP_DEVELOPER}` }));
 
@@ -7848,6 +7908,35 @@ function seekMeasureRecordText() {
       el('li', {}, 'Data från ',
         el('a', { href: 'https://www.sverigesradio.se', target: '_blank', rel: 'noopener', text: 'Sveriges Radio' }),
         '. Appen är oberoende av och inte utgiven av Sveriges Radio.')));
+
+  }
+
+  function openAbout() {
+    const overlay = el('div', { class: 'reader-overlay', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Om appen' });
+    const about = el('article', { class: 'reader' });
+    // WS29: the readout's interval is declared here so `close` can clear it.
+    // Declared before `close` is defined because `close` closes over it.
+    let readoutTimer = null;
+    // WS30: the sample interval is declared HERE, beside the paint interval and
+    // for the same reason — `close` closes over it, so a declaration further
+    // down would be a temporal-dead-zone error on a fast close.
+    let sampleTimer = null;
+    const close = () => {
+      // WS29: no timer may outlive the sheet. Verified by a driven test.
+      if (readoutTimer) { clearInterval(readoutTimer); readoutTimer = null; }
+      // WS30: nor may the sampler. Two fetches per panel open, forever, is
+      // exactly the battery bug the paint interval was fixed for.
+      if (sampleTimer) { clearInterval(sampleTimer); sampleTimer = null; }
+      overlay.remove();
+      document.body.style.overflow = '';
+    };
+    const closeBtn = el('button', {
+      class: 'reader-close', type: 'button', 'aria-label': 'Stäng', text: '✕', onclick: close,
+    });
+    about.appendChild(el('div', { class: 'reader-topbar' },
+      el('div', { class: 'reader-brand', text: 'Min Radio' }), closeBtn));
+
+    const body = el('div', { class: 'reader-body about-body' });
 
     // ---- WS29: the visible timing readout. ----
     // Owner decision 2026-09-30: the switch is the deliberate action, so the
@@ -8174,7 +8263,34 @@ function seekMeasureRecordText() {
     $sheetRoot.textContent = '';
     $sheetRoot.appendChild(overlay);
     document.body.style.overflow = 'hidden';
+    // ---- WS52: publish the FIXED header height so the day labels can stick
+    // BENEATH it instead of under it. ----
+    //
+    // Measured once, on open, after the nodes are in the document -- measuring
+    // before insertion would read 0 and silently produce the old overlap.
+    //
+    // Why a measurement and not a hard-coded number: the header holds a channel
+    // name and a title that WRAP. A fixed constant would be right for P2 and
+    // wrong for "Utisbet/Nyheter från Sveriges Radio Finland" -- which is
+    // exactly the kind of fudge factor this project has been bitten by before.
+    // Measured on open, it is always the truth for the content actually shown.
+    //
+    // Re-measured on resize/orientation change: the available width changes, so
+    // a wrapped two-line title can become a one-line title and vice versa.
+    const publishFixedHeight = () => {
+      const h = Math.round(grabZone.offsetHeight + header.offsetHeight);
+      sheet.style.setProperty('--card-fixed-h', `${h}px`);
+    };
+    publishFixedHeight();
+    // A stale height is the flakiness the owner reported, so it must not be
+    // allowed to persist across an orientation change. Removed on close with
+    // the rest of the card, since the node goes away anyway.
     function close() {
+      // WS52: the resize listeners hold a reference to this card's nodes. Left
+      // attached they would keep writing --card-fixed-h into a detached sheet
+      // on every rotation, for as long as the app lives.
+      window.removeEventListener('resize', publishFixedHeight);
+      window.removeEventListener('orientationchange', publishFixedHeight);
       $sheetRoot.textContent = '';
       document.body.style.overflow = '';
     }
@@ -8182,7 +8298,12 @@ function seekMeasureRecordText() {
     document.addEventListener('keydown', function esc(e) {
       if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc); }
     });
-    enableSwipeToClose(overlay, sheet, close, { axis: 'y' });
+    window.addEventListener('resize', publishFixedHeight);
+    window.addEventListener('orientationchange', publishFixedHeight);
+    // WS53: scope the gesture to the grab zone, exactly as openSheet does, and
+    // move the sheet. Binding the whole card meant every scroll touch also ran
+    // the drag logic -- BUG 1's mechanism, on this surface.
+    enableSwipeToClose(overlay, grabZone, close, { axis: 'y', move: sheet });
   }
 
   // Channel card: tablå for YESTERDAY + TODAY via scheduledepisodes (live
@@ -8211,9 +8332,30 @@ function seekMeasureRecordText() {
           }
           const now = Date.now();
           const list = el('div', { class: 'card-list', role: 'list' });
+          // ---- WS52: the stacking depth of the day label. ----
+          //
+          // "Igår" and "Idag" are sticky siblings in ONE scroll container, so
+          // without a per-label depth they both park at the same offset and the
+          // second one covers the first (measured at scrollTop 1400+, where both
+          // sat at the same pixel). Each label therefore carries its ordinal as
+          // an inline custom property, and the CSS stacks them beneath the fixed
+          // header and each other.
+          //
+          // This is the ONE place that knows how many day labels there are, so
+          // it is the only place allowed to number them. A CSS counter was tried
+          // first and cannot work: it cannot express "how many labels precede
+          // me" for an element being created in a JS loop.
+          let labelDepth = 0;
           const addDay = (schedule, label) => {
             if (!schedule || !schedule.length) return;
-            list.appendChild(el('div', { class: 'card-day-label', text: label }));
+            list.appendChild(el('div', {
+              class: 'card-day-label',
+              // `--card-label-h` is the label's own measured height, so the
+              // stack never drifts if the type scale or padding changes.
+              style: `--card-label-depth:${labelDepth}`,
+              text: label,
+            }));
+            labelDepth += 1;
             for (const ev of schedule) {
               const ongoing = now >= ev.startMs && now < ev.endMs;
               const past = now >= ev.endMs;
@@ -9200,7 +9342,8 @@ function seekMeasureRecordText() {
     // sheet unscrollable. Fix: scope the swipe surface to the grab handle +
     // header zone only; list touches never reach the swipe logic.
     const swipeSurface = sheet.querySelector('.sheet-grab-zone');
-    enableSwipeToClose(overlay, swipeSurface, () => { closeSheet(); onDone?.(); }, { axis: 'y' });
+    enableSwipeToClose(overlay, swipeSurface, () => { closeSheet(); onDone?.(); },
+      { axis: 'y', move: sheet });
 
     overlay.addEventListener('click', (e) => {
       if (e.target === overlay) { closeSheet(); onDone?.(); }
@@ -10989,6 +11132,13 @@ function seekMeasureRecordText() {
 
   document.getElementById('edit-btn').addEventListener('click', () => {
     openSheet({ initialTab: 'channels', onDone: boot });
+  });
+
+  // E4: the home screen's Info button. Guarded, because a null here would throw
+  // during boot and take the whole app with it -- and index.html is a separate
+  // file from this one, so the two can drift.
+  document.getElementById('info-btn')?.addEventListener('click', () => {
+    openUserHelp();
   });
 
   boot();

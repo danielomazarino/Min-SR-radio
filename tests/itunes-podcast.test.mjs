@@ -1406,11 +1406,47 @@ test('WS45: the header gains a weather chip WITHOUT becoming a third flex child'
   assert.doesNotMatch(paint, /bar\.appendChild\(chip\)/,
     'appending the chip to .topbar directly would make it a third child and re-centre the cog');
   // The real markup must still have exactly two children in .topbar.
+  //
+  // RESTATED 2026-10-03 (E4), and the REASON matters: the property being
+  // protected is not "two tags" but "the bar has exactly two flex CHILDREN, so
+  // `space-between` cannot centre the cog". E4 added a second topbar button, so
+  // a literal count of <h1|<button is no longer the thing that matters -- the two
+  // buttons now sit in one wrapper, which keeps the bar at two children and
+  // keeps the cog at the right edge. The count moved from 2 to 3 because the
+  // markup really did change; the invariant it protected did not.
   const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
   const bar = html.slice(html.indexOf('<header class="topbar">'), html.indexOf('</header>'));
   const childTags = (bar.match(/<h1|<button/g) || []).length;
-  assert.equal(childTags, 2,
-    '.topbar must carry exactly two children in the markup (brand + cog); the chip is built at runtime inside .topbar-left');
+  assert.equal(childTags, 3,
+    '.topbar now carries brand + two buttons (brand + info + cog)');
+  // The invariant itself, asserted on the structure rather than the tag count:
+  // exactly two element children, and the buttons are grouped in ONE wrapper.
+  // Count the DIRECT element children of the header, by depth, so a nested
+  // <button> inside the wrapper is not mistaken for a child of the bar. A flat
+  // regex over the markup cannot do this -- it counted 4 because it saw the two
+  // buttons as well as the wrapper, and reported a layout bug that did not
+  // exist. A harness fault that reads as a product bug is worse than no test.
+  const directChildren = (() => {
+    const out = [];
+    let depth = 0;
+    const re = /<(\/?)(h1|div|button)\b[^>]*>/g;
+    let m;
+    while ((m = re.exec(bar)) !== null) {
+      if (m[1]) { depth -= 1; continue; }
+      if (depth === 0) out.push(m[2]);
+      depth += 1;
+    }
+    return out;
+  })();
+  assert.equal(directChildren.length, 2,
+    '.topbar must have exactly two flex children or the cog re-centres');
+  assert.deepEqual(directChildren, ['h1', 'div'],
+    'the brand, then ONE wrapper holding both buttons');
+  assert.equal((bar.match(/<div class="topbar-right">/g) || []).length, 1,
+    'the two buttons must share a single wrapper');
+  // And the cog must still be the LAST child, or it is not at the right edge.
+  assert.ok(bar.lastIndexOf('id="edit-btn"') > bar.lastIndexOf('id="info-btn"'),
+    'the cog must stay last so it remains right-aligned');
 });
 
 test('WS45: tracking is throttled by distance AND time, or a train ride storms the API', () => {
@@ -2477,13 +2513,13 @@ test('E2: the helper returns null when there is nothing to search for', () => {
 
 // E4: the Info page. Asserted on content, not on the old wording.
 test('E4: the Info page explains the long-press tablå gesture', () => {
-  const about = stripComments(region('function openAbout', 'about.appendChild(body)', APP_JS));
+  const about = stripComments(region('function openUserHelp(', 'function openAbout(', APP_JS));
   assert.match(about, /håll inne/i,
     'the least discoverable feature must be documented somewhere');
 });
 
 test('E4: the Info page documents the weather permission honestly', () => {
-  const about = stripComments(region('function openAbout', 'about.appendChild(body)', APP_JS));
+  const about = stripComments(region('function openUserHelp(', 'function openAbout(', APP_JS));
   assert.match(about, /väder|plats/i, 'the header weather chip is part of the app');
   assert.match(about, /en gång|behöver platsen bara en gång/i,
     'the one-time location prompt is the surprising part and must be stated');
@@ -2493,7 +2529,7 @@ test('E4: the Info page documents the weather permission honestly', () => {
 // CORS", presented as a hard wall. The app DOES read articles in-app, so a
 // reader who meets that sentence learns to distrust the page.
 test('E4: the Info page no longer claims CORS blocks the news text', () => {
-  const about = stripComments(region('function openAbout', 'about.appendChild(body)', APP_JS));
+  const about = stripComments(region('function openUserHelp(', 'function openAbout(', APP_JS));
   assert.doesNotMatch(about, /CORS/,
     'a stale half-truth about CORS must not survive the rewrite');
 });
@@ -2502,7 +2538,7 @@ test('E4: the Info page no longer claims CORS blocks the news text', () => {
 // keep out of the primary explanation. It may still exist BELOW, so the check
 // is that it did not lead.
 test('E4: IndexedDB internals are not in the user-facing half', () => {
-  const about = stripComments(region('function openAbout', 'about.appendChild(body)', APP_JS));
+  const about = stripComments(region('function openUserHelp(', 'function openAbout(', APP_JS));
   const techAt = about.indexOf('Tekniskt');
   assert.notEqual(techAt, -1, 'the technical section must still exist');
   assert.ok(about.indexOf('IndexedDB') === -1 || about.indexOf('IndexedDB') > techAt,
@@ -2511,11 +2547,23 @@ test('E4: IndexedDB internals are not in the user-facing half', () => {
 
 // The diagnostics must NOT have been removed by the rewrite. This is the part
 // of the brief most likely to be broken by a careless "replace the Info page".
-test('E4: the diagnostics readout survived the Info rewrite', () => {
-  const about = region('function openAbout', 'about.appendChild(body)', APP_JS);
+test('E4: the diagnostics readout survived, and lives in the Tests panel', () => {
+  // CORRECTED 2026-10-03. A blanket retarget pointed this guard at
+  // openUserHelp, which was wrong and briefly made it meaningless: the
+  // diagnostics are NOT in the help page, that is the whole point of the split.
+  // The brief said the diagnostics stay on the info page -- they now live in the
+  // panel the "Tests" button opens, which is the same panel as before.
+  //
+  // So this guard reads openAbout (where the diagnostics actually are) and
+  // SEPARATELY asserts the help page does NOT contain them. One assertion that
+  // cannot fail is worse than none; two that pin opposite facts cannot rot.
+  const about = region('function openAbout(', 'about.appendChild(body)', APP_JS);
   assert.match(about, /Visa tidsdiagnostik/, 'the diagnostics switch must remain');
   assert.match(about, /syncSwitch\(\)/, 'and it must still be wired');
   assert.match(about, /startReadout|stopReadout/, 'and still start/stop on open');
+  const help = region('function openUserHelp(', 'function openAbout(', APP_JS);
+  assert.doesNotMatch(help, /Visa tidsdiagnostik/,
+    'instrumentation must not leak into the user-facing help page');
 });
 
 // The button label is the owner's explicit instruction.
@@ -2526,4 +2574,86 @@ test('E4: the sheet button is labelled Tests, not Info', () => {
   // And it must still be the same handler -- renaming a button must not
   // silently unhook the page it opens.
   assert.match(sheet, /onclick: openAbout/, 'Tests must still open the same panel');
+});
+
+// ---------------------------------------------------------------------------
+// WS53 — the three defects the owner reported after the 022f82b deploy.
+//
+// Each was MEASURED on the live site or in a driven DOM before being fixed, and
+// each guard below exists because the suite could not see the original defect.
+// ---------------------------------------------------------------------------
+
+// --- 1. The Info drag: `move` must be a SEPARATE argument from `panel`. -----
+test('WS53: the swipe target and the moving element are separate parameters', () => {
+  const fn = stripComments(grab('enableSwipeToClose'));
+  assert.match(fn, /\{ axis = 'x', move = null \}/,
+    'enableSwipeToClose must accept an explicit `move` target');
+  // The transform must be written to `mover`, never to `panel`. Writing it to
+  // `panel` is the bug: the gesture surface is a 33 px grab zone, so only the
+  // grab MARK moved while the sheet stayed put.
+  assert.match(fn, /const mover = move \|\| panel;/,
+    'mover must default to panel so untouched call sites keep their behaviour');
+  assert.doesNotMatch(fn, /panel\.style\.transform/,
+    'the transform must never be written to the gesture surface');
+  assert.match(fn, /mover\.style\.transform/,
+    'the transform must be written to the element that moves');
+});
+
+// Both surfaces must pass `move`, and the listener must stay on the grab zone.
+test('WS53: both sheets scope the gesture to the zone and move the sheet', () => {
+  const ctx = stripComments(region('function openContextCard', 'function openChannelCard', APP_JS));
+  assert.match(ctx, /enableSwipeToClose\(overlay, grabZone, close, \{ axis: 'y', move: sheet \}\)/,
+    'the tablå card must listen on the grab zone but move the sheet');
+  // The region must extend PAST the call, not stop at the `swipeSurface`
+  // declaration -- an earlier version ended there and the guard failed while
+  // the code was correct. A region that stops one line early produces a guard
+  // that reports a defect which does not exist.
+  const sheet = stripComments(region('function openSheet', 'const swipeSurface', APP_JS)
+    + '\n' + stripComments(region('const swipeSurface', 'overlay.addEventListener', APP_JS)));
+  // `[^)]*` cannot span this call: the close argument itself contains `onDone?.()`,
+  // so the first `)` ends the match early. Match across newlines instead.
+  assert.match(sheet, /enableSwipeToClose\(overlay, swipeSurface,[\s\S]*?move: sheet/,
+    'the settings sheet must do the same');
+});
+
+// --- 2. The Info page must be reachable from the HOME SCREEN. --------------
+test('WS53: an Info button exists on the home screen, not only in settings', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+  assert.match(html, /id="info-btn"/,
+    'E4 requires an Info button in the topbar -- this was the reported miss');
+  assert.match(html, /aria-label="Om Min Radio"/,
+    'it must be labelled for screen readers');
+  // Wired to the help page, not to the diagnostics.
+  assert.match(APP_JS, /getElementById\('info-btn'\)\?\.addEventListener\('click', \(\) => \{\s*openUserHelp\(\);/,
+    'the Info button must open the user-facing help');
+  // And the help text must live in openUserHelp, reachable from there.
+  assert.match(APP_JS, /function openUserHelp\(\)/, 'openUserHelp must exist');
+});
+
+// --- 3. The official brand marks, not letters. -----------------------------
+test('WS53: the song links carry the official brand marks as inline SVG', () => {
+  const fn = stripComments(region('const renderSongLinks', "return el('div', { class: 'song-links' }", APP_JS));
+  assert.match(fn, /SPOTIFY_GLYPH = 'M12 2a10 10 0 1 0 0 20/,
+    'the Spotify glyph must be the real mark, not a letter');
+  assert.match(fn, /YOUTUBE_GLYPH = 'M23\.5 6\.2a3\.02/,
+    'the YouTube glyph must be the real mark, not a letter');
+  assert.doesNotMatch(fn, /text: 'S'|text: 'Y'/,
+    'the letter placeholders must be gone');
+  // The crash the suite could not see: el() treats `html` as an ATTRIBUTE, so
+  // passing it as a variadic child threw "parameter 1 is not of type 'Node'"
+  // and took the whole expand panel down with it.
+  assert.match(fn, /html: `<svg class="song-link-glyph"/,
+    'the SVG must be the html ATTRIBUTE of the anchor');
+  assert.doesNotMatch(fn, /\}, \{ html: /,
+    'the SVG must NOT be passed as a child -- that is the runtime crash');
+});
+
+// The glyph is an SVG now, so it is sized rather than font-sized.
+test('WS53: the SVG glyph is sized, not font-sized', () => {
+  const css = fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8');
+  const rule = css.slice(css.indexOf('.song-link-glyph {'), css.indexOf('.song-link:active'));
+  assert.match(rule, /width: 14px/, 'the glyph must have an explicit width');
+  assert.match(rule, /height: 14px/, 'the glyph must have an explicit height');
+  assert.doesNotMatch(rule, /font-size/,
+    'font-size does nothing to an SVG and hid a 24 px render inside a 26 px button');
 });

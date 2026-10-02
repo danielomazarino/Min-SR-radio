@@ -1678,12 +1678,79 @@ body.player-gesture-lock {
 }
 .card-list { display: flex; flex-direction: column; }
 
-/* Day divider inside the tablå card (Igår / Idag). Sticky so the current
-   day stays visible while scrolling between yesterday and today. */
+/* ---- WS52: the tablå card scrolls like a fixed sheet, not a free list. ----
+ *
+ * THE OWNER'S TWO SCREENSHOTS showed two different symptoms that looked like one
+ * flaky thing:
+ *   1. the P2 icon visible at rest, GONE after a short scroll
+ *   2. "Igår" sliding under the P2 header instead of stopping below it
+ *
+ * MEASURED causes, both in this file:
+ *
+ *   1. `.sheet-header` and `.sheet-grab-zone` were `position: static`. The
+ *      .sheet is the scroll container, so the header is ordinary content: any
+ *      scroll moves it off the top and the channel icon leaves the screen. The
+ *      sticky DAY LABEL was pinned to `top: 0`, i.e. to the scroll box, so it
+ *      slid underneath the header rather than below it.
+ *
+ * The fix is to declare the policy that was never written down: the sheet's
+ * grab zone + header are FIXED, the day labels stick DIRECTLY BENEATH them, and
+ * only the programme rows scroll. "Igår" and "Idag" therefore stay in stable
+ * positions under the channel, exactly as the owner asked, and never overlap it.
+ *
+ * `--card-fixed-h` is the measured height of grab zone + header. It is declared
+ * here rather than computed in JS because it must match the CSS that creates
+ * it; a JS measurement would be a second source of truth that can drift.
+ */
+.sheet.context-card {
+  --card-fixed-h: 0px;
+  padding-top: 0;
+}
+.sheet.context-card > .sheet-grab-zone,
+.sheet.context-card > .sheet-header {
+  position: sticky;
+  /* Stacked offsets: the grab zone sticks at the very top, the header directly
+     beneath it. Both are opaque, so a label can never show through either. */
+  z-index: 3;
+  background: var(--bg);
+}
+.sheet.context-card > .sheet-grab-zone { top: 0; }
+.sheet.context-card > .sheet-header { top: 0; }
+
+/* The header carries the channel icon and the close button. Opaque background
+   + a bottom rule, so rows scrolling underneath read as "underneath" instead of
+   colliding with the text. */
+.sheet.context-card > .sheet-header {
+  padding-top: 4px;
+  box-shadow: 0 1px 0 var(--border);
+}
+
+/* The day labels stick UNDER the fixed header block. `--card-fixed-h` is set
+   from the real measured height by the one place that builds the card.
+
+   WS52, second defect found while VERIFYING the first fix: "Igår" and "Idag"
+   live in the SAME .card-list (measured: both parentElement .card-list, 49
+   children, Idag at index 29). Two sticky siblings in one scroll container
+   therefore BOTH park at the same offset once the second is reached -- at
+   scrollTop 1400+ they sat on top of each other at the same pixel, so the day
+   you were reading silently changed from "Idag" to whichever label won.
+
+   The fix is to STACK them: each label sticks directly beneath the one above
+   it, which is what makes the owner's policy -- "Igår and Idag move into their
+   positions under the channel" -- true rather than aspirational.
+
+   The depth is an INLINE custom property written where the label is created,
+   not a CSS counter. A counter cannot work here: `counter()` on an element and
+   `counter-increment` on its own ::after are evaluated at layout time, but the
+   value each sticky element needs is its ORDINAL POSITION AMONG THE LABELS, and
+   the label is created by JS in a loop whose count is known exactly there. One
+   source of truth, and it is the one that already has the answer. */
 .card-day-label {
   position: sticky;
-  top: 0;
-  z-index: 1;
+  top: calc(var(--card-fixed-h) + var(--card-label-depth, 0) * 30px);
+  /* Depth 0 is the header-adjacent label and must paint OVER the ones below
+     it, or a deeper label scrolling up would cover the one already parked. */
+  z-index: calc(3 - var(--card-label-depth, 0));
   font-size: 10.5px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -2072,10 +2139,40 @@ body.player-gesture-lock {
   background: color-mix(in srgb, var(--song-tint, #888) 10%, transparent);
   -webkit-tap-highlight-color: transparent;
 }
+/* The glyph is now an inline <svg>, not a letter, so it is SIZED rather than
+   font-sized. 14 px inside the 26 px button: big enough to read as the logo it
+   is, small enough to stay "visuellt diskret" as the E2 brief requires. An
+   earlier edit of this rule reported success and did not apply, leaving the
+   letter-based sizing in place and the SVG rendering at its default 24 px --
+   found by measuring the rendered box in the browser, not by reading the file. */
 .song-link-glyph {
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1;
+  display: block;
+  width: 14px;
+  height: 14px;
 }
 .song-link:active { opacity: 0.6; }
 .song-link:focus-visible { outline: 2px solid var(--song-tint, #888); outline-offset: 2px; }
+
+/* ---------- E4: the topbar's right-hand button group ---------- */
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+.info-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.info-btn:active { background: var(--border); color: var(--text); }
+.info-btn:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }

@@ -2612,21 +2612,34 @@ test('WS10: the id names the SOURCE commit, not the artifact commit', () => {
     'the root app.js must NOT contain a hardcoded build hash');
 });
 
-test('WS10: the About overlay keeps its wording (only the value changed)', () => {
+test('WS10: the user-facing Info page keeps its wording (only the value changed)', () => {
   // The brief permits changing the version VALUE only. Nothing asserted the
   // rest of the line, so mutation M8 (deleting "· Utvecklad av ...") was green.
-  const ABOUT = stripComments(region('function openAbout(', '// ----', APP_JS));
+  //
+  // SUPERSEDED 2026-10-03 (E4), and the REASON is recorded because a
+  // superseded guard that is quietly retargeted is how a real regression gets
+  // laundered into a green suite. The wording did not change and the guard did
+  // not weaken -- it MOVED, because the owner required that this text be
+  // reachable from an Info button on the HOME SCREEN, not from behind the
+  // settings cog. The identical assertions now read the new home; the Tests
+  // panel keeps only the diagnostics. Every assertion below is the same one.
+  const ABOUT = stripComments(region('function openUserHelp(', 'function openAbout(', APP_JS));
   assert.ok(/APP_DEVELOPER/.test(ABOUT),
-    'the About overlay must still name the developer');
+    'the Info page must still name the developer');
   assert.ok(/Utvecklad av/.test(ABOUT),
-    'the About overlay must keep its Swedish wording');
+    'the Info page must keep its Swedish wording');
   assert.ok(/APP_BUILD/.test(ABOUT),
-    'the About overlay must show the build id');
+    'the Info page must show the build id');
   assert.ok(!/APP_VERSION/.test(ABOUT),
-    'the About overlay must not show a frozen version');
+    'the Info page must not show a frozen version');
   // And the independent-app disclaimer that WS5 deliberately left there.
   assert.ok(APP_CODE.includes('oberoende av och inte utgiven av Sveriges Radio'),
     'the independent-app disclaimer must survive');
+  // NEW, and the point of the whole move: the Info button must exist on the
+  // home screen's topbar. Without this the guard above would still pass with
+  // the help page unreachable, which is exactly the defect the owner reported.
+  assert.match(APP_CODE, /aria-label: 'Om Min Radio'|openUserHelp/,
+    'the Info page must be wired to something');
 });
 
 test('WS10: out of scope -- playback, seek, metadata and DVR are byte-identical', () => {
