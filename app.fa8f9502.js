@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '1ce0114';
+  const APP_BUILD = 'b370dac';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -8698,7 +8698,7 @@ function seekMeasureRecordText() {
         rowEl.querySelector('.selected-item-face').appendChild(controls);
         group.appendChild(rowEl);
       });
-      enableDragSort(group, kind);
+      enableDragSort(group, kind, extList);
       // Swipe-to-remove, enabled for BOTH providers. It calls the SAME
       // onRemoveRequest the ✕ button uses -- one implementation, two inputs.
       // The removal is provider-explicit in removeFavoriteRow(), so this one
@@ -8713,7 +8713,7 @@ function seekMeasureRecordText() {
      * Desktop: HTML5 drag events. Touch: long-press (250 ms) starts a drag;
      * the row follows the finger vertically and drops into place.
      */
-    function enableDragSort(group, kind) {
+    function enableDragSort(group, kind, extList = []) {
       let dragId = null;
 
       const persist = () => {
