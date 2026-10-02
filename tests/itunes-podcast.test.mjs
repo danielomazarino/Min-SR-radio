@@ -2175,3 +2175,29 @@ test('WS48: a permanently denied location must be EXPLAINED, not silently ignore
   assert.match(fn, /\.weather-place/,
     'the visible chip text must change too -- a title attribute alone is not visible');
 });
+
+test('WS49: the "location is off" explanation must fire on OPEN, not only on tap', () => {
+  // The owner switched location OFF, RELOADED the page -- the most natural
+  // thing to do -- and got a bare italic "Väder" with no explanation. Tapping
+  // the same chip in the same state DID explain itself. MEASURED:
+  // `explainNoLocation` was called from refreshWeatherNow but from nowhere in
+  // initWeather.
+  //
+  // Two entry points into ONE dead end, behaving differently, and no test
+  // covered the difference. The reload path is the one people actually take.
+  const init = stripComments(region('async function initWeather', 'async function boot', APP_JS));
+  assert.match(init, /explainNoLocation\(\)/,
+    'reaching the empty state on open must explain itself, or a reload looks broken');
+  // It must be on the FAILURE branch -- calling it after a successful retry
+  // would overwrite a perfectly good reading.
+  const retryAt = init.indexOf('if (!readWeatherCache() && weatherRetryDue())');
+  const retryBlock = init.slice(retryAt, init.indexOf('if (hasAskedForLocation())', retryAt));
+  const failedAt = retryBlock.indexOf('} else {');
+  const explainAt = retryBlock.indexOf('explainNoLocation()');
+  assert.ok(failedAt !== -1 && explainAt > failedAt,
+    'the explanation belongs on the retry-FAILED branch, never after a successful refresh');
+  // And it must not be the only place: the tap path must keep it too, since
+  // that is a different entry point into the same state.
+  assert.match(stripComments(grab('refreshWeatherNow')), /explainNoLocation\(\)/,
+    'the tap path must keep its explanation');
+});

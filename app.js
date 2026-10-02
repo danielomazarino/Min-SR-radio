@@ -10742,6 +10742,13 @@ function seekMeasureRecordText() {
         // GPS that is plainly unavailable -- and so a genuinely denied
         // permission costs nothing but one failed call per cooldown.
         markWeatherRetry();
+        // WS49. The explanation existed ONLY on the tap path, so a user who
+        // switched location off and simply RELOADED -- the most natural thing to
+        // do, and exactly what the owner did -- got a bare italic "Väder" and
+        // no explanation, while the very same state reached by tapping explained
+        // itself. Two entry points into one dead end, behaving differently, and
+        // no test covered the difference.
+        explainNoLocation();
       }
       return;
     }
