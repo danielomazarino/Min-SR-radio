@@ -7164,3 +7164,128 @@ wording restored, prompt CSS removed, centring removed.
   field, so any grouping would have to be invented from names.
 - **Not tested:** a very rapid type-and-clear (the debounce is cancelled on
   clear, which should be safe, but it was not driven at speed).
+
+---
+
+## 2026-10-02 — WS45: weather in the header — DONE, live
+
+**Status: DONE — `fd4bfcb` + build `480d85d`, deployed, live-verified.**
+
+Owner: *"weather info in the header. i.e. starting with the typical weather icon
+for sun, clouds, rain... and the temperature in celsius followed by the location
+as tracked by the phone."* Then: *"just Göteborg or Lerum for example"* and
+*"during the open session it has to update as my tester is commuting by train
+with the app and expects the location to change as the train moves."*
+
+### Both facilities measured BEFORE any code (AGENTS.md §6)
+
+A keyless, static-only app is the make-or-break question. It was answered by
+evidence, not hope:
+
+| facility | result |
+|---|---|
+| `api.open-meteo.com` | HTTP 200, `access-control-allow-origin: *` |
+| `api.bigdatacloud.net` | HTTP 200 after a 307 the browser follows, ACAO `*` |
+
+**Neither needs an API key**, so the static-only rule holds — no backend, no
+proxy, no secret in the bundle. That was the question that decided feasibility.
+
+### Places are short Swedish names
+
+Measured: the same coordinates return **`Gothenburg`** with
+`localityLanguage=en` and **`Göteborg`** with `=sv`. A Swedish municipality
+comes back as **`Lerums kommun`**, not `Lerum` — 4 of 5 non-city samples were the
+kommun form. `prettyPlace()` drops a trailing `" kommun"` and the genitive `s`
+behind it:
+
+| geocoder | shown |
+|---|---|
+| Göteborg | Göteborg (untouched) |
+| Lerums kommun | **Lerum** |
+| Trelleborgs kommun | Trelleborg |
+| Melleruds kommun | Mellerud |
+| Älvkarleby kommun | Älvkarleby (no trailing `s`) |
+
+No county text anywhere, as asked.
+
+### Tracking is throttled three ways
+
+*"Update as the train moves"* is an instruction to poll, and unbounded polling
+is how an app gets IP-throttled and the feature stops working for everyone.
+
+1. **Distance gate** — the network is called only after the position moved **≥ 3 km**
+2. **Time gate** — at most one refresh per **5 minutes**, whatever the distance
+3. **In-flight lock** — a slow request can never be stacked
+
+GPS is *watched* continuously (`watchPosition`), because that is what makes the
+header follow the train at all. A 90-minute ride makes roughly **6–10 calls**,
+not 200.
+
+### A real defect, found in the browser and not by reading
+
+`initWeather` seeded `lastFetched` from the cache and then **immediately
+overwrote it with `null`**, so the distance gate had no previous position and
+**every** GPS callback fetched. **A 300 m wobble spent an API call.**
+
+Every source-text guard passed, because the source said
+`distanceKm(lastFetched, pos) < WEATHER_MIN_MOVE_KM` — correct-looking code that
+could never fire. Fixed with an explicit `hasPos` flag: a cache has a timestamp
+but no coordinates, so the distance gate is skipped while the time gate still
+applies. The cold-start refresh was also force-bypassing both gates; it now
+goes through them.
+
+### The header keeps exactly two children
+
+WS11 added a third child to `.topbar` and **the cog jumped to the middle** — an
+owner-reported regression the owner had to have undone. `.topbar` is
+`justify-content: space-between`. The chip is built inside a `.topbar-left`
+wrapper that *holds* the brand, so space-between still has only two ends.
+Verified live: the cog stays right-aligned.
+
+### A failed guard, caught by mutation
+
+The train guard asserted `/watchPosition/` **anywhere** in `startWeatherWatch`
+and reported GREEN when the call was rewritten to `getCurrentPosition` — because
+the capability check on the line above still contains the word. It now names the
+call site.
+
+### Three test defects, all mine
+
+- an icon-parse regex assumed two-space indentation (the entries use four)
+- the same test assumed every entry had a leading newline, so the **first**
+  entry looked missing
+- a `[^}]*` in the gate test stopped at the object literal's own brace
+
+Each was the harness, not the app. Fixed the harness, and said so.
+
+I also **twice** concluded `distanceKm` was broken when my own probe was: I
+converted metres→degrees with `111320` and compared the result against `3` as if
+it were kilometres. The function is correct (5 km measures 4.994). There is now
+a test pinning the scale.
+
+### MEASURED — live site, build `fd4bfcb`
+
+| check | result |
+|---|---|
+| cold start | `Klart, 16°, Göteborg` |
+| `.topbar` children | `["topbar-left", "edit-btn"]` — **two**, cog right-aligned |
+| 300 m wobble | **no** request (cache age grew 7.0 s → 9.6 s) |
+| 8 km east, 6 min later | `Klart, 15°, Partille` — exactly one refresh |
+| further north | follows the new municipality |
+| header text | icon + whole degrees + short place, **no country, no county** |
+| accessible name | one string: "Klart, 16°, Göteborg" |
+
+Suite **462 → 472**. **12 mutations, 12 red.**
+
+### Not proven / not done
+
+- **The real phone is not verified.** Real GPS behaviour, iOS's own permission
+  prompt, and battery impact over a long ride need the device. Everything above
+  drove the real handlers with a simulated GPS.
+- The place can change back and forth when the tester reverses direction across
+  a municipal border — correct behaviour, but it is a visible flip-flop.
+- **iOS stops `watchPosition` in a backgrounded tab.** The header will therefore
+  freeze while backgrounded and catch up on return. The owner asked for updates
+  *during the open session*, which is what this does.
+- The forecast is not implemented — this is current conditions only, which is
+  what was asked for.

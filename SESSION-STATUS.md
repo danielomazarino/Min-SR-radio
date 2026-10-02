@@ -431,3 +431,46 @@ could see. Both now have guards.
 **Next:** owner to check build `e502484` on the iPhone — confirm the prompt
 reads well and that typing feels right, and that finding a podcast by a word in
 its description now works.
+
+## WS45 — weather in the header, tracking the train — 2026-10-02T16:20:00Z
+
+**Baseline:** `npm test` → **462/462 pass** (run, not quoted)
+**Scope now:** weather chip in the header (icon + °C + short Swedish place),
+tracking the phone continuously. Files touched: `app.js` (new self-contained
+weather module + `initWeather()` call in boot), `styles.css` (`.topbar-left`,
+`.weather*`), `index.html` (hashed asset refs), `tests/itunes-podcast.test.mjs`
+(+10).
+**OUT of scope:** `enableDragSort`, `enableSwipeToRemove`, `removeFavoriteRow`,
+`restoreFavoriteRow`, `fetchPodcasts`, `togglePick`, storage helpers,
+`src/favorites.mjs`, every DVR/HLS path.
+**Decision:** permission on load (owner Q1 = yes); short Swedish place name, no
+country/county (owner Q2); live tracking with 3 km + 5 min gates (owner Q3).
+**Test count:** 462 → 472
+**Working tree:** clean apart from the six pre-existing untracked `WS*-PROMPT.md`
+
+**MEASURED, live site, build `fd4bfcb`:**
+- cold start `Klart, 16°, Göteborg`; `.topbar` children = `["topbar-left",
+  "edit-btn"]` — TWO, cog right-aligned (the WS11 regression cannot recur)
+- 300 m wobble → **no** request (cache age 7.0 s → 9.6 s)
+- 8 km move after 6 min → `Klart, 15°, Partille`, exactly one refresh
+- further movement follows the new municipality
+- **12 mutations, 12 red**
+
+**THE FINDING THAT MATTERS MOST:** `initWeather` seeded `lastFetched` from the
+cache and then immediately set it to `null`, so the distance gate had no
+previous position and EVERY GPS callback fetched — a 300 m wobble spent an API
+call. Found by driving the real handlers and watching the cache timestamp, NOT
+by reading: every source-text guard passed, because the source contained
+correct-looking code that could never fire.
+
+**Owner answers applied:** Q1 permission on load · Q2 short Swedish place, no
+county · Q3 continuous tracking while the app is open.
+
+**Blocked:** nothing
+**Next:** owner to check build `fd4bfcb` on the iPhone — allow location once,
+confirm the header reads well on a narrow screen, and confirm the place follows
+during a real train ride.
+
+**NOT verified, and it needs the phone:** real GPS behaviour, iOS's own
+permission prompt, and battery impact over a long ride. Every measurement above
+drove the real handlers with a simulated GPS.
