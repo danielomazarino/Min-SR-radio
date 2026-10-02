@@ -856,3 +856,53 @@ Deploy: remote `8b39005`, live serves `app.a26be8a4.js` 200.
 **Next:** owner to check build **`40870cf`**. To see the explanation, turn
 location off, clear the app's storage, and reload — the pill should now name the
 setting instead of looking broken.
+
+## WS50 — tablå scroll: flick/drag close now respects direction — 2026-10-03T02:10:00+02:00
+
+**Started / baseline:** `npm test` → **499/499** (run). **Now 505/505.**
+**Owner report, verbatim:** *"now 12 degrees so we can consider the 5 minute
+update done. make the fix for the flick behaviour"*
+
+**Scope now:** the swipe/drag close condition in `enableSwipeToClose`. Explicitly
+OUT of scope: `openSheet` (already correct), the mini-bar and sheet-order drags
+(already direction-guarded), and all DVR/HLS code.
+
+**Decision or finding:** `Math.abs(d)` discarded the direction, so a gesture the
+drag code had already **refused** still counted as a close on release. Only
+`d > 0` may close.
+
+**Test count:** 499 → 505
+**Working tree:** clean. Source `eeebe4d`, artifacts `40c7f91`, both pushed.
+
+**MEASURED — live site `app.1d08f256.js`, P1 card, 163 rows:**
+
+| gesture | before | after |
+|---|---|---|
+| 50 px up flick | card CLOSED | **card SURVIVES**, transform `none` |
+| slow 300 px up drag | card CLOSED | **card SURVIVES** |
+| 220 px down flick | closes | **closes** (`translateY(220px)`) — intact |
+
+Also measured on the live site **before** the fix, at 192 rows: 50 px up flick
+closed the card against a 171 px threshold. **What this does NOT prove:** no
+iPhone run. Synthetic touch exercises the release logic, not iOS's own scroll
+gesture.
+
+**3 mutations, 3 RED**, checksums restored: both branches → 3 fail; flick only →
+2; distance only → 1. Each branch is guarded independently.
+
+**Three harness defects found and fixed (mine, not the product's):** `grab()`
+took a destructured parameter as the body; `window.innerWidth` is a global that
+argument stubs cannot shadow, leaving the threshold `NaN`; `close` is deferred
+180 ms and was read synchronously. All three would have made a guard pass for
+the **wrong reason**.
+
+**Deploy checks, individually:** suite 505/505 **PASS** · count UP **PASS** ·
+remote head `40c7f91` **PASS** · live serves `app.1d08f256.js` 200 **PASS**.
+
+**Weather, closed:** owner-observed 13° → 12° in the same place. The 5-minute
+cadence is **device-verified by the owner**, the last open WS48/WS49 item.
+
+**Blocked:** nothing.
+**Next:** owner to check build **`eeebe4d`** — long-press a channel, flick the
+programme list fast, and confirm the card stays open. That is the one reading
+this workstream cannot substitute for.

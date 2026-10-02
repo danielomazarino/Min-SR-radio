@@ -7414,3 +7414,79 @@ are known, documented, and not costing the owner anything today.
 and the comment-stripped count is still **3** — the two extra are comments that
 *mention* `audioEl.play().catch(() => {})` (lines 3260 and 10446). That is the
 **fifth** instance of the same trap, not a regression. Do not "fix" it.
+
+---
+
+## 2026-10-03 — WS50: the tablå scroll defect is **FIXED and LIVE**
+
+**Owner report, verbatim:** *"now 12 degrees so we can consider the 5 minute
+update done. make the fix for the flick behaviour"*
+
+### Weather, now CLOSED — the owner verified it
+
+The header went **13° → 12°** with the app in the same place, which is the
+observation that was impossible to manufacture. The 5-minute cadence is
+therefore **device-verified by the owner**, not merely code-proven. That was
+the last open item in WS48/WS49 and it is now closed.
+
+### The flick fix — shipped, live, build `eeebe4d`
+
+**Measured before touching anything** (live site, build `40870cf`, P1 card):
+
+| gesture | before |
+|---|---|
+| 50 px **upward** flick | **card CLOSED** (threshold 171 px) |
+| slow 300 px **upward** drag | **card CLOSED** (distance branch) |
+
+Not flaky — deterministic on speed and distance. An upward flick *is* how a
+person scrolls a long list downward.
+
+**Cause, and it was NOT the old log's prediction.** `Math.abs(d)` in two
+conditions. `d` is signed; the drag code already refuses `d < 0` and springs
+back — but the release code measured `|d|`, so the gesture the drag half had
+already rejected still counted as a close. **Two halves of one gesture
+disagreeing about what a close is.** Fix: `d > 0` only.
+
+**Verified on the LIVE site after deploy** (`app.1d08f256.js`, 163 rows):
+
+| gesture | after |
+|---|---|
+| 50 px upward flick | **card SURVIVES**, transform stays `none` |
+| 220 px downward flick | `translateY(220px)`, **card CLOSES** — feature intact |
+
+Tests **499 → 505**. **3 mutations, all red**, checksums restored:
+
+| mutation | failed |
+|---|---|
+| `Math.abs` in both branches | 3 (up-flick, slow-drag, x-axis) |
+| `Math.abs` in the flick branch only | 2 (narrower, as expected) |
+| `Math.abs` in the distance branch only | 1 (the slow-drag guard alone) |
+
+Each branch is guarded **independently**, not by one blanket assertion.
+
+### Three harness defects, all mine, recorded so they are not repeated
+
+1. **`grab()` took the first `{`** — for `enableSwipeToClose(o,p,c,{axis='x'})`
+   that is the *destructured parameter*, not the body. Extraction returned a
+   fragment; the harness died loudly. Had the fragment parsed, it would have run
+   a function that did nothing and reported a confident wrong answer — the §7
+   outcome. `grab()` now paren-matches the parameter list and **asserts nothing
+   but whitespace** sits before the body brace.
+2. **`window.innerWidth` is a global read**, so an argument stub cannot shadow
+   it. Without a global `window` the threshold is `NaN`, every comparison false,
+   and the "must not close" tests would have passed **for the wrong reason**.
+3. **`close` runs via `setTimeout(close, 180)`.** Reading it synchronously made
+   every "must NOT close" test pass because the close had not merely not
+   happened — it had not had a *chance* to. The harness now awaits the real delay.
+
+A fourth, which would have read as a product bug: gesture points were `[y]`
+only with `x` pinned, so every x-axis gesture was zero-length.
+
+### Not proven / not done
+
+- **No iPhone verification.** Synthetic touch proves the release logic, not the
+  iOS scroll gesture itself.
+- `openSheet` **untouched** — it already scoped to `.sheet-grab-zone` (BUG 1).
+- The two **other** `Math.abs` flick sites — mini-bar expand (`app.js:7072`) and
+  sheet-order drag (`app.js:9027`) — were **read** and are already
+  direction-guarded on their commit branches. Left alone deliberately.
