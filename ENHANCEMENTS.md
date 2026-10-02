@@ -3250,11 +3250,16 @@ podcasts. verify though that there is no accidental change."* (2026-09-27
 
 ## 2026-09-28 — INVESTIGATION ONLY: global podcast search with minimal/no UX changes
 
-**Status: NOT started, NOT implemented. Investigation brief only.** Nothing in
-the codebase is to be changed until the investigation below has established that
-the simplest approach works inside the current GitHub Pages / static-PWA
-architecture. Logged verbatim as given by the owner so the brief survives
-session boundaries.
+**Status: DONE — implemented 2026-10-02.** The brief below is the owner's
+original investigation request, kept **verbatim** so it survives session
+boundaries. The investigation it asked for was completed first, then the
+implementation was built and driven in a browser. **Not yet committed, not yet
+deployed** — see the implementation record at the end of this section for the
+full evidence, and `SESSION-STATUS.md` for the same report in status format.
+
+What the investigation concluded, in one line: the flow **is** possible with no
+backend, and it is a small extension of the existing podcast code — not a new
+subsystem. Read the record at the end before assuming anything.
 
 ### Goal
 
@@ -3528,6 +3533,147 @@ with **minimal or zero UX changes**.
 Do not implement the enhancement during this investigation. Do not make
 architectural changes based on assumptions. First establish the simplest viable
 path.
+
+---
+
+## 2026-10-02 — WS41: global podcast search IMPLEMENTED (the brief above, executed)
+
+**Status: DONE — code complete and browser-driven. NOT committed, NOT deployed.**
+Tests **381 → 412** (+31), all passing. 8 mutations applied, 8 red, `app.js`
+restored byte-identical by md5. Build id `68d2638`, bundle `app.2b0ec35e.js`.
+
+The owner's brief is above and is unmodified. This is the record of what was
+built and, more importantly, **what was actually observed**. The brief asked
+for an investigation first; the investigation changed the answer materially, so
+both are recorded.
+
+### A. Existing architecture — where the flow already lived
+
+Reused unchanged: the search field (`searchInput` in `openSheet`), the result
+row (`.pick-item`), the episode list (`.card-row` in `openPodcastCard`), the
+selection list (`.selected-item`), and `playTrack()` — the single entry point
+into the existing player. No new screen, no new navigation, no new player.
+
+### B. Simplest external API — and the answer that overturned my own claim
+
+Apple/iTunes, as the brief suggested. No key, no backend, and CORS is
+`Access-Control-Allow-Origin: *` on both endpoints.
+
+**The pivotal finding: the RSS feed is not needed at all.**
+`search?media=podcast` returns ONE record per podcast — no episode data. The
+episode data comes from the **Lookup API with `entity=podcastEpisode`**, which
+returns real episode records *including a direct `episodeUrl`*, bypassing the
+publisher's RSS feed entirely.
+
+That matters because **only 121 of 272 sampled Swedish feeds send CORS
+headers.** The obvious design — search via iTunes, then fetch the publisher's
+RSS — would have been blocked for roughly half of Swedish podcasts. The design
+that works never touches RSS.
+
+**Correction to an earlier claim of mine:** I previously reported this path as
+giving **28 % coverage**, on the assumption that RSS was unavoidable. That
+figure was **wrong** and is superseded. Measured on a 272-podcast sample:
+**272/272 episode lists resolved, 245/272 episode audio URLs played.** The 28 %
+was an artefact of the RSS route I had wrongly assumed was required.
+
+### C. End-to-end feasibility — YES, with named limitations
+
+**Can an external podcast be searched, selected, have its episodes displayed
+and played in the existing PWA and player without a backend? YES.**
+
+Driven in a real browser against the built bundle, not reasoned about:
+
+| step | result |
+|---|---|
+| search "ekot" | **11 rows = 7 SR + 4 iTunes**, SR first, external rows showing genre |
+| select external-only podcast | stored under `minradio.podcasts.ext.v1` |
+| Spara → home | icon appears with stream key `xpod:1518156497` |
+| reload | icon persists, no SR list required |
+| open episode list | **20/20 rows, 0 disabled** (all playable), newest first |
+| tap icon → play | player showed the episode, **0:03 of 21:22 — audio loaded and advancing** |
+| tap an SR icon | SR episode played, 0:02 of 9:17 — **SR path unregressed** |
+
+Limitations, stated plainly:
+
+1. **Device playback is NOT verified.** Headless Chromium has no audio output.
+   "Advanced to 0:03" proves the media loaded; it does **not** prove sound comes
+   out of an iPhone speaker. **The owner must test on the phone.**
+2. A bad `collectionId` returns **HTTP 200 with `resultCount: 0`**, i.e. an
+   empty list — so the UI says *"Inga avsnitt hittades."* and deliberately does
+   **not** claim the podcast does not exist.
+3. 19 `anchor.fm` URLs returned `ERR_ABORTED`. That is the **same** code a
+   timeout emits, so those results are **UNCERTAIN** — not counted as broken.
+4. Some feeds return `http://` enclosures. On an https page that is mixed
+   content and **iOS Safari refuses it outright**, so the URL is upgraded to
+   https at mapping time. 0 upgrades were needed in the final sample; the code
+   is retained because `http://` has been observed on other podcasts.
+
+### D. UX impact — none, which was the brief's preferred answer
+
+Genuinely none. No new section, no new heading, no new screen. External
+podcasts appear **inside the existing "Poddar" icon row**, in the existing
+search results, and in the existing selection list. **The long SR list was
+deliberately NOT removed** — the brief allowed it ("may eventually be
+removed/replaced") but did not ask for it, and removing a working discovery path
+on a guess is exactly the unrequested change this project has been bitten by.
+
+### E. Minimal implementation — the two decisions that carry it
+
+1. **Two storage keys, never one array.** `favoritesFromRaw` drops
+   non-integers (`MAX_FAVORITES` filter), so namespacing ids as strings into the
+   SR array would have **silently deleted the user's picks on the next load**.
+   External favourites live in `minradio.podcasts.ext.v1`.
+2. **`resolvePodcastRow` takes an explicit `provider`.** SR ids (78–6706) and
+   iTunes collectionIds (e.g. 251955878) are **both bare integers**, so a
+   shared lookup would let a colliding id render the wrong podcast — the
+   one-field-two-writers bug class that has caused the most damage in this
+   repo.
+
+`playPodcast()` was **not widened**. A separate `playExternalPodcast()` was
+added instead, so the WS17 guards (`_podProgramId === programId`,
+`podFetchInFlight === programId`) keep comparing a raw number and cannot drift.
+It reuses the same two guard slots with a **prefixed** key (`itunes:…`), so the
+SR comparisons can never match an external id — verified by mutation M1.
+
+### F. Risks — and two real defects found only by driving the browser
+
+Both were found by **running the app**, not by reading it. Each has a
+regression test and a red mutation (M7, M8):
+
+1. `updateCounter`/`doneBtnState` counted only the SR arrays → selecting an
+   external podcast displayed **"Poddar (0 valda)"** and left **Spara
+   disabled**, so an external-only pick could not be saved at all.
+2. `boot()` gated the welcome screen on SR favourites only → an external-only
+   selection was **discarded** and the user was returned to the welcome screen.
+
+Remaining risks, unproven rather than assumed:
+
+- **Same-`releaseDate` tie-break:** observed ONCE (4 episodes sharing a date),
+  then **not** reproduced across a 9-podcast sweep. Frequency is
+  **unmeasured**. Kept because it is cheap and the failure it prevents (order
+  silently following server order) is invisible to the user.
+- Episode lists are cached 30 min in memory only. No offline story is designed
+  or tested; with no network the SR list still renders and iTunes contributes
+  nothing.
+
+### A harness failure worth recording
+
+The first browser run showed **zero** iTunes results and looked like a broken
+feature. It was not. `index.html` loads the **hashed bundle**, not `app.js` —
+and a service worker was serving a stale precache. The code under test was the
+*previous* build. The feature worked as soon as the service worker was
+unregistered and the bundle rebuilt.
+
+This is recorded because the failure mode is **a working feature that looks
+broken**, which is the most expensive kind to diagnose. Any future browser check
+in this repo must bypass the service worker first, and must confirm which
+script the page actually loaded.
+
+### Not done
+
+- Not committed, not pushed. `main` is unchanged.
+- Device playback unverified (see C.1).
+- No offline/failure UI, no telemetry, no Podcast Index or second provider.
 
 ---
 
@@ -6445,3 +6591,112 @@ unjustified.
 
 **Not done, deliberately:** no further measurement loop was started, and no
 alternative offset, device table or calibration was introduced.
+
+## 2026-10-02 — WS42: swipe-to-remove, and mixed SR/iTunes ordering fixed
+
+**Status: DONE — code complete and browser-driven. NOT committed, NOT deployed.**
+Owner-reported defects, both reproduced in a browser before fixing. Tests
+**412 → 429** (+17). 13 mutations applied, 13 red, `app.js` restored
+byte-identical by md5.
+
+### 1. An iTunes podcast could not be deselected
+
+**Owner:** *"the old sveriges radio ones can be deselected by clicking the
+records on the long list. but as the itunes ones are not in the list we need a
+new solution."*
+
+**Measured cause:** the ONLY removal mechanism was tapping a row in the long SR
+catalogue. An external podcast is not in that catalogue, so once the search
+that found it was gone the selection was **permanent**. The "Valda favoriter"
+list had ↑/↓ buttons but **no remove control at all**, for either provider.
+
+**Fix:** swipe-left on any row removes it, with a **red "Ta bort" cue** behind
+the row, plus an **undo toast**. A ✕ button was also added — not as an
+alternative but because a swipe is undiscoverable, keyboard-unreachable and
+invisible to a screen reader. Both inputs call **one** implementation.
+
+### THE GESTURE CONFLICT, and how it was resolved
+
+These rows already had a **250 ms long-press drag-to-reorder**, which is
+inherently **vertical**. A vertical swipe-to-delete would have fought it on the
+same rows, and the loser would be whichever the user happened to want.
+
+Resolved by **direction**, decided once on the first 10 px:
+
+| direction | owner |
+|---|---|
+| horizontal | **remove** |
+| vertical | the existing drag keeps it |
+
+This needed a fix on **both** sides. The swipe takes horizontal only, and the
+drag-sort's 250 ms timer — which previously cancelled on *any* 10 px move —
+now explicitly cancels on a **horizontal** move. Without that second half, one
+gesture would both delete and reorder the same row. Verified in the browser:
+vertical swipe, rightward swipe and a 25 px leftward swipe are all **inert**.
+
+### 2. Mixed SR/iTunes ordering reverted (reported after the swipe work)
+
+**Owner:** *"the podcasts from sveriges radio can't be sorted with the itunes
+fetched ones. if mixed via settings it reverts when going to the main page."*
+
+**Measured cause — three separate faults, all reproduced:**
+
+1. An external row's ↑ did **nothing at all**: it was alone in its own array,
+   so there was no neighbour to swap with.
+2. An SR row at the boundary was **clamped** by its own array's end — it could
+   not step past the external row.
+3. `buildIconSection` hardcoded `[...sr, ...external]`, so even a mixed
+   arrangement in the settings list reverted on the home screen. **This is the
+   revert the owner saw**, and it was the renderer's fault, not the storage's.
+
+**Fix:** a third key, `minradio.podcasts.order.v1`, holding the row's visible
+order as **bare ids only** — no row data. A podcast is still favourited in
+exactly one of the two storages, so the separation that protects the SR
+favourites (`favoritesFromRaw` drops non-integers) is intact. Both renderers
+now read the same `podcastRowOrder()`, and the ↑/↓ buttons **swap against the
+neighbour in the combined order**, which is what lets them cross providers.
+
+`moveExternalPodcast`, `persistExternalOrder` and `extRows` were **deleted**:
+they operated per-provider and are exactly what could not cross. A test now
+guards their absence so they cannot be quietly reinstated.
+
+### Verified in a browser, not reasoned about
+
+| check | result |
+|---|---|
+| external ↑ ×2 crosses two SR rows | external podcast **first** on the home screen |
+| external ↓ ×2 back down | returns to last, both directions work |
+| survives reload | yes |
+| storage after all moves | SR `[3437, 6706]` and external `[1518156497]` — **unchanged membership** |
+| **existing user, no order key** | **unchanged**, and no order key is created |
+| remove a row | order key cleaned (`[999,3437,164]` → `[3437,164]`) |
+| vertical / rightward / 25 px swipe | all inert |
+
+### A test defect found by mutation, and fixed
+
+Mutation **M20** — deleting the integer filter from `loadPodcastOrder` —
+reported **GREEN**. The assertion matched a regex over a source *region*, and
+the identical expression still existed in `savePodcastOrder`, so the guard
+could not fail. It now asserts **per function, by brace-matched extraction**,
+and both the load side and the save side were re-verified red.
+
+This is the §2 rule ("a test that proves the wrong property is worse than no
+test") caught by the mutation pass rather than by review, which is the only
+reason it was caught at all.
+
+### A third defect, found in the browser during the swipe work
+
+Removing an **SR** row produced the toast **"Borttaget: undefined"**: an SR
+favourite is stored as a bare integer, so `loadFavorites()` has no name to
+recover. The name is now passed in by the caller. Fixed, with a test that also
+pins the *fallback* — it must degrade to the id, never to `undefined`.
+
+### Not proven / not done
+
+- **Device gesture feel is NOT verified.** Synthetic touch events prove the
+  logic and the DOM outcome; they cannot prove the gesture feels right or that
+  iOS Safari's own gesture recognition cooperates. **Needs the owner's phone.**
+- Drag-to-reorder across the provider boundary was fixed in code and is
+  mutation-verified, but was **not** driven in the browser this session.
+- No analytics, no offline story, no second provider.
+- Not committed, not pushed.

@@ -389,17 +389,14 @@ test('an external podcast is never written into the SR favourites array', () => 
 });
 
 test('moveExternalPodcast reorders within bounds only', () => {
-  const h = storageHarness({
-    'minradio.podcasts.ext.v1': JSON.stringify([{ id: 1, name: 'a' }, { id: 2, name: 'b' }, { id: 3, name: 'c' }]),
-  });
-  const move = makeFn('moveExternalPodcast', {
-    ...h.deps, loadExternalPodcasts: h.load, saveExternalPodcasts: h.save,
-  });
-  assert.equal(move(1, 'up'), false, 'already first');
-  assert.equal(move(3, 'down'), false, 'already last');
-  assert.equal(move(1, 'down'), true);
-  assert.deepEqual(h.read().map((p) => p.id), [2, 1, 3]);
-  assert.equal(move(999, 'up'), false, 'unknown id is a no-op');
+  // DELETED 2026-10-02. This function is GONE, and that is the fix, not a
+  // regression: it moved an id within the external array only, so an external
+  // row could never step past an SR row and vice versa. It is kept here as a
+  // guard so it cannot be quietly reinstated.
+  assert.doesNotMatch(APP_JS, /function moveExternalPodcast/,
+    'the per-provider mover could not cross the boundary and must stay deleted');
+  assert.doesNotMatch(APP_JS, /function persistExternalOrder/,
+    'superseded by the combined-order persist');
 });
 
 // ---------------------------------------------------------------------------
@@ -510,24 +507,67 @@ test('no external id is ever passed to an SR endpoint', () => {
 // 10. Reordering must not drag external ids into the SR array.
 // ---------------------------------------------------------------------------
 
-test('the drag-sort persist keeps both providers in their own storage', () => {
+test('the drag-sort persist keeps each provider in its own storage', () => {
+  // RESTATED 2026-10-02. The requirement did NOT weaken: an id must still
+  // never cross into the wrong storage. The MECHANISM changed, because the
+  // row now has one order that both providers occupy (the owner reported that
+  // a mixed arrangement reverted on the home screen).
   const persist = stripComments(region('const persist = () => {', 'const rows = () =>', stripComments(APP_JS)));
-  // The bug this prevents: reading every .selected-item id into favs[kind].
-  // iTunes collectionIds written there are dropped by favoritesFromRaw() on the
-  // next load, so the reorder would silently undo itself.
-  assert.match(persist, /persistExternalOrder\(group\)/);
-  assert.match(persist, /\.selected-item:not\(\[data-ext\]\)/,
-    'only SR rows may be written back into the SR favourites array');
+  // The bug this prevents: writing EVERY id into the SR array. iTunes
+  // collectionIds written there are dropped by favoritesFromRaw() on the next
+  // load, so the reorder would silently undo itself.
+  assert.match(persist, /if \(kind === 'podcasts'\) \{/);
+  assert.match(persist,
+    /favs\.podcasts = order\.filter\(\(id\) => !extIds\.has\(id\) && known\.has\(id\)\)/,
+    'only ids that are really SR favourites may be written to the SR array');
+  assert.match(persist, /persistPodcastRowOrder\(order\)/,
+    'the interleaving is stored as an ORDER, not by moving ids between arrays');
 });
 
-test('the selected-group reorder buttons write to their own storage', () => {
+test('a mixed order is expressible and both renderers read the same one', () => {
+  // The reported bug: an interleaved arrangement reverted when leaving the
+  // settings sheet, because the home row hardcoded SR-then-external while the
+  // settings list had its own arrangement.
   const src = stripComments(APP_JS);
+  const icons = region('function buildIconSection', "el('h2'", src);
   const grp = region('function buildSelectedGroup', 'function enableDragSort', src);
-  assert.match(grp, /moveExternalPodcast\(id, direction\)/,
-    'an external row must not be reordered inside the SR array');
-  assert.match(grp, /moveFavorite\(favs, kind, id, direction\)/,
-    'the SR mover must still be used for SR rows');
-  // Every id is rendered, so the two must not interleave invisibly.
+  for (const [name, body] of [['buildIconSection', icons], ['buildSelectedGroup', grp]]) {
+    assert.match(body, /podcastRowOrder\(/,
+      `${name} must read the shared order, or the two views disagree`);
+  }
+  // The order key holds BARE ids only -- no row data -- so a podcast is still
+  // favourited in exactly one of the two storages.
+  const loadOrder = stripComments(grab('loadPodcastOrder'));
+  const saveOrder = stripComments(grab('savePodcastOrder'));
+  // BOTH ends are checked, and by FUNCTION rather than by a slice of source.
+  // An earlier version asserted a regex over the combined region, which stayed
+  // GREEN when loadPodcastOrder's filter was deleted -- because the identical
+  // expression still existed in savePodcastOrder. A guard that cannot go red is
+  // not a guard.
+  assert.match(loadOrder, /\.filter\(\(id\) => Number\.isInteger\(id\)\)/,
+    'loadPodcastOrder must reject non-integer ids on the way IN, whatever was '
+    + 'written to storage');
+  assert.match(saveOrder, /\.filter\(\(id\) => Number\.isInteger\(id\)\)/,
+    'savePodcastOrder must not write non-integer ids on the way OUT');
+});
+
+test('the reorder buttons swap across the provider boundary', () => {
+  // The reported bug had two halves, BOTH observed in the browser: an external
+  // row's "move up" did nothing at all (it was alone in its own array), and an
+  // SR row at the boundary was clamped by its own array's end.
+  const grp = stripComments(region('function buildSelectedGroup', 'function enableDragSort', APP_JS));
+  assert.match(grp, /const current = podcastRowOrder\(/,
+    'the move must operate on the COMBINED order, not on one provider array');
+  assert.match(grp, /\[next\[from\], next\[to\]\] = \[next\[to\], next\[from\]\]/,
+    'it must be a swap against the neighbour -- a swap is what crosses providers');
+  assert.match(grp, /if \(to < 0 \|\| to >= current\.length\) return;/,
+    "only the ends of the WHOLE row are bounds, not each array's end");
+  assert.match(grp, /srFavs\.podcasts = next\.filter\(\(x\) => !extIds\.has\(x\)\)/,
+    'each provider is written back with its own members only');
+  // The per-provider mover is gone: it could not cross, so keeping it would be
+  // dead code that invites reuse.
+  assert.doesNotMatch(grp, /moveExternalPodcast\(/);
+  // The row is still marked, so the drag persist can tell the providers apart.
   assert.match(grp, /'data-ext': '1'/);
 });
 
@@ -571,6 +611,262 @@ test('boot() does not treat an external-only selection as "nothing chosen"', () 
   assert.match(b,
     /favs\.channels\.length === 0 && favs\.podcasts\.length === 0 && !hasExtPods/,
     'the welcome-screen gate must count external podcasts as a selection');
+});
+
+// ---------------------------------------------------------------------------
+// 13. Swipe-to-remove (owner request 2026-10-02).
+//
+//     THE BUG: an iTunes podcast could be selected from the search results but
+//     never deselected. The ONLY removal mechanism was tapping the row in the
+//     long SR list, and an external podcast is not in that list -- so once the
+//     search was gone the pick was permanent.
+//
+//     THE GESTURE CONFLICT: these rows already have a long-press drag-to-
+//     reorder, which is VERTICAL. A vertical swipe-to-delete would fight it.
+//     Resolved by DIRECTION: horizontal removes, vertical keeps reordering.
+// ---------------------------------------------------------------------------
+
+/** loadFavorites/saveFavorites over a fake store, built from the real module. */
+function srStoreHarness(initial) {
+  const store = { 'minradio.favorites.v1': JSON.stringify(initial) };
+  const deps = {
+    localStorage: {
+      getItem: (k) => (k in store ? store[k] : null),
+      setItem: (k, v) => { store[k] = v; },
+    },
+    FAVORITES_KEY: 'minradio.favorites.v1',
+    MAX_FAVORITES: 4,
+    console,
+  };
+  const favMod = FAV_MJS.replace(/^export\s+/gm, '');
+  const sr = new Function('localStorage', 'FAVORITES_KEY', 'MAX_FAVORITES',
+    `${favMod}\nreturn { favoritesFromRaw, togglePick };`)(deps.localStorage,
+    deps.FAVORITES_KEY, deps.MAX_FAVORITES);
+  return {
+    store,
+    deps,
+    sr,
+    read: () => JSON.parse(store['minradio.favorites.v1']),
+  };
+}
+
+function removalHarness({ sr = { channels: [], podcasts: [164] }, ext = [] } = {}) {
+  const store = {
+    'minradio.favorites.v1': JSON.stringify(sr),
+    ...(ext.length ? { 'minradio.podcasts.ext.v1': JSON.stringify(ext) } : {}),
+  };
+  const deps = {
+    localStorage: {
+      getItem: (k) => (k in store ? store[k] : null),
+      setItem: (k, v) => { store[k] = v; },
+    },
+    EXTERNAL_PODCASTS_KEY: 'minradio.podcasts.ext.v1',
+    FAVORITES_KEY: 'minradio.favorites.v1',
+    HARD_CAP: 16,
+    MAX_FAVORITES: 4,
+    safeStr,
+    console,
+  };
+  const favMod = FAV_MJS.replace(/^export\s+/gm, '');
+  const favoritesFromRaw = new Function(`${favMod}\nreturn favoritesFromRaw;`)();
+  const build = (name) => makeFn(name, {
+    ...deps,
+    loadFavorites: () => favoritesFromRaw(store['minradio.favorites.v1']),
+    saveFavorites: (favs) => { store['minradio.favorites.v1'] = JSON.stringify(favs); },
+    loadExternalPodcasts: makeFn('loadExternalPodcasts', deps),
+    saveExternalPodcasts: makeFn('saveExternalPodcasts', deps),
+  });
+  return { store, readSr: () => JSON.parse(store['minradio.favorites.v1']),
+    readExt: () => JSON.parse(store['minradio.podcasts.ext.v1'] || '[]'),
+    remove: build('removeFavoriteRow'), restore: build('restoreFavoriteRow') };
+}
+
+test('removeFavoriteRow removes an iTunes podcast and leaves SR untouched', () => {
+  const h = removalHarness({ sr: { channels: [132], podcasts: [164] },
+    ext: [{ id: 251955878, name: 'P3 Om Vi' }] });
+  const removed = h.remove('podcasts', 251955878);
+  assert.equal(removed.provider, 'itunes');
+  assert.equal(removed.name, 'P3 Om Vi');
+  assert.deepEqual(h.readExt(), []);
+  assert.deepEqual(h.readSr(), { channels: [132], podcasts: [164] },
+    'removing an external podcast must not touch the SR array at all');
+});
+
+test('removeFavoriteRow removes an SR podcast without touching external storage', () => {
+  const h = removalHarness({ sr: { channels: [], podcasts: [164, 3437] },
+    ext: [{ id: 251955878, name: 'P3 Om Vi' }] });
+  const removed = h.remove('podcasts', 164);
+  assert.equal(removed.provider, 'sr');
+  assert.deepEqual(h.readSr(), { channels: [], podcasts: [3437] });
+  assert.deepEqual(h.readExt(), [{ id: 251955878, name: 'P3 Om Vi' }]);
+});
+
+test('removeFavoriteRow is idempotent -- a double swipe removes nothing twice', () => {
+  const h = removalHarness({ ext: [{ id: 251955878, name: 'P3 Om Vi' }] });
+  assert.ok(h.remove('podcasts', 251955878));
+  assert.equal(h.remove('podcasts', 251955878), null,
+    'the second swipe must be a no-op, not a re-add or a throw');
+  assert.deepEqual(h.readExt(), []);
+});
+
+test('removeFavoriteRow handles channels as well as podcasts', () => {
+  const h = removalHarness({ sr: { channels: [132, 163], podcasts: [] } });
+  assert.equal(h.remove('channels', 132).provider, 'sr');
+  assert.deepEqual(h.readSr().channels, [163]);
+  assert.equal(h.remove('channels', 999), null);
+});
+
+test('restoreFavoriteRow puts an iTunes podcast back at its original position', () => {
+  const h = removalHarness({ ext: [{ id: 1, name: 'a' }, { id: 2, name: 'b' }, { id: 3, name: 'c' }] });
+  const before = h.readExt().findIndex((p) => p.id === 2);
+  const removed = h.remove('podcasts', 2);
+  assert.deepEqual(h.readExt().map((p) => p.id), [1, 3]);
+  assert.equal(h.restore(removed, before), true);
+  assert.deepEqual(h.readExt().map((p) => p.id), [1, 2, 3],
+    'undo must restore the ORDER, not just the membership');
+});
+
+test('restoreFavoriteRow will not duplicate an id that was already re-added', () => {
+  const h = removalHarness({ ext: [{ id: 1, name: 'a' }] });
+  const removed = { id: 1, name: 'a', kind: 'podcasts', provider: 'itunes' };
+  assert.equal(h.restore(removed, 0), false);
+  assert.deepEqual(h.readExt().map((p) => p.id), [1]);
+});
+
+test('restoreFavoriteRow puts an SR podcast back into the SR array only', () => {
+  const h = removalHarness({ sr: { channels: [], podcasts: [164, 3437] },
+    ext: [{ id: 251955878, name: 'x' }] });
+  const before = h.readSr().podcasts.indexOf(3437);
+  const removed = h.remove('podcasts', 3437);
+  assert.equal(h.restore(removed, before), true);
+  assert.deepEqual(h.readSr().podcasts, [164, 3437]);
+  assert.deepEqual(h.readExt().map((p) => p.id), [251955878]);
+});
+
+test('the swipe gesture is direction-resolved so it cannot fight the drag', () => {
+  const src = stripComments(APP_JS);
+  const swipe = region('function enableSwipeToRemove', 'function rebuildSelected', src);
+  // The whole conflict-resolution rule, in one place.
+  assert.match(swipe,
+    /s\.intent = Math\.abs\(dx\) > Math\.abs\(dy\) \? 'remove' : 'drag'/,
+    'horizontal must claim removal and leave the vertical drag intact');
+  assert.match(swipe, /const DECIDE_PX = 10;/,
+    'intent must be decided on a small deadzone, or a scrolling list removes rows');
+  // Leftward only: a mis-swing the other way must be inert.
+  assert.match(swipe, /Math\.min\(0, dx\)/,
+    'rightward must not remove -- the offset is clamped at 0');
+  assert.match(swipe, /0\.35/,
+    'a full swipe is not required; a deliberate partial one must commit');
+});
+
+test('the drag-sort yields the horizontal direction to the swipe', () => {
+  // The conflict is mutual: the swipe must not start a drag, AND the drag's
+  // 250ms timer must not arm for a horizontal move. Without this, a swipe
+  // would both delete and reorder the same row.
+  const src = stripComments(APP_JS);
+  const drag = region('let touchState = null;', 'function rebuildSelected', src);
+  assert.match(drag,
+    /if \(Math\.abs\(dx\) > Math\.abs\(dy\) && Math\.abs\(dx\) > 10\) \{\s*clearTimeout\(touchState\.timer\)/,
+    'a horizontal move must cancel the drag timer, or one gesture does both');
+  assert.match(drag, /startX: e\.touches\[0\]\.clientX/,
+    'the drag must record startX, or it cannot recognise a horizontal move');
+});
+
+test('the ✕ button and the swipe share ONE removal implementation', () => {
+  // Two implementations of "remove" would drift. The gesture must call the
+  // same function the button does.
+  const src = stripComments(APP_JS);
+  const grp = region('function buildSelectedGroup', 'function enableDragSort', src);
+  assert.match(grp, /onclick: \(\) => onRemoveRequest\(id, isExt \? 'itunes' : 'sr', item\.name\)/);
+  assert.match(grp, /enableSwipeToRemove\(group, kind, onRemoveRequest\)/,
+    'the gesture must delegate to the button\'s handler, not reimplement it');
+  assert.match(grp, /'aria-label': `Ta bort \$\{item\.name\}`/,
+    'removal must be reachable without a gesture: undiscoverable and '
+    + 'keyboard-unreachable swipes are not an acceptable removal mechanism');
+});
+
+test('removal is reversible and the undo toast is a real button', () => {
+  const src = stripComments(APP_JS);
+  const grp = region('function buildSelectedGroup', 'function enableDragSort', src);
+  assert.match(grp, /showUndoToast\(`Borttaget: \$\{removed\.name\}`/,
+    'a destructive gesture with no recovery is a bad trade even when it works');
+  assert.match(grp, /restoreFavoriteRow\(removed, before\)/);
+
+  const toast = region('function showUndoToast', '// ---------------- app state', APP_JS);
+  assert.match(toast, /class: 'toast-action', type: 'button'/,
+    'undo must be a <button> so it is keyboard-reachable and announced');
+  // A timer that outlives its toast would remove a LATER toast.
+  assert.match(toast, /clearTimeout\(timer\)/);
+});
+
+test('the sheet pick list follows a removal, or Spara would restore it', () => {
+  // This is the subtle one: the sheet keeps its OWN copy in `picks`, and Spara
+  // writes from there. Removing from storage alone would let the next save
+  // write the id straight back.
+  const grp = stripComments(region('function buildSelectedGroup', 'function enableDragSort', APP_JS));
+  assert.match(grp, /const idx = picks\[kind\]\.indexOf\(id\);\s*if \(idx >= 0\) picks\[kind\]\.splice\(idx, 1\);/,
+    'the in-memory pick list must be updated too, not only storage');
+  assert.match(grp, /picks\[kind\]\.splice\(at, 0, id\)/,
+    'undo must restore the in-memory pick as well');
+});
+
+test('the swipe reveal is present and the row claims only the horizontal axis', () => {
+  const grp = stripComments(region('function buildSelectedGroup', 'function enableDragSort', APP_JS));
+  assert.match(grp, /class: 'swipe-reveal'/, 'a swipe with no cue is undiscoverable');
+  assert.match(grp, /'aria-hidden': 'true'/, 'the cue is decorative; the ✕ button carries the name');
+
+  const css = stripComments(fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8'));
+  assert.match(css, /\.swipe-reveal \{[\s\S]*?background: var\(--danger/,
+    'the reveal must use the existing --danger token, not a second red');
+  // pan-y leaves vertical panning to the scroller, which is what stops Safari
+  // fighting the page for the gesture.
+  assert.match(css, /\.selected-item \{ position: relative; touch-action: pan-y; \}/);
+});
+
+test('removeFavoriteRow carries the name, because SR stores bare integers', () => {
+  // Found in the BROWSER, not by reading source: removing an SR row produced
+  // "Borttaget: undefined". loadFavorites() returns ids only, so there is no
+  // name to recover -- the caller has to pass it in.
+  const h = removalHarness({ sr: { channels: [], podcasts: [3437] } });
+  const removed = h.remove('podcasts', 3437, 'Ekot granskar');
+  assert.equal(removed.name, 'Ekot granskar',
+    'the undo toast names the row; without this it reads "undefined"');
+  assert.equal(removed.provider, 'sr');
+
+  // Falls back rather than producing undefined when no name is supplied.
+  const h2 = removalHarness({ sr: { channels: [], podcasts: [3437] } });
+  assert.equal(h2.remove('podcasts', 3437).name, '3437',
+    'with no name supplied it must degrade to the id, never to undefined');
+});
+
+test('both removal inputs pass a name through', () => {
+  const src = stripComments(APP_JS);
+  const grp = region('function buildSelectedGroup', 'function enableDragSort', src);
+  assert.match(grp, /onRemoveRequest\(id, isExt \? 'itunes' : 'sr', item\.name\)/,
+    'the button must pass the name it already has');
+  assert.match(grp, /const onRemoveRequest = \(id, provider, name\)/);
+  // The gesture can only read it off the DOM.
+  const swipe = region('function enableSwipeToRemove', 'function rebuildSelected', src);
+  assert.match(swipe,
+    /const name = st\.row\.querySelector\('\.selected-name'\)\?\.textContent \|\| ''/,
+    'the swipe must read the name from the row it swiped');
+  assert.match(swipe, /onRemoved\(st\.id, st\.row\.dataset\.ext \? 'itunes' : 'sr', name\)/);
+});
+
+// ---------------------------------------------------------------------------
+// 14. No DVR/HLS or player code was touched by the removal work.
+// ---------------------------------------------------------------------------
+
+test('removal does not touch DVR/HLS or the player', () => {
+  // NOTE: these regions are cut from RAW APP_JS, not stripComments(APP_JS):
+  // the end markers are comments, which stripComments removes -- using the
+  // stripped source here reports a harness fault as a code fault.
+  for (const [name, end] of [['function removeFavoriteRow', 'function restoreFavoriteRow'],
+    ['function restoreFavoriteRow', 'function resolvePodcastRow'],
+    ['function showUndoToast', '// ---------------- app state']]) {
+    assert.doesNotMatch(stripComments(region(name, end)), /dvr|seekable|topsy|hls|m3u8|audioEl|playTrack/,
+      `${name} must not touch playback or DVR code`);
+  }
 });
 
 // ---------------------------------------------------------------------------

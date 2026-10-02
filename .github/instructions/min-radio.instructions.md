@@ -266,6 +266,12 @@ that means nothing.
   three times. Back up to `/tmp`, verify by checksum.
 - **Never `git checkout --` a file with uncommitted edits.** Recover from a
   backup, not from git.
+- **Artifacts go in a SECOND commit, not the first.**
+- **BUILDING AND PUSHING IS THE CODING AGENT'S JOB when the brief says to.**
+  The tech lead does NOT deploy. A brief that is silent about pushing has
+  previously left a finished fix sitting undeployed while the owner believed it
+  was live — so **if the brief does not say, ask; do not assume it is someone
+  else's step.**
 
 ---
 
@@ -321,17 +327,24 @@ playhead is at the live edge**.
 
 Checked individually, because they can fail separately:
 
-| | Requirement | Status |
+| | Requirement | Status as of 2026-09-30 (build `5eeabb9`) |
 |---|---|---|
-| R1 | header song title follows the playhead | failing |
-| R2 | header artist follows the playhead | failing |
-| R3 | header cover follows the playhead, never another song's | failing |
+| R1 | header song title follows the playhead | **code-proven behind live** — never device-verified |
+| R2 | header artist follows the playhead | **code-proven behind live** — never device-verified |
+| R3 | header cover follows the playhead, never another song's | **code-proven behind live**; the 45 s poll race is closed |
 | R4 | row 4 song line follows the playhead | **works — do not "re-fix" it** |
-| R5 | programme name follows the playhead | **regressed** |
-| R6 | the two halves of the panel must never disagree | failing |
+| R5 | programme name follows the playhead | mechanism fixed (WS26 Part 4); **behaviour unverified on device** |
+| R6 | the two halves of the panel must never disagree | **fixed (WS27)** — code-proven only, never device-verified |
 
-**R6 is the cheapest and most important**: if row 4 says one song and the header
-says another, that is a defect even when each half is individually correct.
+**"code-proven" means the behind-live case only.** Desktop Chromium cannot load
+SR's DVR stream, so none of R1–R3 or R6 has been observed on a device. Never
+write "verified" for anything proved on a desktop.
 
-The label `Spelas just nu` ("playing right now") is also wrong when behind live —
-**the owner's decision whether and how to change it**, not yours.
+**R6 was fixed by one line** — `const song = hit || (atLiveEdge ? (nowPlaying.song
+|| null) : null);` — because `pickByPosition()` returns the *first* containing
+entry, so an earlier-starting timeline entry still spanning "now" **shadowed**
+the polled on-air song. **Do not re-open it on the strength of a desktop test.**
+
+The label `Spelas just nu` ("playing right now") is wrong when behind live and
+**stays exactly as it is — the owner's decision, 2026-09-29 (option A).** Do not
+re-open it and do not "improve" it.

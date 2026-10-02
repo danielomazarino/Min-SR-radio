@@ -266,6 +266,11 @@ that means nothing.
   three times. Back up to `/tmp`, verify by checksum.
 - **Never `git checkout --` a file with uncommitted edits.** Recover from a
   backup, not from git.
+- **Artifacts go in a SECOND commit, not the first.** Source+tests together, then
+  build, then artifacts. This keeps the source commit reviewable on its own.
+- **A brief that says "commit and stop" on deploy MUST say why in those words.**
+  See §13 — silence about pushing is read as "someone else will do it", and that
+  is how a reviewed, green fix sat on disk while the owner believed it was live.
 
 ---
 
@@ -321,14 +326,14 @@ playhead is at the live edge**.
 
 Checked individually, because they can fail separately:
 
-| | Requirement | Status as of 2026-09-29 (WS26 shipped, build `1b4287b`) |
+| | Requirement | Status as of 2026-09-30 (build `5eeabb9`, 256/256) |
 |---|---|---|
 | R1 | header song title follows the playhead | **code-proven behind live** (WS26, driven test) |
 | R2 | header artist follows the playhead | **code-proven behind live** (WS26, driven test) |
 | R3 | header cover follows the playhead, never another song's | **code-proven behind live**; the 45 s poll race is closed (three cover fields, one writer each) |
 | R4 | row 4 song line follows the playhead | **works — do not "re-fix" it.** Owner-confirmed on device for historical songs |
-| R5 | programme name follows the playhead | **STILL FAILING on first paint.** The gate is correct but unreachable: `seekableStart` is null when it runs. Engages from the first `timeupdate` |
-| R6 | the two halves of the panel must never disagree | **FAILING AT THE LIVE EDGE.** Owner device report: card "More!" / Robin Bengtsson vs row 4 "Depeche Mode – Enjoy The Silence", 02:50 on P3. **This is the next fix (WS27)** |
+| R5 | programme name follows the playhead | **Mechanism FIXED (WS26 Part 4); behaviour still unverified on device.** The old "the gate is unreachable" claim is **STALE** — a reachable re-evaluation path exists at `app.js` (`updateSeekableState`, the `lastWindowGateKey` block). Whether the *title* then updates on a real DVR seek is **unmeasured**. Do not re-derive the mechanism; read the code. |
+| R6 | the two halves of the panel must never disagree | **FIXED (WS27, commit `c016cdb`), deployed. Mechanism measured, not assumed:** `pickByPosition()` returns the first containing entry, so an earlier-starting entry still spanning "now" **shadowed** the polled song. Fix is the single line `const song = hit \|\| (atLiveEdge ? (nowPlaying.song \|\| null) : null);`. **Code-proven only — never device-verified.** |
 
 Read the "code-proven" labels precisely: they cover the **behind-live** case
 only. Desktop Chromium cannot load SR's DVR stream, so none of it has been
@@ -337,10 +342,17 @@ failed. The green suite did not catch it because **every previous test was
 behind live** — a suite that only tests the case you already fixed cannot find
 the case you did not.
 
-**R5 is precise on purpose:** the fix engages from the first tick, not on first
-paint. A session that sat at the live edge before 01:00 will also have cached
-the wrong answer for up to 10 minutes; the seek path invalidates that cache, the
-play path does not.
+**R1–R3 carry a new, unverified branch.** WS27's fix added an `atLiveEdge`
+fallback to the shared song rule. That branch is **code-proven only** — no
+device has run it. Read "code-proven" as covering the behind-live case, and
+nothing more.
+
+**R5's old status line was a mechanism claim, and a wrong one cost a
+workstream.** It said the gate "is correct but unreachable". It was later given
+a reachable call site. **The lesson generalises: a status table that describes a
+*mechanism* goes stale silently when the mechanism is fixed, and the next
+session re-derives it from scratch.** Prefer stating what was *observed* and on
+which build.
 
 **RESOLVED by the owner's decision, 2026-09-29:** the label `Spelas just nu`
 ("playing right now") is wrong when behind live, and stays **exactly as it is**.
@@ -348,8 +360,18 @@ The owner was offered three options — A leave it, B show the offset, C change 
 words — and chose **A**. Do not re-open it and do not "improve" it. This closes a
 question that had been carried as open for a whole workstream.
 
-**R6 is the cheapest and most important**: if row 4 says one song and the header
-says another, that is a defect even when each half is individually correct.
+**R6 was the cheapest and most important, and it is now fixed (WS27).** If row 4
+says one song and the header says another, that is a defect even when each half
+is individually correct — and the cause was **not** two code paths disagreeing.
+It was one rule applied to two different data sources: an earlier-starting
+timeline entry that still spanned "now" **shadowed** the polled on-air song.
+`pickByPosition()` returns the *first* containing entry, so the timeline won by
+ordering, not by correctness.
+
+**Do not re-open R6 on the strength of a desktop test.** It has never been
+device-verified. If the owner reports a disagreement at the live edge, that is a
+new measurement about a *fixed* defect — investigate it as such, and do not
+assume the WS27 fix caused it.
 
 ---
 
@@ -387,8 +409,17 @@ says another, that is a defect even when each half is individually correct.
 | question | decision |
 |---|---|
 | may the tech lead dispatch the agent? | **No.** Write the brief, hand it over, stop. The owner runs the separate chat. |
-| may the tech lead build and push? | **Yes, conditionally** (owner, 2026-09-30). The agent commits and stops; the tech lead reviews, tests, and **deploys if it passes**. A deployment is not a silent consequence of a green suite — it is a reviewed step with a checklist. |
+| **who builds and pushes?** | **The CODING AGENT does, when the brief says so** (owner, 2026-09-30, revised the same day after the fix sat committed and undeployed while the owner believed it was live). The tech lead's review is **not** a deployment gate any more. **Every brief must now state explicitly whether to push**, and a brief that ends at "commit and stop" must say *why* in those words — silence was read as "someone else will do it", and that is how the owner spent a session looking at a broken build. |
 | the `Spelas just nu` label behind live | **Option A — leave it.** No change. |
+
+**Why this row was rewritten, and it cost a session.** The earlier rule read
+"the agent commits and stops; the tech lead reviews, tests, and deploys". I
+followed it exactly, so a reviewed, green, mutation-proven fix sat on disk while
+the owner was told only that a deploy was "my step". **The owner was looking at
+the old broken build on their phone and had no way to know.** A process rule that
+leaves the owner uninformed is a defect in the process, not in the code. **When a
+step is someone's job, the brief must name it. Ownership that lives only in the
+tech lead's head does not survive a session boundary.**
 
 ---
 

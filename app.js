@@ -267,6 +267,18 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // 30 min cache is generous and keeps repeat opens cheap.
   const EXT_EPISODE_TTL_MS = 30 * 60 * 1000;
   const EXTERNAL_PODCASTS_KEY = 'minradio.podcasts.ext.v1';
+  // The podcasts row is ONE list to the user, but the rows live in TWO
+  // storages. That made a mixed order impossible to express: the SR array and
+  // the external array each have their own order, neither can step past the
+  // other, and the home screen hardcoded SR-then-external -- so any attempt to
+  // interleave them reverted on the next render (owner, 2026-10-02).
+  //
+  // This key stores ONLY the visible order, as bare ids. It carries no row
+  // data: a podcast is still favourited in exactly one of the two storages,
+  // and neither storage's contents change. That keeps the separation that
+  // protects the SR favourites (favoritesFromRaw drops non-integers) while
+  // giving the row a single order that both providers can occupy.
+  const PODCAST_ORDER_KEY = 'minradio.podcasts.order.v1';
 
   // Session caches. Deliberately module-level Maps, NOT localStorage: these
   // are cheap to rebuild and must never be able to outlive a schema change.
@@ -476,36 +488,73 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   }
 
   /**
-   * Reorder inside the external list. Mirrors moveFavorite(), which is
-   * deliberately left alone: it operates on the SR favourites object.
+   * REMOVE a favourite, from either provider, writing only to that provider's
+   * own storage. Returns the removed row so the caller can offer an undo.
+   *
+   * Why this exists (owner, 2026-10-02): an iTunes podcast can be selected from
+   * the search results but, once that search is gone, there was no way to
+   * deselect it -- it is not in the SR catalogue, so it could never be found
+   * again in the long list. The long list was the ONLY removal mechanism, and
+   * it only worked for ids it contained.
+   *
+   * Mirrors toggleExternalPodcast's "remove" branch deliberately rather than
+   * calling toggleExternalPodcast({id}): a row removed while off-screen must
+   * remove by ID, and the toggle form would re-add an unknown id rather than
+   * fail. Removing by id is idempotent and provider-explicit.
    */
-  function moveExternalPodcast(id, direction) {
+  function removeFavoriteRow(kind, id, name) {
+    // `name` is passed IN by the caller, because an SR favourite is stored as
+    // a bare integer -- loadFavorites() returns ids only, with no name to
+    // recover. Without it the undo toast reads "Borttaget: undefined", which
+    // was observed in the browser before this was fixed.
+    if (kind !== 'podcasts') {
+      const favs = loadFavorites();
+      const idx = favs[kind].indexOf(id);
+      if (idx === -1) return null;
+      const removed = favs[kind][idx];
+      favs[kind].splice(idx, 1);
+      saveFavorites(favs);
+      return { id: removed, kind, provider: 'sr', name: name || String(removed) };
+    }
     const list = loadExternalPodcasts();
     const idx = list.findIndex((p) => p.id === id);
-    if (idx === -1) return false;
-    const target = direction === 'up' ? idx - 1 : idx + 1;
-    if (target < 0 || target >= list.length) return false;
-    [list[idx], list[target]] = [list[target], list[idx]];
-    saveExternalPodcasts(list);
+    if (idx !== -1) {
+      const [removed] = list.splice(idx, 1);
+      saveExternalPodcasts(list);
+      return { ...removed, kind, provider: 'itunes' };
+    }
+    const favs = loadFavorites();
+    const srIdx = favs.podcasts.indexOf(id);
+    if (srIdx === -1) return null;
+    const removed = favs.podcasts[srIdx];
+    favs.podcasts.splice(srIdx, 1);
+    saveFavorites(favs);
+    return { id: removed, kind, provider: 'sr', name: name || String(removed) };
+  }
+
+  /**
+   * Put a previously removed row back, into the provider it came from.
+   * Used only by the undo action, so it restores position too when it can.
+   */
+  function restoreFavoriteRow(row, index) {
+    if (!row) return false;
+    if (row.provider === 'itunes') {
+      const list = loadExternalPodcasts();
+      if (list.some((p) => p.id === row.id)) return false;
+      const at = Number.isInteger(index) ? Math.min(index, list.length) : list.length;
+      list.splice(at, 0, {
+        id: row.id, name: row.name, image: row.image,
+        description: row.description, feedUrl: row.feedUrl, artist: row.artist,
+      });
+      saveExternalPodcasts(list);
+      return true;
+    }
+    const favs = loadFavorites();
+    if (favs[row.kind].includes(row.id)) return false;
+    const at = Number.isInteger(index) ? Math.min(index, favs[row.kind].length) : favs[row.kind].length;
+    favs[row.kind].splice(at, 0, row.id);
+    saveFavorites(favs);
     return true;
-  }
-
-  /** The external rows currently rendered in a reorder group. */
-  function extRows(group) {
-    return [...group.querySelectorAll('.selected-item[data-ext]')];
-  }
-
-  /** Persist a reordered external list straight from the DOM (drag/drop). */
-  function persistExternalOrder(group) {
-    const order = [...group.querySelectorAll('.selected-item[data-ext]')]
-      .map((r) => Number(r.dataset.id));
-    const list = loadExternalPodcasts();
-    const byId = new Map(list.map((p) => [p.id, p]));
-    // Only reorder rows that are still in storage; a row deleted mid-drag
-    // must not resurrect itself.
-    const next = order.map((id) => byId.get(id)).filter(Boolean);
-    for (const p of list) if (!order.includes(p.id)) next.push(p);
-    saveExternalPodcasts(next);
   }
 
   /**
@@ -519,6 +568,58 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       return loadExternalPodcasts().find((p) => p.id === id) || null;
     }
     return catalogue?.find?.((c) => c.id === id) || null;
+  }
+
+  /**
+   * The podcast row's visible order, as bare ids from BOTH providers.
+   *
+   * Stored order wins for ids it contains; anything it does not mention is
+   * appended in its own storage's order. That makes this key safe to write
+   * from a partial view: a missing id can never be dropped from the row, and a
+   * stale id (removed elsewhere) is filtered out by the caller.
+   */
+  function loadPodcastOrder() {
+    try {
+      const raw = localStorage.getItem(PODCAST_ORDER_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.filter((id) => Number.isInteger(id)) : [];
+    } catch (err) {
+      console.warn('Podcast order storage corrupted, resetting:', err);
+      return [];
+    }
+  }
+
+  function savePodcastOrder(ids) {
+    try {
+      localStorage.setItem(PODCAST_ORDER_KEY, JSON.stringify(
+        (Array.isArray(ids) ? ids : []).filter((id) => Number.isInteger(id))
+      ));
+      return true;
+    } catch (err) {
+      console.warn('Could not save podcast order:', err);
+      return false;
+    }
+  }
+
+  /**
+   * The authoritative podcast row order: SR ids and external ids interleaved
+   * as the user arranged them.
+   *
+   * Falls back to SR-then-external when no order has been stored, which is
+   * exactly the pre-existing behaviour -- so an existing user sees no change.
+   */
+  function podcastRowOrder(srIds, extList) {
+    const extIds = extList.map((p) => p.id);
+    const all = [...srIds, ...extIds];
+    const stored = loadPodcastOrder().filter((id) => all.includes(id));
+    const missing = all.filter((id) => !stored.includes(id));
+    return [...stored, ...missing];
+  }
+
+  /** Write the current row order, dropping ids that no longer exist. */
+  function persistPodcastRowOrder(ids) {
+    return savePodcastOrder(ids.filter((id) => Number.isInteger(id)));
   }
 
   function unescapeXml(s) {
@@ -684,6 +785,33 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     const toast = el('div', { class: 'toast', text: message });
     $toastRoot.appendChild(toast);
     setTimeout(() => toast.remove(), durationMs);
+  }
+
+  /**
+   * A toast with an optional UNDO action.
+   *
+   * Why this exists: removal by swipe is destructive and easy to trigger by
+   * accident -- a sideways slip while scrolling is exactly the motion people
+   * make. A destructive gesture with no recovery is a bad trade even when it
+   * works, so every removal offers a way back. Only ONE undo toast exists at a
+   * time; a second removal replaces it, which is deliberate: the older undo
+   * would otherwise restore a row underneath the newer one.
+   */
+  function showUndoToast(message, onUndo, durationMs = 6000) {
+    $toastRoot.textContent = '';
+    const toast = el('div', { class: 'toast toast-undo', role: 'status' },
+      el('span', { class: 'toast-text', text: message }),
+      el('button', {
+        class: 'toast-action', type: 'button', text: 'Ångra',
+        'aria-label': `Ångra: ${message}`,
+        onclick: () => { toast.remove(); onUndo(); },
+      }));
+    $toastRoot.appendChild(toast);
+    const timer = setTimeout(() => toast.remove(), durationMs);
+    // A timer that outlives the toast would remove a LATER toast, because
+    // $toastRoot is emptied by the next showToast.
+    toast.addEventListener('remove', () => clearTimeout(timer), { once: true });
+    return toast;
   }
 
   // ---------------- app state ----------------
@@ -7223,10 +7351,13 @@ function seekMeasureRecordText() {
     // momentum scroll) and stops at the last icon — no placeholder slots.
     function buildIconSection(kind, title, catalogue) {
       const isPod = kind === 'podcasts';
-      // External favourites are appended to the SAME row, under the SAME
-      // header. No new section, no new heading: the owner chose one list.
+      // External favourites live in the SAME row, under the SAME header. No
+      // new section, no new heading: the owner chose one list.
       const extList = isPod ? loadExternalPodcasts() : [];
-      const list = isPod ? [...favs[kind], ...extList.map((p) => p.id)] : favs[kind];
+      // podcastRowOrder() interleaves both providers by the stored order.
+      // Previously this was [...favs, ...ext], which made a mixed order
+      // impossible -- any interleaving reverted on the next render.
+      const list = isPod ? podcastRowOrder(favs[kind], extList) : favs[kind];
 
       const sec = el('section', { class: 'section', 'aria-label': title },
         el('h2', { class: 'section-title', text: title }));
@@ -8053,6 +8184,13 @@ function seekMeasureRecordText() {
       const extRow = items[kind]?.find((i) => i.id === id && i.provider === 'itunes');
       if (kind === 'podcasts' && (extRow || loadExternalPodcasts().some((p) => p.id === id))) {
         toggleExternalPodcast(extRow || { id });
+        // A newly added external row belongs at the END of the row, which is
+        // where it appeared in the search list the user just used.
+        if (kind === 'podcasts' && extRow) {
+          persistPodcastRowOrder(
+            podcastRowOrder(loadFavorites().podcasts, loadExternalPodcasts())
+          );
+        }
         updateCounter();
         doneBtnState();
         renderList();
@@ -8252,13 +8390,67 @@ function seekMeasureRecordText() {
       // silently and the SR order is preserved exactly.
       const extList = kind === 'podcasts' ? loadExternalPodcasts() : [];
       const srIds = loadFavorites()[kind];
+      // ONE order for the whole row, shared with buildIconSection, so the
+      // arrangement the user makes here is the arrangement they see there.
       const list = kind === 'podcasts'
-        ? [...srIds, ...extList.map((p) => p.id)]
+        ? podcastRowOrder(srIds, extList)
         : srIds;
       if (!list.length) {
         group.appendChild(el('div', { class: 'selected-empty', text: 'Inga valda ännu.' }));
         return group;
       }
+
+      /**
+       * Remove one row and offer an undo. Shared by the ✕ button and the
+       * swipe gesture so the two can never drift apart in behaviour -- the
+       * gesture must not be a "second implementation" of the same action.
+       */
+      const onRemoveRequest = (id, provider, name) => {
+        const before = provider === 'itunes'
+          ? loadExternalPodcasts().findIndex((p) => p.id === id)
+          : loadFavorites()[kind].indexOf(id);
+        const removed = removeFavoriteRow(kind, id, name);
+        if (!removed) return;   // already gone: a double removal is a no-op
+        // The sheet's own copy of the picks must follow, or Spara would write
+        // the removed SR id straight back on the next save.
+        if (removed.provider === 'sr') {
+          const idx = picks[kind].indexOf(id);
+          if (idx >= 0) picks[kind].splice(idx, 1);
+        }
+        // The stored order must forget the removed id, or it would linger in
+        // the order key and reappear if the same podcast were re-added.
+        if (kind === 'podcasts') {
+          persistPodcastRowOrder(
+            podcastRowOrder(loadFavorites().podcasts, loadExternalPodcasts())
+              .filter((x) => x !== id)
+          );
+        }
+        updateCounter();
+        doneBtnState();
+        renderList();
+        rebuildSelected();
+        showUndoToast(`Borttaget: ${removed.name}`, () => {
+          restoreFavoriteRow(removed, before);
+          if (removed.provider === 'sr' && !picks[kind].includes(id)) {
+            const at = Number.isInteger(before)
+              ? Math.min(before, picks[kind].length)
+              : picks[kind].length;
+            picks[kind].splice(at, 0, id);
+          }
+          // Put it back where it was, in the ORDER too -- otherwise undo
+          // would restore the podcast but lose its position.
+          if (kind === 'podcasts') {
+            persistPodcastRowOrder(
+              podcastRowOrder(loadFavorites().podcasts, loadExternalPodcasts())
+            );
+          }
+          updateCounter();
+          doneBtnState();
+          renderList();
+          rebuildSelected();
+        });
+      };
+
       list.forEach((id, pos) => {
         const isExt = extList.some((p) => p.id === id);
         const item = resolvePodcastRow(catalogue, id, isExt ? 'itunes' : 'sr');
@@ -8268,6 +8460,10 @@ function seekMeasureRecordText() {
           // Marks the row for persistExternalOrder(), which selects on it.
           ...(isExt ? { 'data-ext': '1' } : {}),
         },
+          // The red "Swipe to remove" cue, BEHIND the row (see .swipe-reveal).
+          // It is aria-hidden because the removal is also reachable without
+          // sight of it -- see the note below on the non-gesture fallback.
+          el('div', { class: 'swipe-reveal', 'aria-hidden': 'true', text: 'Ta bort' }),
           el('span', { class: 'selected-grip', 'aria-hidden': 'true',
             html: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 5h2v2H9zM13 5h2v2h-2zM9 9h2v2H9zM13 9h2v2h-2zM9 13h2v2H9zM13 13h2v2h-2zM9 17h2v2H9zM13 17h2v2h-2z"/></svg>' }),
           el('span', { class: 'selected-pos', text: String(pos + 1) }),
@@ -8276,19 +8472,45 @@ function seekMeasureRecordText() {
             : el('span', { class: 'selected-logo selected-letter', text: item.name.slice(0, 1) }),
           el('span', { class: 'selected-name', text: item.name }));
         const controls = el('div', { class: 'selected-controls' });
-        // An external row must not be reordered inside the SR array, and an
-        // SR row must not be moved by the external list's mover -- each
-        // button writes to its OWN storage only.
+        /**
+         * Move a row one place within the WHOLE row -- crossing the SR/external
+         * boundary when needed.
+         *
+         * This replaces a per-provider mover that could not cross: an external
+         * row was alone in its own array, so "move up" found nothing to swap
+         * with and silently did nothing, and an SR row at the boundary was
+         * clamped by its own array's end. Both were observed in the browser.
+         *
+         * The swap is done on the ORDER, then written back to each provider's
+         * own storage in that provider's own relative order. Neither provider's
+         * membership changes -- only the sequence the row is displayed in.
+         */
         const move = (direction) => {
-          if (isExt) {
-            if (moveExternalPodcast(id, direction)) rebuildSelected();
+          if (kind !== 'podcasts') {
+            const favs = loadFavorites();
+            if (moveFavorite(favs, kind, id, direction)) {
+              saveFavorites(favs);
+              rebuildSelected();
+            }
             return;
           }
-          const favs = loadFavorites();
-          if (moveFavorite(favs, kind, id, direction)) {
-            saveFavorites(favs);
-            rebuildSelected();
-          }
+          const current = podcastRowOrder(loadFavorites().podcasts, extList);
+          const from = current.indexOf(id);
+          if (from === -1) return;
+          const to = direction === 'up' ? from - 1 : from + 1;
+          if (to < 0 || to >= current.length) return;   // already at that end
+          const next = [...current];
+          [next[from], next[to]] = [next[to], next[from]];
+          // Write each provider's slice back in the order the swap produced.
+          const extIds = new Set(extList.map((p) => p.id));
+          const srFavs = loadFavorites();
+          srFavs.podcasts = next.filter((x) => !extIds.has(x));
+          saveFavorites(srFavs);
+          saveExternalPodcasts(next
+            .filter((x) => extIds.has(x))
+            .map((x) => extList.find((p) => p.id === x)));
+          persistPodcastRowOrder(next);
+          rebuildSelected();
         };
         controls.appendChild(el('button', {
           class: 'selected-btn', type: 'button',
@@ -8304,10 +8526,27 @@ function seekMeasureRecordText() {
           html: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 10l5 5 5-5z"/></svg>',
           onclick: () => move('down'),
         }));
+        // The NON-GESTURE equivalent of the swipe, and deliberately not hidden
+        // behind one: swipe is undiscoverable, unreachable by keyboard, and
+        // impossible with a screen reader. This button is the same removal with
+        // the same undo, so the feature does not depend on discovering a
+        // gesture. It is placed LAST so the arrows stay where they were.
+        controls.appendChild(el('button', {
+          class: 'selected-btn selected-btn-remove', type: 'button',
+          'aria-label': `Ta bort ${item.name}`,
+          html: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>',
+          onclick: () => onRemoveRequest(id, isExt ? 'itunes' : 'sr', item.name),
+        }));
         rowEl.appendChild(controls);
         group.appendChild(rowEl);
       });
       enableDragSort(group, kind);
+      // Swipe-to-remove, enabled for BOTH providers. It calls the SAME
+      // onRemoveRequest the ✕ button uses -- one implementation, two inputs.
+      // The removal is provider-explicit in removeFavoriteRow(), so this one
+      // binding covers SR and iTunes rows without either list knowing about
+      // the other.
+      enableSwipeToRemove(group, kind, onRemoveRequest);
       return group;
     }
 
@@ -8320,26 +8559,28 @@ function seekMeasureRecordText() {
       let dragId = null;
 
       const persist = () => {
+        const order = rows().map(r => Number(r.dataset.id));
         // Rows come from BOTH providers. Writing every id into the SR array
         // would push iTunes collectionIds into favourites.json, which
         // favoritesFromRaw() drops as non-numbers -- the reorder would then
-        // be silently undone on the next load. So each provider's rows go
-        // back to their OWN storage.
-        if (extRows(group).length) {
-          persistExternalOrder(group);
-          const srOrder = [...group.querySelectorAll('.selected-item:not([data-ext])')]
-            .map(r => Number(r.dataset.id));
+        // be silently undone on the next load.
+        if (kind === 'podcasts') {
+          const extIds = new Set(extList.map((p) => p.id));
           const favs = loadFavorites();
-          // Ids that were deleted mid-drag are dropped, not resurrected.
-          const known = new Set(favs[kind]);
-          favs[kind] = srOrder.filter((id) => known.has(id));
+          // Each provider keeps its own members, in the relative order the drag
+          // produced; the interleaving itself lives in the order key.
+          const known = new Set(favs.podcasts);
+          favs.podcasts = order.filter((id) => !extIds.has(id) && known.has(id));
           saveFavorites(favs);
+          saveExternalPodcasts(order
+            .filter((id) => extIds.has(id))
+            .map((id) => extList.find((p) => p.id === id)));
+          persistPodcastRowOrder(order);
           return;
         }
-        const order = [...group.querySelectorAll('.selected-item')]
-          .map(r => Number(r.dataset.id));
         const favs = loadFavorites();
-        favs[kind] = order;
+        const known = new Set(favs[kind]);
+        favs[kind] = order.filter((id) => known.has(id));
         saveFavorites(favs);
       };
 
@@ -8394,7 +8635,7 @@ function seekMeasureRecordText() {
         const row = e.target.closest('.selected-item');
         if (!row || e.touches.length !== 1) return;
         const id = Number(row.dataset.id);
-        touchState = { id, row, startY: e.touches[0].clientY, started: false, timer: setTimeout(() => {
+        touchState = { id, row, startX: e.touches[0].clientX, startY: e.touches[0].clientY, started: false, timer: setTimeout(() => {
           touchState.started = true;
           row.classList.add('dragging');
           if (navigator.vibrate) navigator.vibrate(10);
@@ -8403,8 +8644,19 @@ function seekMeasureRecordText() {
       group.addEventListener('touchmove', (e) => {
         if (!touchState) return;
         const y = e.touches[0].clientY;
+        const x = e.touches[0].clientX;
         if (!touchState.started) {
-          if (Math.abs(y - touchState.startY) > 10) clearTimeout(touchState.timer);
+          // The timer used to be cancelled on ANY 10 px move. It must NOT arm
+          // for a horizontal swipe: enableSwipeToRemove owns that direction,
+          // and a stray 'dragging' class here would reorder a row the user was
+          // trying to remove -- the two gestures would fight over one gesture.
+          const dx = x - touchState.startX;
+          const dy = y - touchState.startY;
+          if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 10) {
+            clearTimeout(touchState.timer);   // horizontal -> belongs to remove
+          } else if (Math.abs(dy) > 10) {
+            clearTimeout(touchState.timer);   // vertical scroll -> not a drag
+          }
           return;
         }
         e.preventDefault();
@@ -8425,6 +8677,120 @@ function seekMeasureRecordText() {
         rows().forEach(r => r.classList.remove('dragging'));
         if (touchState.started) persist();
         touchState = null;
+      });
+    }
+
+    /**
+     * Swipe-to-remove on a selected-favourites row (owner request 2026-10-02).
+     *
+     * THE GESTURE CONFLICT, and how it is resolved. This list ALREADY has a
+     * touch gesture: a 250 ms long-press starts a drag-to-reorder, and a
+     * drag is inherently VERTICAL. A naive vertical swipe-to-delete would
+     * therefore fight the existing feature on the same rows, and the loser
+     * would be whichever the user happened to want.
+     *
+     * The resolution is DIRECTION, decided once, on the first 10 px:
+     *   horizontal  -> REMOVE   (a fling sideways is not a reorder attempt)
+     *   vertical    -> the existing long-press drag keeps it
+     * A vertical drag therefore never reaches the removal threshold, and a
+     * horizontal swipe never arms the drag. They cannot both fire.
+     *
+     * The 10 px decision window also means a SCROLL that drifts sideways a
+     * little is not enough to remove anything; only a clear horizontal intent
+     * counts. Requiring a deliberate horizontal move is what keeps this safe on
+     * a list the user scrolls.
+     *
+     * Removal is reversible: the caller shows an undo toast. See
+     * showUndoToast().
+     */
+    function enableSwipeToRemove(group, kind, onRemoved) {
+      // 10 px decides intent; 35% of the row's width commits; a fast flick
+      // commits early. All three are relative to the ROW, not the viewport,
+      // because the rows are ~50 px tall and a viewport fraction would be
+      // unreachable on a phone.
+      const DECIDE_PX = 10;
+      let s = null;
+
+      group.addEventListener('touchstart', (e) => {
+        const row = e.target.closest('.selected-item');
+        if (!row || e.touches.length !== 1) return;
+        s = {
+          row,
+          id: Number(row.dataset.id),
+          startX: e.touches[0].clientX,
+          startY: e.touches[0].clientY,
+          t0: Date.now(),
+          intent: null,   // null until decided, then 'remove' or 'drag'
+          d: 0,
+        };
+      }, { passive: true });
+
+      group.addEventListener('touchmove', (e) => {
+        if (!s) return;
+        const dx = e.touches[0].clientX - s.startX;
+        const dy = e.touches[0].clientY - s.startY;
+        if (s.intent === null && (Math.abs(dx) > DECIDE_PX || Math.abs(dy) > DECIDE_PX)) {
+          // Horizontal wins ties only when it is clearly horizontal. This is
+          // the whole conflict-resolution rule, so it is stated once, here.
+          s.intent = Math.abs(dx) > Math.abs(dy) ? 'remove' : 'drag';
+          if (s.intent === 'remove') {
+            s.row.classList.add('swiping');
+            s.width = s.row.getBoundingClientRect().width || 1;
+          }
+        }
+        if (s.intent !== 'remove') return;
+        // Only LEFTWARD removes. Rightward springs back, so a mis-swing in the
+        // other direction is inert rather than destructive.
+        const d = Math.min(0, dx);
+        s.d = d;
+        s.row.style.transition = 'none';
+        s.row.style.transform = `translateX(${d}px)`;
+        s.row.style.opacity = String(Math.max(0.35, 1 + d / s.width));
+      }, { passive: true });
+
+      const finish = () => {
+        if (!s) return;
+        const st = s;
+        s = null;
+        st.row.classList.remove('swiping');
+        if (st.intent !== 'remove') {
+          // Not a removal: leave the row exactly as the drag-sort left it.
+          st.row.style.transition = '';
+          st.row.style.transform = '';
+          st.row.style.opacity = '';
+          return;
+        }
+        const elapsed = Date.now() - st.t0;
+        const flick = elapsed < 250 && Math.abs(st.d) > 40;
+        const threshold = (st.width || 1) * 0.35;
+        st.row.style.transition = 'transform 0.18s ease';
+        if (Math.abs(st.d) >= threshold || flick) {
+          st.row.style.transform = 'translateX(-100%)';
+          const commit = () => {
+            // Style cleanup BEFORE the list rebuilds, so a row restored later
+            // by undo never inherits a transform.
+            st.row.style.transition = '';
+            st.row.style.transform = '';
+            st.row.style.opacity = '';
+            // Read the name from the DOM: an SR favourite is stored as a bare
+            // integer, so the row is the only place the name still exists.
+            const name = st.row.querySelector('.selected-name')?.textContent || '';
+            onRemoved(st.id, st.row.dataset.ext ? 'itunes' : 'sr', name);
+          };
+          setTimeout(commit, 170);
+        } else {
+          st.row.style.transform = '';
+          st.row.style.opacity = '';
+        }
+      };
+      group.addEventListener('touchend', finish);
+      group.addEventListener('touchcancel', () => {
+        if (!s) return;
+        s.row.classList.remove('swiping');
+        s.row.style.transition = '';
+        s.row.style.transform = '';
+        s.row.style.opacity = '';
+        s = null;
       });
     }
 
