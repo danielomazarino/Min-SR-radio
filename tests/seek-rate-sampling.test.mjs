@@ -336,8 +336,8 @@ test('WS38-FIX the existing fetch is reused; no second fetch path, and the panel
 test('WS38-FIX the seek calculation and the record semantics are UNCHANGED', () => {
   const seek = APP_CODE.slice(APP_CODE.indexOf('function seekToProgramTime('),
     APP_CODE.indexOf('function seekToProgramTime(') + 2000);
-  assert.match(seek, /const fallbackTarget = end - behindMs \/ 1000;/,
-    'the pre-existing formula must survive verbatim as the fallback');
+  assert.match(seek, /const target = end - behindMs \/ 1000;/,
+    'the target formula must be exactly as before');
   assert.match(seek, /const end = cur\.seekableEnd;/,
     'the seek must still use the CACHED seekableEnd');
   assert.ok(!/SEEK_RATE_CLOCK_FRESH_MS/.test(seek),

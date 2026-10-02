@@ -6407,3 +6407,41 @@ offset. Merging the two would hide that distinction rather than resolve it.
 **Not established:** whether P2 fails always or intermittently, whether it
 skips one programme or several, and whether the P2 failure predates WS46. None
 of that has been measured.
+
+### WS46 result — absolute `getStartDate()` origin tested on the iPhone (2026-10-02)
+
+**What was tested.** WS46 changed the native-HLS seek target from
+
+```
+target = seekableEnd - (Date.now() - startMs) / 1000
+```
+
+to an absolute media-timeline origin, `target = (startMs - getStartDate()) / 1000`.
+The intent was to eliminate the transport-dependent gap between the buffered edge
+and the true edge, rather than compensate for it with a constant.
+
+**Outcome.** Deployed as build `652644d` (bundle `app.96f1e24e.js`) and tested on
+the owner's real iPhone. **The synchronization/landing error remained.** The seek
+still did not land at the correct programme position.
+
+**Therefore:** `getStartDate()`-based absolute origin is **not established as a
+solution**, and WS46 was reverted. No correction or workaround was added in its
+place.
+
+**WHAT THIS DOES NOT ESTABLISH.** This is a failed hypothesis test, not a
+diagnosis. It does **not** prove what the root cause is, and it does not show
+that the origin is wrong, that `getStartDate()` is unavailable, or that the
+calculation is misapplied. Two readings remain open — for example, the platform
+may be supplying a start date that is itself offset, or the landing error may
+originate downstream of the target computation entirely. Nothing here
+discriminates between them.
+
+**What it does establish:** the target computation is no longer the only place
+the error can live. A formula that is arithmetically correct and uses the
+platform's own absolute origin still produced the same real-world error, so the
+next investigation must explain **why** — before any further production change
+is proposed. Adding another correction on top of this result would be
+unjustified.
+
+**Not done, deliberately:** no further measurement loop was started, and no
+alternative offset, device table or calibration was introduced.

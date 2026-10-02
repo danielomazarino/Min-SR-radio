@@ -159,17 +159,16 @@ test('the live DVR metadata lookup reads through the experimental timebase', () 
   assert.doesNotMatch(body, /const atMs = playheadWallMs\(\);/);
 });
 
-test('the seek reads the origin directly, never the metadata playhead', () => {
-  // WS46 SUPERSEDED the FORMULA half of this test. What remains — and is the
-  // property worth keeping — is that the seek does not borrow the METADATA
-  // timebase. `playheadWallMs44()` maps a position to a wall clock; using it
-  // inside the seek would reintroduce the very assumption under test, and the
-  // seek must stay independent of metadata resolution.
+test('the seek equation still uses the old cached-edge model', () => {
+  // The experiment is deliberately scoped to METADATA. If someone extends it
+  // to the seek without the owner's iPhone result, this goes red — which is the
+  // point of putting it in a test rather than in a comment.
   const start = APP_JS.indexOf('function seekToProgramTime(');
   assert.notEqual(start, -1, 'seekToProgramTime must exist');
   const body = APP_JS.slice(start, APP_JS.indexOf('\n  function ', start + 10));
+  assert.match(body, /const end = cur\.seekableEnd;/);
+  assert.match(body, /const target = end - behindMs \/ 1000;/);
   assert.doesNotMatch(body, /playheadWallMs44/);
-  assert.doesNotMatch(body, /playheadWallMs\(\)/);
 });
 
 test('both timebases are recorded in the snapshot, not just the new one', () => {

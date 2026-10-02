@@ -300,39 +300,15 @@ test('the proposed mapping scores 0 for EVERY buffer lag L', () => {
 
 test('the PRODUCTION seek is untouched by WS40', () => {
   // The whole premise of this workstream: diagnose first, change nothing.
-  //
-  // WS46 SUPERSEDED this for `seekToProgramTime` ONLY, and deliberately kept it
-  // for every other function. WS46's change is the seek target; `seekBy`,
-  // `seekToLive`, `playheadWallMs`, `dvrPositionToDate` and
-  // `updateSeekableState` must STILL carry no WS40 or WS46 symbol, which is
-  // what proves the experiment did not spread. `seekToProgramTime` is
-  // exempted by name rather than by loosening the pattern, so a new function
-  // added to the seek is covered again the moment it is not listed.
-  for (const fn of ['seekBy', 'seekToLive',
+  for (const fn of ['seekToProgramTime', 'seekBy', 'seekToLive',
     'playheadWallMs', 'dvrPositionToDate', 'updateSeekableState']) {
     const body = grab(fn);
     assert.ok(!/WS40|ws40|proposedTarget|mediaOrigin/.test(body),
       `${fn} must not reference any WS40 symbol`);
-    assert.ok(!/WS46|ws46/.test(body),
-      `${fn} must not reference any WS46 symbol`);
   }
-  const SEEK = grab('seekToProgramTime');
-  assert.ok(!/proposedTarget|mediaOrigin|playlistOrigin|originDelta/.test(SEEK),
-    'the WS40 DIAGNOSTIC quantities must still not reach the seek');
   // And the production equation is still the production equation.
-  //
-  // WS46 SUPERSEDED this. The seek now derives its target from the absolute
-  // media-timeline origin on native HLS, so "the production equation is this
-  // one line" is no longer the requirement. Restated to the property that still
-  // matters and is now STRONGER: the old equation must still be computed
-  // verbatim as the FALLBACK, so hls.js is bit-for-bit unchanged and reverting
-  // the experiment cannot lose the computation. The line was only ever a
-  // fallback for non-native transports; it was never absent.
-  assert.ok(/const fallbackTarget = end - behindMs \/ 1000;/.test(APP_JS),
-    'the pre-existing equation must survive verbatim as the fallback');
-  assert.ok(!/const target = end - behindMs \/ 1000;/.test(
-    grab('seekToProgramTime')),
-    'the target must not bypass the origin-based calculation');
+  assert.ok(/const target = end - behindMs \/ 1000;/.test(APP_JS),
+    'the production seek equation must still be end - behindMs/1000');
 });
 
 test('the WS38 guard against a circular seekableEnd difference still holds', () => {
@@ -582,16 +558,9 @@ test('GUARD: the cross-check is diagnostic-only and reaches no target', () => {
   // And nothing anywhere else re-derives a target from the cross-check.
   const all = (APP_CODE.match(/ws40ProposedTarget\(/g) || []).length;
   assert.equal(all, 2, 'exactly one definition and one call site');
-  // The production equation is untouched on every non-native transport.
-  //
-  // WS46 SUPERSEDED the literal spelling: the native path now derives its
-  // target from the absolute media-timeline origin. Restated to the property
-  // that still holds and is the point of this guard — the pre-existing
-  // equation must still be COMPUTED, because it is the value every
-  // non-native transport seeks to. If this line ever disappears, hls.js has
-  // silently changed behaviour.
-  assert.ok(/const fallbackTarget = end - behindMs \/ 1000;/.test(APP_JS),
-    'the pre-existing equation must survive verbatim as the fallback');
+  // The production equation is untouched.
+  assert.ok(/const target = end - behindMs \/ 1000;/.test(APP_JS),
+    'the production seek equation must still be end - behindMs/1000');
 });
 
 test('GUARD: the origin functions stay independent of each other', () => {

@@ -2159,11 +2159,6 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // ReferenceError on every call, which is a far worse outcome than the
   // feature it instruments.
   const WS44_CANARY = null;
-  // WS46's canary, declared here for the same reason and with the same care:
-  // `null` in production, and declared at module scope so the check inside
-  // ws46SeekTarget() cannot throw a ReferenceError on the path that only runs
-  // when something has already gone wrong.
-  const WS46_CANARY = null;
   //
   // WHAT QUESTION THIS ASKS. `HTMLMediaElement.getStartDate()` returns the
   // wall-clock instant that corresponds to media time 0 for a live stream.
@@ -2232,78 +2227,6 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       } catch { startDateMs = null; }
     }
     return ws44PlayheadWallMs(startDateMs, audioEl.currentTime, transport, fallback);
-  }
-
-  // ---- WS46 EXPERIMENT: the ABSOLUTE media-timeline origin for the seek. ----
-  //
-  // WHAT IS BEING CHANGED. The production equation is
-  //
-  //     target = seekableEnd - (Date.now() - startMs) / 1000
-  //
-  // which ASSERTS that `seekableEnd` represents the current real-world stream
-  // edge. That assertion is false, and by a transport-dependent amount: the
-  // evidence is ~8-10 s on Edge/hls.js and ~25 s on iPhone/native Safari. The
-  // error is not a clock error and not a fixed property of the stream — it is
-  // how far the BUFFERED edge sits behind the TRUE edge, and buffering is a
-  // per-transport policy. On hls.js it is a consequence of our own
-  // HLS_CONFIG; on native HLS it is Safari's own retention policy, which the
-  // app cannot configure at all.
-  //
-  // WHY THIS FORM. `getStartDate()` is the platform's own statement of the
-  // wall-clock instant at media time 0. With that origin,
-  //
-  //     target = (startMs - A) / 1000        A = getStartDate()
-  //
-  // `seekableEnd` DOES NOT APPEAR AT ALL. That is the whole point: the unknown
-  // quantity L is not compensated with a constant, it is ELIMINATED, because
-  // nothing in this expression refers to a buffered position. This is the
-  // difference between this experiment and the 31.5 s correction that was just
-  // reverted — that one subtracted a measured constant to hide L, which would
-  // have over-corrected the desktop case roughly threefold and frozen one
-  // device's buffer policy into permanent behaviour.
-  //
-  // NO CALIBRATION ANYWHERE. There is no offset, no per-device or per-browser
-  // value, and no table. One formula, applied only where the platform supplies
-  // a real origin.
-  //
-  // PURE BY CONSTRUCTION, like ws44PlayheadWallMs: every input is an argument,
-  // including the fallback. That is what lets the difference between the two
-  // forms be measured rather than asserted.
-  //
-  // `originDeltaMs` is an OPTIONAL diagnostic cross-check only. It is computed
-  // from the seekable window and is NOT used to alter the target: if it were,
-  // the constant would be back in by the back door.
-  function ws46SeekTarget(startDateMs, startMs, transport, fallbackTarget) {
-    if (WS46_CANARY) WS46_CANARY();
-    // Native HLS only. On hls.js the media timeline is one the client built
-    // over a sliding window, and the declared presentation start is not the
-    // origin of that timeline. Reading it there would compare two different
-    // things. The hls.js path keeps the existing equation unchanged.
-    if (transport !== 'native-hls') return fallbackTarget;
-    // 0 is what Safari returns for "unknown", and a negative or non-finite
-    // value is not an instant. Treating any of them as an origin would put the
-    // target decades away — a silent, catastrophic failure rather than a
-    // visible one.
-    if (!Number.isFinite(startDateMs) || startDateMs <= 0) return fallbackTarget;
-    if (!Number.isFinite(startMs)) return fallbackTarget;
-    const target = (startMs - startDateMs) / 1000;
-    // A non-finite result means the arithmetic overflowed or the inputs were
-    // absurd. Fall back rather than hand NaN to currentTime, which fails
-    // silently instead of loudly.
-    if (!Number.isFinite(target)) return fallbackTarget;
-    return target;
-  }
-
-  // The production accessor for the origin. Read once, guarded, and only on
-  // the path that has the method. Kept separate from the arithmetic so the
-  // experiment has exactly one place that touches the platform.
-  function ws46ReadStartDateMs() {
-    if (ws40Transport() !== 'native-hls') return null;
-    try {
-      if (typeof audioEl.getStartDate !== 'function') return null;
-      const v = audioEl.getStartDate();
-      return Number.isFinite(v) && v > 0 ? v : null;
-    } catch { return null; }
   }
 
   // Select the entry whose [startMs, stopMs) contains the playhead. The same
@@ -5179,13 +5102,7 @@ function seekMeasureRecordText() {
     if (!Number.isFinite(end)) { d.lastBranch = 'non-finite-target'; d.lastTarget = null; d.lastAfter = null; return; }
     const behindMs = Date.now() - programmeStartMs;
     if (behindMs < 0) { d.lastBranch = 'future-programme'; d.lastTarget = null; d.lastAfter = null; return; }
-    // WS46 EXPERIMENT: mirrors seekToProgramTime()'s arithmetic exactly, so
-    // the record reports the target the app really asked for. If this kept the
-    // old equation the snapshot would describe a seek that never happened and
-    // the device result would be unreadable.
-    const fallbackTarget = end - behindMs / 1000;
-    const target = ws46SeekTarget(ws46ReadStartDateMs(), programmeStartMs,
-      ws40Transport(), fallbackTarget);
+    const target = end - behindMs / 1000;
     const start = Number.isFinite(cur.seekableStart) ? cur.seekableStart : 0;
     if (target < start) { d.lastBranch = 'out-of-window'; d.lastTarget = target; d.lastAfter = null; return; }
     d.lastBranch = 'seeked';
@@ -5221,28 +5138,9 @@ function seekMeasureRecordText() {
     if (!Number.isFinite(end)) return;
     const behindMs = Date.now() - startMs;
     if (behindMs < 0) return; // future programme — nothing to seek to yet
-    // WS46 EXPERIMENT. On native HLS the target is derived from the platform's
-    // absolute media-timeline origin instead of from the buffered edge:
-    //
-    //     target = (startMs - getStartDate()) / 1000
-    //
-    // `seekableEnd` is not an input to that expression, so the transport-
-    // dependent gap between the buffered edge and the true edge cannot enter
-    // the result. On every other transport `ws46SeekTarget` returns the
-    // existing formula's value unchanged, so the hls.js path is untouched.
-    //
-    // The fallback is evaluated EAGERLY, so the pre-existing target always
-    // exists even if the platform read throws — reverting this experiment is
-    // deleting the call, not restoring a lost computation.
-    const fallbackTarget = end - behindMs / 1000;
-    const target = ws46SeekTarget(ws46ReadStartDateMs(), startMs,
-      ws40Transport(), fallbackTarget);
+    const target = end - behindMs / 1000;
     const start = Number.isFinite(cur.seekableStart) ? cur.seekableStart : 0;
-    // The window guard is checked against the target that will ACTUALLY be
-    // seeked to. Checking the fallback instead would let an experimental
-    // target land outside the DVR window and hand currentTime a position the
-    // element cannot reach — a new failure mode rather than a fixed one.
-    if (!Number.isFinite(target) || target < start) {
+    if (target < start) {
       showToast('Programmet ligger utanför spolbart område (3 timmar).');
       return;
     }
