@@ -8004,3 +8004,112 @@ proves only that that endpoint failed.
 playhead position still needs one owner glance, because desktop Chromium cannot
 decode SR's stream. The source data and the code path are both proven; the
 rendering of a *specific* moment is not.
+
+---
+
+## 2026-10-03 — E2 / E3 / E4 UX pass, second time round
+
+**State:** `main` = `39d0e21`. Suite **541/541** (532 before). Live:
+`app.e23e4764.js` / `styles.171d5438.css` / SW `minradio-754087ad`.
+Source `1b78db3`, artifacts `565d4bd` + `39d0e21`.
+
+All three changes verified in the driven DOM **and again on the live site**.
+
+### E2 — bigger icons, no circles, more space, always in the same place
+
+Owner: *"make the icons for spotify and youtube bigger and remove the circles
+around them instead. also make the distance between the icons slightly bigger to
+the thumb doesn't risk to click the wrong one. also right side align them on the
+card … the icons appear for users in the same position regardless of text length
+to the left on the same row."*
+
+| | before | after |
+|---|---|---|
+| glyph | 14 px | **20 px** |
+| circle | 26 px round button, tinted ring + 10 % fill | **removed** — no radius, no border, no background |
+| gap between them | 6 px | **14 px** |
+| position | moved with the title | **`margin-left: auto`**, fixed to the right edge |
+| tap target | 26×26 | **34×34** (20 px glyph + 7 px padding) |
+
+MEASURED at a short title ("Kort") and a long one ("Bills, Bills, Bills
+(Extended Dance Mix feat. Destiny's Child)"): `offsetFromRightEdge` = **0 at
+both**, `grewBy` = **0**. `iconsAtSamePlace: true`.
+
+**The tap target got LARGER, not smaller** — 34×34 vs the old 26×26. That is
+the point of the padding, and the CSS says so, because removing it would take
+the target below the old size while the owner's stated reason for enlarging is
+that a thumb was missing the icons.
+
+### E3 — a news broadcast no longer folds the chevron
+
+Owner: *"when news are played the chevron should not minimise. the current
+minimise behaviour should stay as is for radio channels and podcasts."*
+
+`playNews()` marks the track `isNewsBroadcast: true`; `updateNewsFold()` exempts
+it in a branch placed **before** the auto-collapse.
+
+**Why a marker was needed.** A news item and a podcast episode are both
+`kind: 'episode'`, so testing `kind` would have folded the chevron for podcasts
+too — the exact behaviour the owner excluded. The distinction only exists at the
+moment the news row is pressed, so that is where it is recorded.
+
+VERIFIED both directions, twice each, on the live site: news →
+`expanded: true`, radio → `expanded: false`, `allCorrect: true`.
+
+**A new debug handle was required.** SR's stream is CORS-blocked in desktop
+Chromium, so `audioEl` never exists, `playing` is permanently false, and a
+click-based check reports "never folds" for **both** kinds of playback — a false
+negative that would have looked like success. `window.__srFoldProbe` sets only
+the two preconditions the branch reads and calls the real function.
+
+### E4 — Info button matches the cog; Tests page rebuilt
+
+**Measured before:** cog = 44 px, `accent-soft` fill, `accent` glyph. Info =
+40 px, `transparent` fill, `--text-secondary` glyph. Same shape, different
+weight — two buttons of one kind reading as different controls. Every
+declaration is now copied from `.edit-btn` so they cannot drift apart again.
+Live: `sameDesign: true`, 44×44 both, same tint, same colour.
+
+**Tests panel, live measurements:**
+
+| | value |
+|---|---|
+| buttons block | y 273–464, **5 controls** |
+| results block | y 464–534, heading "Mätvärden" |
+| all buttons on the first screen | **true** |
+| results rendered (diagnostics on) | **1013 chars** |
+| prompt ids in the visible output | **none** |
+| copy button kept | **true** |
+
+Button labels rewritten to say what a button DOES — "Mät tidsförskjutning"
+rather than "Mät (läser bara)", "Testa ny tidsberäkning" rather than "Testseek
+FÖRESLAGEN". The formula each one tests moved into a muted hint beneath it, so
+simplifying the words does not delete what they measure.
+
+### Three guards that were NOT guards
+
+Found by mutation, not by assumption. Each reported green on broken code.
+
+1. **The E3 exemption, disabled with `false && isNewsBroadcast()`.** The string
+   `isNewsBroadcast()` is still in the file, so a presence check passed. The
+   guard now extracts the branches and asserts their **bodies**.
+2. **The Tests-page order, swapped in the final `el(...)` call.** The guard read
+   where the blocks are *built*, not where they are *appended*. Both are now
+   asserted — and the browser measurement is what made the requirement concrete
+   ("buttons on top", not "buttons declared first").
+3. **A regex-escaping bug in the guard's own scanner.** A heredoc turned `\n`
+   into a literal backslash-n inside a character class, so
+   `/'([^'\\n]*)'/g` scanned **no single-quoted string at all**. Only found
+   because mutation 6 was actually run.
+
+Plus four test-side faults during the work: a wrong `region()` end marker, a
+600-char window too small for the marker it looked for, `grab()` given
+`'function NAME'` instead of a bare name, and a block slice ending inside the
+`el()` call.
+
+### NOT PROVEN
+
+**No iPhone verification of any of this.** Every number above is desktop
+Chromium. Specifically unproven: how the 34 px targets feel under a real thumb,
+and whether iOS Safari routes the chevron/fold gesture as expected.
+
