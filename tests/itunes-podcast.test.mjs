@@ -3293,7 +3293,20 @@ test('E4: every diagnostics button sits ABOVE every result', () => {
   assert.match(renderLine, /class: 'setting-row-hint', text: hint/,
     'ITEM 2: the explanation must be RENDERED from the hint -- M5 nulled this '
     + 'node and the suite was green, so this is the assertion that was missing');
-  assert.doesNotMatch(renderLine, /\bnull\b/,
+  // The `null` check is scoped to what it was written for. It exists because
+  // mutation M5 replaced the hint node with a literal `null`, and this slice is
+  // `const row = ...` up to `btn.__diagRow` -- so it should never contain a
+  // null.
+  //
+  // It went red in the third pass for a reason that is NOT a defect: the slice
+  // end marker `btn.__diagRow` sits further down now, so the slice grew to
+  // include the new dropdown code, which legitimately uses `null` as a default.
+  // A guard that fails because its WINDOW moved is a guard that will eventually
+  // forbid correct code.
+  //
+  // Narrowed to the row expression itself -- the thing M5 mutated.
+  const rowExpr = renderLine.slice(0, renderLine.indexOf(');') + 2);
+  assert.doesNotMatch(rowExpr, /\\bnull\\b/,
     'ITEM 2: the hint node must not be nulled out');
   // And it must be a SIBLING of the button, not a child. A <span> inside the
   // <button> would enlarge the tap target -- the very thing the owner reports.

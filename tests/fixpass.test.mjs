@@ -909,10 +909,31 @@ test('WS26 R1: the panel header song comes from the ONE resolver, not the air', 
     return CODE.slice(a, CODE.indexOf('function', a + 10));
   })();
   // ONE expression decides the song, at the edge and behind it alike.
-  assert.ok(/const song = hit \|\| \(atLiveEdge \? \(nowPlaying\.song \|\| null\) : null\);/.test(RESOLVER),
-    'the song must come from ONE rule: the timeline whenever it has an entry, ' +
-    'with the on-air poll as the empty-timeline fallback at the live edge');
-  // The old edge-branch preference must be GONE. This is the regression guard
+  assert.match(RESOLVER, /const song = hit \|\|/,
+    'the song must come from ONE rule, and the TIMELINE must win it whenever '
+    + 'it has an entry at the playhead');
+  assert.match(RESOLVER, /atLiveEdge && onAirStillCurrent \? onAirNow : null/,
+    'ITEM 4, third pass: the on-air poll may only be the empty-timeline '
+    + 'fallback, at the edge, AND only for a song that is still CURRENT -- '
+    + 'otherwise a song that ended minutes ago is shown for a moment with no '
+    + 'song, which is what the owner reported');
+  // SUPERSEDED IN FORM, NOT IN REQUIREMENT. The old assertion pinned the literal
+  // expression `hit || (atLiveEdge ? (nowPlaying.song || null) : null)`. The
+  // requirement it protected -- one rule, timeline first, poll only as the
+  // empty-timeline fallback -- is unchanged and is asserted above as properties,
+  // so the next refinement cannot alter the rule while keeping the shape.
+  //
+  // The guard is the SONG's own window, not the playhead's: keying on the
+  // playhead would reintroduce the position/song conflation WS27 spent its
+  // whole commit removing.
+  assert.match(RESOLVER, /onAirNow\.startMs <= Date\.now\(\)/,
+    'ITEM 4: a song counts as current only while its own window contains now');
+  assert.match(RESOLVER, /Date\.now\(\) < onAirNow\.stopMs/,
+    'ITEM 4: and only before its stop time -- SR keeps reporting a finished '
+    + 'song with its old timestamps while talk is on air');
+  assert.match(RESOLVER, /Number\.isFinite\(onAirNow\.startMs\)/,
+    'ITEM 4: missing timestamps must NOT count as current -- an unbounded song '
+    + 'would never expire, which is the bug being fixed');
   // for the exact defect: if a future edit restores "at the edge trust the poll
   // first", the two halves can diverge again and the suite must say so.
   //
@@ -1448,21 +1469,76 @@ test('WS56: a cover for a song that is over is never shown', () => {
     'WS56: during talk the cover must be NOTHING -- the owner asked for "not '
     + 'showing a cover at all". A cover for a song that is over is the defect.');
 
-  // Step 3: the on-air song is a DIFFERENT one from the seeked song. Its cover
-  // must be used, and the seeked cover must not appear as a fallback.
+  // Step 3: the on-air song is a DIFFERENT one from the seeked song, and it is
+  // STILL PLAYING. Its cover must be used, and the seeked cover must not appear
+  // as a fallback.
+  //
+  // FIXTURE CORRECTION, 2026-10-03 (third pass), and it is the FIXTURE that was
+  // wrong, not the code. `ON_AIR` above stops at `WS27_NOW - 120_000` -- two
+  // minutes BEFORE now -- because it was written for a case about a song that
+  // had already ended. Step 3 asserts the opposite case: a song that is
+  // genuinely on air right now.
+  //
+  // ITEM 4's third pass made the fallback eligible only for a CURRENT song, and
+  // this step failed with `null` instead of 'COVER-TAYLOR'. That was the guard
+  // working: it refused a song whose window had closed. Modelling step 3 with
+  // an ended song would have made the test assert the owner's BUG.
+  //
+  // So the on-air song for this step gets a window that contains now, which is
+  // what `playlists/rightnow` returns while a song is actually playing.
+  const ON_AIR_NOW = {
+    title: 'Taylor Swift Song', artist: 'Taylor Swift',
+    startMs: WS27_NOW - 150_000, stopMs: WS27_NOW + 240_000,
+  };
   const w3 = ws27World({
     atLiveEdge: true,
-    timeline: [SEEKED, ON_AIR],
+    timeline: [SEEKED, { ...ON_AIR_NOW }],
     currentTime: WS27_NOW / 1000,
-    onAir: ON_AIR,
+    onAir: ON_AIR_NOW,
     onAirArtwork: 'COVER-TAYLOR',
     playheadArtwork: 'COVER-SEEKED',
   });
   const live = ws27Harness(CODE)(w3).resolvePlayheadMeta();
+  assert.equal(live.song.title, ON_AIR_NOW.title,
+    'harness: a genuinely on-air song at the edge must win -- the fallback is '
+    + 'still there, it is only guarded, not removed');
   assert.equal(live.artwork, 'COVER-TAYLOR',
     'WS56: at the edge the on-air song wins, so ITS cover must show');
   assert.notEqual(live.artwork, 'COVER-SEEKED',
     'WS56: the seeked song\'s cover must never be used as a fallback');
+});
+
+test('ITEM 4: a song whose window has CLOSED is not the current song', () => {
+  // The owner\'s exact case, asserted directly: the poll still reports a song
+  // that ENDED, and the panel must not present it as what is playing now.
+  //
+  // This is the fourth time this shape has been guarded in some form (WS24,
+  // WS27, WS56, and now the currency check), and each time for a slightly
+  // different reason. What makes it a separate test rather than another case in
+  // the one above: the two differ ONLY in the song\'s stop time, which is
+  // precisely the condition under test. If they were folded into one case, a
+  // change that broke the distinction would still leave a passing assertion.
+  const ENDED = {
+    title: 'Taylor Swift Song', artist: 'Taylor Swift',
+    startMs: WS27_NOW - 300_000, stopMs: WS27_NOW - 60_000, // ended a minute ago
+  };
+  const w = ws27World({
+    atLiveEdge: true,
+    timeline: [{ ...ENDED }],
+    currentTime: WS27_NOW / 1000,
+    onAir: ENDED,
+    onAirArtwork: 'COVER-TAYLOR',
+    onAirSongHasWindow: true,
+  });
+  const card = ws27Harness(CODE)(w).resolvePlayheadMeta();
+  assert.equal(card.song, null,
+    'ITEM 4: a song whose stop time has passed must NOT be presented as the '
+    + 'current song -- SR keeps reporting it while talk is on air, and showing '
+    + 'it is what the owner reported as the panel "falsely looking the last '
+    + 'song in the playlist up wrongly"');
+  assert.equal(card.artwork, null,
+    'ITEM 4: and no cover goes with it -- a stranger\'s cover under no title is '
+    + 'the R6 defect in a new place');
 });
 
 test('WS56: the fallback is gone even when a cover is present but for another song', () => {

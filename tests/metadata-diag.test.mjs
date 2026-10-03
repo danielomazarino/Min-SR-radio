@@ -986,10 +986,41 @@ test('WS2 Bug 3: swipe commit-expand leaves the same state as the chevron path',
   const rawOpen = APP_CODE.split("classList.toggle('open'").length - 1;
   assert.equal(rawOpen, 1,
     "the player's `open` class must be toggled in exactly one place (the shared helper)");
-  // The only other aria-expanded writer must be the News toggle, not the player.
-  const otherAria = (APP_CODE.match(/\.setAttribute\('aria-expanded'/g) || []).length - 1;
-  assert.equal(otherAria, 1,
-    'the only other aria-expanded writer is the News section toggle');
+  // SUPERSEDED (2026-10-03, third pass) -- and the reason is a NEW control,
+  // not a changed player rule.
+  //
+  // The guard counted every `aria-expanded` writer in the file and demanded
+  // exactly one besides the player's. ITEM 2 added a real DROPDOWN
+  // (`ws40Pick`), which legitimately writes `aria-expanded` twice -- once when
+  // it opens and once when it closes -- so the count went 1 -> 3 and the suite
+  // went red on correct code.
+  //
+  // The requirement never changed: the PLAYER's aria-expanded is written in one
+  // place (asserted immediately above, unchanged), and no OTHER writer may
+  // touch the player panel. Counting writers across the whole file cannot
+  // express that, because unrelated controls legitimately have their own.
+  //
+  // Restated to name the ALLOWED writers. A new control is then a deliberate
+  // addition to this list rather than an unexplained count drift, and a writer
+  // aimed at the player panel still fails -- which a count never guaranteed.
+  const ariaWriters = [...APP_CODE.matchAll(
+    /\.setAttribute\('aria-expanded',\s*([^)]*)\)/g)].map((m) => m[1].trim());
+  const newsToggle = ariaWriters.filter((a) => a.includes('newsExpanded'));
+  const playerHelper = ariaWriters.filter((a) => a.includes("'true' : 'false'"));
+  const dropdown = ariaWriters.filter((a) => a === "'false'" || a === "'true'");
+  assert.equal(playerHelper.length, 1,
+    "the player's aria-expanded must be written in exactly one place -- the "
+    + 'shared helper');
+  assert.equal(newsToggle.length, 1,
+    'the News section toggle must keep writing its own aria-expanded');
+  assert.equal(dropdown.length, 2,
+    'ITEM 2: the programme dropdown writes aria-expanded twice -- open and '
+    + 'close. Asserted explicitly so this count cannot drift silently.');
+  assert.equal(ariaWriters.length, playerHelper.length + newsToggle.length
+    + dropdown.length,
+    'every aria-expanded writer must be one of the three known controls. A new '
+    + 'one is a deliberate decision, not an accident -- and none of them may '
+    + 'target the player panel, which the helper assertion above enforces.');
   assert.ok(APP_CODE.includes("btn.setAttribute('aria-expanded', String(newsExpanded))"),
     'that other writer is the News toggle, which is unrelated to the player panel');
 });

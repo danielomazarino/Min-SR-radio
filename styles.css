@@ -899,6 +899,39 @@ a:focus-visible {
  * <span> inside the <button> would enlarge the tap target, which is the very
  * thing the owner is trying to avoid.
  */
+/* ITEM 2, third pass: the programme dropdown. It opens UNDER the control, so
+ * it can never cover a neighbouring button -- the owner asked for the numbered
+ * tests to be hard to mis-tap, and a popup over them would undo that. */
+.diag-list {
+  display: flex;
+  flex-direction: column;
+  margin: 4px 0 0;
+  /* Inset to the control's own left edge so it reads as belonging to it. */
+  padding-left: 2px;
+  border-left: 2px solid var(--accent-soft);
+}
+.diag-list-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 9px 10px;
+  min-height: 44px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+/* 44px is the tap-target floor, and the row is a full-width block so the whole
+   line is tappable rather than only the text. */
+.diag-list-item.selected {
+  color: var(--accent);
+  font-weight: 700;
+  background: var(--accent-soft);
+}
+
 .diag-action {
   display: flex;
   flex-direction: column;
@@ -2156,20 +2189,54 @@ body.player-gesture-lock {
 }
 
 .sheet-grab-zone {
-  /* BUG 1 fix: the swipe-to-close surface. Covers the grab handle + a bit of
-     the header so the swipe-down gesture has a comfortable target, while the
-     scrollable content below is untouched by the swipe logic. */
-  padding: 4px 0 6px;
+  /* BUG 1 fix: the swipe-to-close surface, kept.
+   *
+   * ITEM 1, THIRD PASS -- the owner's measurement, verbatim: "The dragable
+   * area is to be bigger than what it is now for the Info och anpassningar,
+   * preferred half the size of the screen instead of the top band and some
+   * pixels more."
+   *
+   * "Half the screen" is a HEIGHT, not more padding. Padding cannot deliver it:
+   * the previous pass grew the band from 33px to 109px by binding three
+   * existing elements, and the owner still reads it as "the top band and some
+   * pixels more". So the band is now a real, explicitly sized region -- 50dvh
+   * by default -- with the pill at its top and the rest of it empty but
+   * swipeable.
+   *
+   * WHY IT IS A SIBLING AND NOT A WRAPPER: the header and the actions row are
+   * already bound separately, and re-parenting them would move them, which the
+   * owner did not ask for. Growing this band instead leaves both exactly where
+   * they were and adds the area underneath them.
+   *
+   * The 50dvh default is overridable by the caller, and the JS reads the band
+   * back to decide whether a touch started inside it -- see SWIPE_ZONE in
+   * openSheet. One source of truth for the number, in one place.
+   */
+  padding: 10px 0 0;
+  min-height: 50dvh;
   touch-action: none; /* the zone owns vertical gestures */
   cursor: grab;
 }
 
+/* ITEM 1, THIRD PASS. The pill is the one element the owner could SEE the two
+ * surfaces disagreed on: the settings sheet showed it with a 14px gap under the
+ * title, the Info page with none, so the two bands sat at different heights and
+ * neither looked deliberate. The rule below is the single definition and both
+ * surfaces use it -- a second pill style is a second thing to keep in step, and
+ * this repo has already lost the stylesheet to a stale restore twice.
+ *
+ * The margin is now 0 and the SPACING is done by padding on each surface's own
+ * band, because the two surfaces need different amounts of it: the sheet has a
+ * header below the pill, the Info page has one too, but the sheet's band also
+ * carries the drag surface the owner wants enlarged. Keeping the gap out of the
+ * pill means each surface can be tuned without moving the other.
+ */
 .sheet-grab {
   width: 40px;
   height: 5px;
   border-radius: 3px;
   background: var(--border);
-  margin: 4px auto 14px;
+  margin: 0 auto;
 }
 
 .sheet-header {
