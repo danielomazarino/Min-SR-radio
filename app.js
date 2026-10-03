@@ -8277,9 +8277,27 @@ function seekMeasureRecordText() {
     //
     // Re-measured on resize/orientation change: the available width changes, so
     // a wrapped two-line title can become a one-line title and vice versa.
+    // WS54: TWO offsets, because THREE elements stack in a fixed band.
+    //
+    // MEASURED geometry, scroll-box relative:
+    //   grab zone -> top 0,   height 33   -> occupies 0..33
+    //   header    -> top 33,  height 51   -> occupies 33..84
+    //   day label -> top 84               -> sits immediately below the header
+    //
+    // So each sticky offset is the height of everything ABOVE it:
+    //   --card-grab-h   = the grab zone alone          (the header's offset)
+    //   --card-fixed-h  = grab zone + header TOGETHER  (the labels' offset)
+    //
+    // The earlier version told the HEADER to use the sum as well, which pushed
+    // the header to 84 and left the 33 px zone showing through as a gap. An
+    // intermediate version told the LABELS to use the header alone (51), which
+    // parked them 33 px too high -- under the header. Both were measured, not
+    // reasoned about; the table above is what the browser actually reports.
     const publishFixedHeight = () => {
-      const h = Math.round(grabZone.offsetHeight + header.offsetHeight);
-      sheet.style.setProperty('--card-fixed-h', `${h}px`);
+      const grabH = Math.round(grabZone.offsetHeight);
+      const headH = Math.round(header.offsetHeight);
+      sheet.style.setProperty('--card-grab-h', `${grabH}px`);
+      sheet.style.setProperty('--card-fixed-h', `${grabH + headH}px`);
     };
     publishFixedHeight();
     // A stale height is the flakiness the owner reported, so it must not be
@@ -8300,10 +8318,27 @@ function seekMeasureRecordText() {
     });
     window.addEventListener('resize', publishFixedHeight);
     window.addEventListener('orientationchange', publishFixedHeight);
-    // WS53: scope the gesture to the grab zone, exactly as openSheet does, and
-    // move the sheet. Binding the whole card meant every scroll touch also ran
-    // the drag logic -- BUG 1's mechanism, on this surface.
+    // WS53/WS54: scope the gesture OFF the scrolling programme list, and move
+    // the sheet rather than the grab zone.
+    //
+    // Binding the whole card meant every scroll touch also ran the drag logic --
+    // BUG 1's mechanism, on this surface. Binding ONLY the zone fixed that but
+    // created the owner's third defect: "touching and dragging down from the P1
+    // one section … needs to be possible regardless of where the tablau is
+    // scrolled". MEASURED: a drag starting on the header produced zoneSees 0,
+    // headerSees 3, transform none -- the listener never received it.
+    //
+    // So the gesture surface is now the grab zone PLUS the header -- the two
+    // FIXED, non-scrolling bands -- and never the list. That satisfies both
+    // requirements at once: the swipe works from the visible header at any
+    // scroll position, and scrolling the list still never runs the drag logic.
+    // Both are bound individually rather than wrapped in one band: the nodes are
+    // already appended as siblings, and re-parenting them would move them in the
+    // sticky stacking order. Both write to the SAME `sheet`, and `dragging` is
+    // per-call, so the two listeners cannot fight -- only the band the finger
+    // actually touched receives the events.
     enableSwipeToClose(overlay, grabZone, close, { axis: 'y', move: sheet });
+    enableSwipeToClose(overlay, header, close, { axis: 'y', move: sheet });
   }
 
   // Channel card: tablå for YESTERDAY + TODAY via scheduledepisodes (live

@@ -2657,3 +2657,89 @@ test('WS53: the SVG glyph is sized, not font-sized', () => {
   assert.doesNotMatch(rule, /font-size/,
     'font-size does nothing to an SVG and hid a 24 px render inside a 26 px button');
 });
+
+// ---------------------------------------------------------------------------
+// WS54 — three defects the owner reported from screenshots of the tablå card.
+//
+//   1. a gap between the P1 header and the "Igår" label, to be zero pixels
+//   2. the grab mark must be visible at ALL times
+//   3. dragging down must work FROM THE HEADER, at ANY scroll position
+//
+// All three were MEASURED in the driven DOM before being fixed. The numbers in
+// the comments are what the browser reported, not what seemed reasonable.
+// ---------------------------------------------------------------------------
+
+// --- The fixed band is THREE stacked elements, so TWO offsets. --------------
+// Measured geometry, scroll-box relative:
+//   grab zone -> top 0,  h 33  -> 0..33
+//   header    -> top 33, h 51  -> 33..84
+//   day label -> top 84        -> flush under the header
+test('WS54: the fixed band publishes two offsets, not one sum', () => {
+  const ctx = stripComments(region('function openContextCard', 'function openChannelCard', APP_JS));
+  // Match the setProperty ARGUMENT, not a hand-rolled equivalent: an earlier
+  // version wrote /--card-grab-h`,\s*`\$\{grabH\}px`/ which cannot match the
+  // real `setProperty('--card-grab-h', `${grabH}px`)` because of the quote and
+  // comma. The guard failed while the code was correct -- a test-side fault, and
+  // the second kind this session where the report was fiction.
+  assert.match(ctx, /setProperty\('--card-grab-h', `\$\{grabH\}px`\)/,
+    'the grab zone height must be published for the header to sit below it');
+  assert.match(ctx, /setProperty\('--card-fixed-h', `\$\{grabH \+ headH\}px`\)/,
+    'the label offset must be the WHOLE fixed band (grab zone + header)');
+  // The bug: using the header alone parks the labels 33 px too high, UNDER the
+  // header. Measured as gapToLabel0 = -33 at every scroll position.
+  assert.doesNotMatch(ctx, /setProperty\('--card-fixed-h', `\$\{headH\}px`\)/,
+    'the labels must clear the whole band, not just the header');
+});
+
+test('WS54: the header sticks BELOW the grab zone, not on top of it', () => {
+  const css = fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8');
+  const zone = css.slice(css.indexOf('.sheet.context-card > .sheet-grab-zone { top:'));
+  assert.match(zone.slice(0, 200), /\.sheet-grab-zone \{ top: 0; \}/,
+    'the mark sits at the very top');
+  assert.match(zone.slice(0, 260), /\.sheet-header \{ top: var\(--card-grab-h, 33px\); \}/,
+    'the header must be offset by the ZONE height -- both were top:0 and overlapped');
+});
+
+// --- Defect 1: the gap is .card-body's margin, not the label's padding ------
+test('WS54: the gap between header and first label is zero', () => {
+  const css = fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8');
+  // MEASURED: header bottom 176, card-body top 184 -- an 8 px gap that was
+  // exactly `.card-body { margin-top: 8px }`. An earlier attempt "fixed" this by
+  // subtracting the LABEL's padding from its sticky offset, which changed
+  // nothing at rest and then overlapped the header by 41 px when scrolled.
+  // Read the margin-top out of the rule. Matched on the DECLARATION rather than
+  // the whole line so a trailing comment cannot break it.
+  const rule = css.slice(css.indexOf('.card-body {'), css.indexOf('.card-loading'));
+  // `margin-top: 0` is written WITHOUT the `px` unit, which is valid CSS and is
+  // what the fix uses. An earlier regex required `\d+px` and so could not match
+  // the correct value -- the guard failed on the FIXED code.
+  const m = rule.match(/margin-top:\s*(\d+)(px)?/);
+  assert.ok(m, `.card-body must declare its margin-top explicitly; got: ${rule.trim()}`);
+  assert.equal(Number(m[1]), 0, 'the margin WAS the visible gap; it must be zero');
+});
+
+// --- Defect 3: the swipe must be bound to the header as well as the zone ----
+// MEASURED before the fix: a drag starting on the header gave zoneSees 0,
+// headerSees 3, transform none -- the listener never received the gesture.
+test('WS54: the swipe is bound to BOTH the grab zone and the header', () => {
+  const ctx = stripComments(region('function openContextCard', 'function openChannelCard', APP_JS));
+  const binds = [...ctx.matchAll(/enableSwipeToClose\(overlay, (\w+), close, \{ axis: 'y', move: sheet \}\)/g)]
+    .map((m) => m[1]);
+  assert.ok(binds.includes('grabZone'), 'the grab zone must remain a swipe surface');
+  assert.ok(binds.includes('header'),
+    'the header must ALSO be a swipe surface, or dragging from it does nothing');
+  assert.ok(!binds.includes('sheet'),
+    'the whole card must NEVER be a swipe surface -- that is what killed iOS scrolling');
+});
+
+// Every card type shares openContextCard, so all three inherit the fix. If a
+// future card stops using it, these guards would still pass -- so pin the fact.
+test('WS54: all three card types go through openContextCard', () => {
+  // Count the CALL SITES, not the definition: /openContextCard\(\{/ also matches
+  // the function declaration itself, which made this read 4 and report a defect
+  // that did not exist.
+  const def = /function openContextCard\(\{/.test(APP_JS);
+  const calls = [...APP_JS.matchAll(/openContextCard\(\{/g)].length - (def ? 1 : 0);
+  assert.ok(def, 'openContextCard must exist');
+  assert.equal(calls, 3, 'the tablå card plus both podcast cards share one implementation');
+});
