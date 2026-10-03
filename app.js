@@ -1425,6 +1425,38 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     }
   });
 
+  // Debug handle for the E3 fold decision (not user UI).
+  //
+  // Added because the E3 behaviour CANNOT be reached by clicking in a headless
+  // browser: SR's stream is CORS-blocked, so `audioEl` is never created,
+  // `audioEl.paused` is meaningless and `playing` is permanently false. The
+  // auto-fold branch therefore never runs offline, and a click-based check
+  // would report "the chevron never folds" for BOTH kinds of playback -- which
+  // is exactly the false negative that let earlier work claim a fix it could
+  // not see.
+  //
+  // It sets ONLY the two preconditions updateNewsFold reads, then calls the
+  // real function. The branch logic under test is the shipped code.
+  window.__srFoldProbe = (opts = {}) => {
+    const wasCurrent = state.current;
+    const wasPaused = audioEl.paused;
+    if (!audioEl) return 'NO_AUDIO_ELEMENT';
+    state.current = opts.isNews
+      ? { kind: 'episode', id: -1, isNewsBroadcast: true }
+      : { kind: 'live', id: -1 };
+    // updateNewsFold reads audioEl.paused, and `paused` is a getter, so it is
+    // overridden on the instance rather than assigned.
+    Object.defineProperty(audioEl, 'paused', { value: false, configurable: true });
+    newsExpanded = true;
+    newsManualExpanded = false;
+    newsAutoCollapsed = false;
+    updateNewsFold();
+    const after = { expanded: newsExpanded, autoCollapsed: newsAutoCollapsed };
+    state.current = wasCurrent;
+    Object.defineProperty(audioEl, 'paused', { value: wasPaused, configurable: true });
+    return after;
+  };
+
   // Debug handle for manual engine verification (not user UI).
   window.__srSeekable = () => {
     updateSeekableState();
@@ -3135,6 +3167,37 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   let newsExpanded = true;      // default: fully expanded, no collapsed state
   let newsManualExpanded = false; // user expanded manually during playback
   let newsAutoCollapsed = false;  // auto-collapse already fired this session
+
+  /**
+   * Is the thing now playing a NEWS BROADCAST?
+   *
+   * E3, second pass (2026-10-03). Owner: "when news are played the chevron
+   * should not minimise. the current minimise behaviour should stay as is for
+   * radio channels and podcasts."
+   *
+   * WHY IT NEEDS A FUNCTION AND NOT AN INLINE CHECK. The rows are `news-item`
+   * buttons carrying `data-stream-key: episode:<id>`, and a news item is played
+   * through `playNews()` -> `toggleTrack({ kind: 'episode', ... })`. So the
+   * playing track itself does NOT know it came from Nyheter -- an episode and a
+   * podcast episode are the same `kind`, and guessing from `kind` would collapse
+   * the chevron for podcasts too, which is precisely what the owner excluded.
+   *
+   * The distinction has to be recorded where the information still exists: at
+   * the moment the news row is pressed. So playNews() marks the track, and this
+   * reads the mark. One writer, one reader.
+   *
+   * A MARKER ON THE TRACK, not a module-level flag. A flag would have to be
+   * cleared on every exit path (stop, channel switch, a second news row) and any
+   * missed clear would leave the chevron permanently stuck open -- the failure
+   * mode of a flag outliving its session. A property travels with the track it
+   * describes, so a track that is not a news broadcast can never claim to be
+   * one.
+   */
+  function isNewsBroadcast() {
+    const cur = state.current;
+    return Boolean(cur && cur.isNewsBroadcast === true);
+  }
+
   function updateNewsFold() {
     // "Active playback" = a track is loaded AND audio is not paused. A
     // mid-session PAUSE is still the same playback session — the section
@@ -3148,6 +3211,18 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       newsExpanded = true;
       newsManualExpanded = false;
       newsAutoCollapsed = false;
+    } else if (playing && isNewsBroadcast()) {
+      // ---- E3: a news broadcast leaves the chevron ALONE. ----
+      //
+      // The owner watches the broadcast while reading it, and the section that
+      // holds the broadcast is the section he would be folding away. So this is
+      // a deliberate exemption, not an oversight: `newsAutoCollapsed` is left
+      // FALSE on purpose, which means that if he presses STOP and then plays a
+      // radio channel, the chevron folds exactly as it always has.
+      //
+      // Nothing else changes. Radio channels and podcasts take the branch below
+      // unchanged, which is what "the current minimise behaviour should stay as
+      // is" asks for.
     } else if (playing && !newsAutoCollapsed && !newsManualExpanded) {
       // Playback just started → auto-collapse ONCE. After that the user's
       // manual choice wins: playback events / renderPlayer / metadata
@@ -4555,7 +4630,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     const sec = (v) => (Number.isFinite(v) ? `${v.toFixed(2)} s` : 'okänd');
     const iso = (v) => (Number.isFinite(v) ? new Date(v).toISOString() : 'okänd');
     const lines = [];
-    lines.push('MÄTNING (WS40) — test av den FÖRESLAGNA mätningen');
+    lines.push('MÄTNING — test av den föreslagna tidsberäkningen');
     lines.push('Produktionens sökning är OFÖRÄNDRAD. Detta mäter bara.');
     lines.push('');
     if (!Number.isFinite(WS40.atMs)) {
@@ -4795,7 +4870,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     L.push('      is a CACHED buffered edge, not the timeline\'s programme start.');
     L.push('');
 
-    L.push('== BACKWARD PROGRAMME BINDING (WS42) ==');
+    L.push('== PROGRAM BINDING, READ BACKWARDS ==');
     push('bound at (raw ms)', d.prevBindBound, 'ms');
     push('bound at (UTC)', d.prevBindBound, 'iso');
     push('bound this long ago (ms)', d.prevBindBoundAgoMs, 'ms');
@@ -4822,7 +4897,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     L.push('      — the real handler is unchanged and still uses the captured value.');
     L.push('');
 
-    L.push('== SEEKABLE EDGE: SECOND INDEPENDENT READING (WS42) ==');
+    L.push('== SEEKABLE EDGE: SECOND INDEPENDENT READING ==');
     push('currentTime now (media s)', d.currentTimeNow, 's');
     push('cached seekableEnd now (media s)', d.cachedSeekableEndNow, 's');
     push('fresh seekableEnd now (media s)', d.freshSeekableEndNow, 's');
@@ -4880,9 +4955,9 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     push('startMs (raw ms)', d.startMs, 'ms');
     push('startMs (UTC)', d.startMs, 'iso');
     push('behindMs = now - startMs (ms)', d.behindMs, 'ms');
-    push('WS38 cached seekableEnd (media seconds)', d.cachedSeekableEnd, 's');
-    push('WS38 fresh seekableEnd (media seconds)', d.freshSeekableEnd, 's');
-    push('WS38 rate', d.rate);
+    push('cached seekableEnd (media seconds)', d.cachedSeekableEnd, 's');
+    push('fresh seekableEnd (media seconds)', d.freshSeekableEnd, 's');
+    push('rate', d.rate);
     L.push('');
 
     L.push('== TEST SEEKS RUN (this session) ==');
@@ -5190,7 +5265,7 @@ function seekMeasureRecordText() {
   const lines = [];
   // A measured value, or an explicit statement that nothing is measured yet.
   const anySeek = Number.isFinite(m.nowMs);
-  lines.push('MÄTNING (WS38) — råvärden, ingen tolkning');
+  lines.push('MÄTNING — råvärden, ingen tolkning');
   if (!anySeek) lines.push('Ingen sökning mätt ännu.');
   if (anySeek) {
     lines.push('');
@@ -5245,7 +5320,7 @@ function seekMeasureRecordText() {
     const iso = (v) => (Number.isFinite(v) ? new Date(v).toISOString() : 'okänd');
     const sec = (v) => (Number.isFinite(v) ? `${v.toFixed(2)} media-s` : 'okänd');
     const lines = [];
-    lines.push('MÄTNING (WS39) — medietimelines ursprung, oberoende av sökningen');
+    lines.push('MÄTNING — medietidens ursprung, oberoende av sökningen');
     const any = Number.isFinite(o.nowMs);
     if (!any) lines.push('Ingen mätning gjord ännu.');
     if (any) {
@@ -7401,6 +7476,11 @@ function seekMeasureRecordText() {
       audioUrl: item.audioUrl,
       duration: item.duration,
       artwork: item.imageUrl,
+      // E3: this is the ONLY place that marks a track as a news broadcast, and
+      // isNewsBroadcast() is the only reader. Written here because this is the
+      // last moment at which "came from the Nyheter list" is still knowable --
+      // toggleTrack receives the same shape for a podcast episode.
+      isNewsBroadcast: true,
     });
   }
 
@@ -8001,20 +8081,40 @@ function seekMeasureRecordText() {
     const ws40Box = el('p', { class: 'about-diag-note', text: '' });
     let ws40Choice = 0;
     const ws40ChoiceLabel = el('span', { class: 'setting-minmax', text: '—' });
+    // ---- E4, second pass (2026-10-03): labels a non-technical owner can act
+    // on. "Testseek FÖRESLAGEN" named a THESIS, not an action; the owner is
+    // being asked to compare two formulas for the same measurement, and the
+    // words have to say what the button DOES to the playback.
+    //
+    // The formula each button tests is still named underneath, in the muted
+    // hint, so the developer-facing detail survives the simplification instead
+    // of being lost. Renaming a control must not delete what it measures.
     const ws40Pick = el('button', {
       class: 'setting-row', type: 'button',
     });
-    ws40Pick.append(el('span', { class: 'setting-minmax', text: 'Program att testa' }),
+    ws40Pick.append(el('span', { class: 'setting-minmax', text: 'Vilket program' }),
       ws40ChoiceLabel);
     const ws40Measure = el('button', {
       class: 'setting-row', type: 'button',
-    }, el('span', { class: 'setting-minmax', text: 'Mät (läser bara)' }));
+    }, el('span', { class: 'setting-minmax', text: 'Mät tidsförskjutning' }));
+    ws40Measure.append(el('span', {
+      class: 'setting-row-hint',
+      text: 'läser bara — påverkar inte uppspelningen',
+    }));
     const ws40SeekNew = el('button', {
       class: 'setting-row', type: 'button',
-    }, el('span', { class: 'setting-minmax', text: 'Testseek FÖRESLAGEN' }));
+    }, el('span', { class: 'setting-minmax', text: 'Testa ny tidsberäkning' }));
+    ws40SeekNew.append(el('span', {
+      class: 'setting-row-hint',
+      text: 'hoppar enligt den föreslagna formeln',
+    }));
     const ws40SeekOld = el('button', {
       class: 'setting-row', type: 'button',
-    }, el('span', { class: 'setting-minmax', text: 'Testseek BEFINTLIG' }));
+    }, el('span', { class: 'setting-minmax', text: 'Testa nuvarande tidsberäkning' }));
+    ws40SeekOld.append(el('span', {
+      class: 'setting-row-hint',
+      text: 'hoppar enligt formeln som används idag',
+    }));
 
     // ---- WS40c: copy one whole, internally consistent snapshot. ----
     // Reads the same records the panel displays, at one instant, and never
@@ -8093,20 +8193,46 @@ function seekMeasureRecordText() {
       });
     });
 
-    const ws40Section = el('div', { class: 'about-diag' },
-      el('h3', { class: 'about-heading', text: 'Test av föreslagen mätning' }),
-      ws40Pick, ws40Measure, ws40SeekNew, ws40SeekOld, ws40CopyBtn, ws40Box);
+    // ---- E4, second pass: BUTTONS FIRST, OUTPUT BELOW. ----
+    //
+    // OWNER: "i propose that every button is on top of the page for user
+    // convenience, and all diagnostics to be copied beneath."
+    //
+    // Previously the copy button sat in the middle of the four action buttons
+    // and the measurement text came last, so reading the panel meant scrolling
+    // PAST the controls to find out what they had produced. Now: switch, then
+    // every button, then every result. The results are grouped in their own
+    // labelled block so a long readout cannot push the buttons off the screen.
+    const ws40Buttons = el('div', { class: 'diag-buttons' },
+      ws40Pick, ws40Measure, ws40SeekNew, ws40SeekOld, ws40CopyBtn);
 
-    // Built BEFORE the handlers below are wired, because the click handler
-    // toggles `is-off` on it. Declaring it after the handler would be a
-    // temporal-dead-zone error on the very first click.
-    const diagSection = el('div', { class: 'about-diag' },
-      el('h3', { class: 'about-heading', text: 'Felsökning' }),
-      diagSwitch,
+    const ws40Results = el('div', { class: 'diag-results' },
+      el('h4', { class: 'diag-subheading', text: 'Mätvärden' }),
       readout,
       readoutNote,
       seekRecordBox,
       originRecordBox,
+      ws40Box);
+
+    const ws40Section = el('div', { class: 'about-diag' },
+      el('h3', { class: 'about-heading', text: 'Test av tidsförskjutning' }),
+      el('p', { class: 'about-para',
+        text: 'Tryck på en knapp först. Resultaten hamnar nedanför, '
+          + 'och du kan kopiera allt med Kopiera all diagnostik.' }),
+      ws40Buttons,
+      ws40Results);
+
+    // Built BEFORE the handlers below are wired, because the click handler
+    // toggles `is-off` on it. Declaring it after the handler would be a
+    // temporal-dead-zone error on the very first click.
+    // ONE home for every readout. The five result nodes used to be children of
+    // diagSection directly, which meant the section owned them AND ws40Results
+    // also claimed them -- an element can only be in one place, so whichever
+    // node was appended last silently won and the other showed nothing. They
+    // are now assembled inside ws40Results only.
+    const diagSection = el('div', { class: 'about-diag' },
+      el('h3', { class: 'about-heading', text: 'Test och felsökning' }),
+      diagSwitch,
       ws40Section);
     // Inert until switched on: hidden, but present in the DOM.
     if (diagFlagRead() !== 'on') diagSection.classList.add('is-off');

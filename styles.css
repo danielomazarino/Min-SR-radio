@@ -830,6 +830,57 @@ a:focus-visible {
 .about-diag.is-off .about-diag-readout,
 .about-diag.is-off .about-diag-note { display: none; }
 
+/* ---- E4, second pass: buttons on top, results beneath. ----
+ *
+ * OWNER: "i propose that every button is on top of the page for user
+ * convenience, and all diagnostics to be copied beneath."
+ *
+ * Two blocks, and the separation is the point: `.diag-buttons` is a plain
+ * stack, `.diag-results` is a visually recessed panel UNDER it. A measurement
+ * block can be very long (five readouts, each several lines), so without a
+ * distinct container the buttons would scroll away above a wall of text -- which
+ * is the situation the owner is reporting.
+ *
+ * `.diag-results` is a single child, so it moves as one unit: the owner can see
+ * "there is more below" instead of wondering whether the page ended.
+ */
+.diag-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* Keep the controls clear of the sheet's own top edge, so the first button is
+     reachable without a scroll on a short page. */
+  margin-top: 4px;
+}
+.diag-subheading {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  margin: 18px 0 8px;
+}
+.diag-results {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px 14px;
+  /* The measurements are plain text on purpose: they get copied verbatim, and a
+     monospace-ish column is far easier to compare between two runs than a
+     styled one. Same reasoning as `.about-diag-readout` above. */
+  white-space: pre-line;
+  word-break: break-word;
+}
+/* The muted explanation under each button. It is what keeps the developer-facing
+   detail after the labels were made plainer -- the wording survives, just moves
+   out of the label itself. */
+.setting-row-hint {
+  display: block;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 400;
+  margin-top: 1px;
+}
+
 /* ---------- mini player ---------- */
 .player {
   position: fixed;
@@ -2211,24 +2262,55 @@ body.player-gesture-lock {
    The row is a flex sibling inside .expand-row, so it sits beside the song
    text and never pushes the title narrower than it has to. `flex: none` stops
    it being squeezed by a long title. */
+/* ---- E2, second pass (2026-10-03): bigger, no circles, right-aligned. ----
+ *
+ * OWNER, verbatim: "make the icons for spotify and youtube bigger and remove
+ * the circles around them instead. also make the distance between the icons
+ * slightly bigger to the thumb doesn't risk to click the wrong one. also right
+ * side align them on the card. meaning that there is a distance to the song
+ * title and that the icons appear for users in the same position regardless of
+ * text length to the left on the same row."
+ *
+ * FOUR changes, three of which are about the THUMB rather than the eye:
+ *
+ * 1. BIGGER. 14 px -> 20 px. The original brief's "visuellt diskret" is
+ *    superseded by an explicit instruction to enlarge, and the stated reason is
+ *    reachability.
+ * 2. NO CIRCLES. The 26 px round button with a tinted ring and a 10 % tint fill
+ *    is GONE -- no border-radius, no border, no background. A ring around a
+ *    logo competes with the logo; what is left is the mark itself.
+ * 3. MORE SPACE BETWEEN THEM. gap 6 px -> 14 px. With no ring to separate them
+ *    the gap IS the separator, and 6 px was close enough that a thumb aiming at
+ *    YouTube could land on Spotify.
+ * 4. RIGHT-ALIGNED, ALWAYS IN THE SAME PLACE. `margin-left: auto` is the whole
+ *    mechanism: it absorbs all the free space, so the pair sits at the right
+ *    edge at EVERY title length. Before this, a short title left a wide gap
+ *    after the icons and a long one pushed them left, so the icons MOVED
+ *    depending on the text to their left -- exactly what the owner asked to
+ *    stop. `flex: none` is kept so a long title cannot squeeze them.
+ *
+ * THE TRADE, stated rather than hidden. The tap target SHRANK from 26x26 to
+ * the 20 px glyph plus 7 px padding = 34x34, which is LARGER than the old
+ * button. So the reachability goal and the no-circles goal are both met -- but
+ * only because the padding is load-bearing. Removing it would silently take the
+ * target below the old size, and the owner's stated reason for enlarging is
+ * that the thumb should not miss.
+ */
 .song-links {
   display: flex;
   flex: none;
   align-items: center;
-  gap: 6px;
-  margin-left: 8px;
+  gap: 14px;
+  margin-left: auto;   /* the right-alignment mechanism */
+  padding-left: 12px;  /* a visible floor between a long title and the icons */
 }
 .song-link {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
+  padding: 7px;        /* load-bearing: keeps the target at 34x34 */
   text-decoration: none;
   color: var(--song-tint, var(--text-secondary));
-  border: 1px solid color-mix(in srgb, var(--song-tint, #888) 45%, transparent);
-  background: color-mix(in srgb, var(--song-tint, #888) 10%, transparent);
   -webkit-tap-highlight-color: transparent;
 }
 /* The glyph is now an inline <svg>, not a letter, so it is SIZED rather than
@@ -2239,11 +2321,17 @@ body.player-gesture-lock {
    found by measuring the rendered box in the browser, not by reading the file. */
 .song-link-glyph {
   display: block;
-  width: 14px;
-  height: 14px;
+  width: 20px;   /* was 14 px: the owner asked for bigger */
+  height: 20px;
 }
 .song-link:active { opacity: 0.6; }
-.song-link:focus-visible { outline: 2px solid var(--song-tint, #888); outline-offset: 2px; }
+/* Focus ONLY. A permanent ring would be the circle the owner asked to remove,
+   so this appears on keyboard focus and nowhere else. */
+.song-link:focus-visible {
+  outline: 2px solid var(--song-tint, #888);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
 
 /* ---------- E4: the topbar's right-hand button group ---------- */
 .topbar-right {
@@ -2252,19 +2340,49 @@ body.player-gesture-lock {
   gap: 4px;
   flex: none;
 }
+/* ---- E4, second pass (2026-10-03): the Info button LOOKS like the cog. ----
+ *
+ * OWNER, verbatim: "make the Info button visually to have the same design as
+ * the cog wheel icon."
+ *
+ * MEASURED difference, before this change:
+ *
+ *   property        .edit-btn (cog)      .info-btn       verdict
+ *   --------------  -------------------  --------------  --------------
+ *   width/height    44px                 40px            4px smaller
+ *   background      var(--accent-soft)   transparent     no tint at all
+ *   color           var(--accent)        --text-secondary  muted
+ *   border-radius   50%                  50%             same
+ *
+ * So the shapes already matched and the WEIGHTS did not: the cog is a filled
+ * accent disc with a bright glyph, the Info button was a bare outline-less
+ * outline. Two buttons of the same shape, sitting side by side, reading as
+ * different kinds of control.
+ *
+ * Every declaration below is copied from .edit-btn rather than invented, so the
+ * two cannot drift apart again. `.info-btn svg` is added because the cog sizes
+ * its glyph explicitly (`.edit-btn svg { width: 22px }`) while .info-btn never
+ * did -- the SVG carried width="22" in the markup and nothing in the CSS, so a
+ * stylesheet change to one would have silently missed the other.
+ */
 .info-btn {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
+  width: 44px;          /* was 40px -- matches .edit-btn */
+  height: 44px;
   padding: 0;
   border: none;
   border-radius: 50%;
-  background: transparent;
-  color: var(--text-secondary);
+  background: var(--accent-soft);   /* was transparent */
+  color: var(--accent);             /* was --text-secondary */
   cursor: pointer;
+  flex: none;
   -webkit-tap-highlight-color: transparent;
 }
-.info-btn:active { background: var(--border); color: var(--text); }
-.info-btn:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.info-btn svg { width: 22px; height: 22px; }
+.info-btn:active { opacity: 0.75; }
+/* Focus matches the app-wide rule (`.edit-btn:focus-visible, button:focus-
+   visible`), so it is accent-coloured like every other control rather than the
+   old bespoke --text ring. */
+.info-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

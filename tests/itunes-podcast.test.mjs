@@ -2660,13 +2660,131 @@ test('WS53: the song links carry the official brand marks as inline SVG', () => 
 });
 
 // The glyph is an SVG now, so it is sized rather than font-sized.
-test('WS53: the SVG glyph is sized, not font-sized', () => {
+test('WS53/E2: the SVG glyph is sized, not font-sized', () => {
   const css = fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8');
   const rule = css.slice(css.indexOf('.song-link-glyph {'), css.indexOf('.song-link:active'));
-  assert.match(rule, /width: 14px/, 'the glyph must have an explicit width');
-  assert.match(rule, /height: 14px/, 'the glyph must have an explicit height');
+  // SUPERSEDED BY THE OWNER, 2026-10-03 — the VALUE changed, the requirement did
+  // not. This guard asserted `width: 14px` literally, so enlarging the icon broke
+  // a test whose actual requirement ("the glyph must be explicitly sized, never
+  // left to the SVG default") is untouched. Restated to assert the PROPERTY at
+  // least as strongly: an explicit width AND height, no font-size, and a size at
+  // or above the floor the owner asked for. The WS53 defect this guard was written
+  // for — an SVG silently rendering at its 24 px default inside a smaller box —
+  // is still what makes it bite.
+  const w = rule.match(/width:\s*(\d+)px/);
+  const h = rule.match(/height:\s*(\d+)px/);
+  assert.ok(w, `the glyph must have an explicit width; got: ${rule.trim()}`);
+  assert.ok(h, `the glyph must have an explicit height; got: ${rule.trim()}`);
   assert.doesNotMatch(rule, /font-size/,
     'font-size does nothing to an SVG and hid a 24 px render inside a 26 px button');
+  // The owner asked for the icons to be BIGGER because a thumb was missing them.
+  assert.ok(Number(w[1]) >= 20,
+    `the glyph must be at least 20px after the owner's enlarge request; got ${w[1]}px`);
+  assert.equal(w[1], h[1], 'width and height must match or the mark is stretched');
+});
+
+// E2, second pass (2026-10-03): bigger, no circles, wider gap, right-aligned.
+test('E2: the circles are GONE, not restyled', () => {
+  const css = cssFlat; // declared by the WS55 block below; re-derived here
+  assert.ok(css.includes('.song-link'), '.song-link must still exist');
+  // Isolate the .song-link rule(s) on the comment-stripped CSS.
+  const bodies = [...css.matchAll(/(?:^|[{}])\s*\.song-link\s*\{([^}]*)\}/g)].map(m => m[1]);
+  assert.ok(bodies.length > 0, '.song-link must have a rule of its own');
+  const resting = bodies.filter(b => !/focus-visible/.test(b)).join('\n');
+  assert.doesNotMatch(resting, /border-radius:\s*50%/,
+    'the circle is removed, not restyled -- owner: "remove the circles"');
+  assert.doesNotMatch(resting, /^\s*border:\s*1px/m,
+    'the tinted ring is gone; a ring around a logo competes with the logo');
+  assert.doesNotMatch(resting, /background:/,
+    'the tinted fill is gone');
+  // The tap target must stay at least as large as the old 26px button even
+  // though the visible box shrank -- this is what makes "bigger" true for a
+  // thumb rather than only for the eye.
+  const pad = resting.match(/padding:\s*(\d+)px/);
+  assert.ok(pad, '.song-link must carry explicit padding to keep a real target');
+  assert.ok(Number(pad[1]) >= 4,
+    `padding is load-bearing for the tap target; got ${pad[1]}px`);
+});
+
+test('E2: the icon pair is right-aligned at EVERY title length', () => {
+  const css = cssFlat;
+  const m = css.match(/\.song-links\s*\{([^}]*)\}/);
+  assert.ok(m, '.song-links must have a rule of its own');
+  const body = m[1];
+  // `margin-left: auto` is the mechanism that keeps the pair in one place: it
+  // absorbs the free space, so a long title cannot push the icons left.
+  assert.match(body, /margin-left:\s*auto/,
+    'the icons must be pushed to the right edge by margin-left:auto');
+  assert.ok(!/justify-content:\s*space-between/.test(body),
+    'space-between would reintroduce position variance');
+  // The owner's thumb complaint: 6px let a thumb aiming at YouTube hit Spotify.
+  const gap = body.match(/gap:\s*(\d+)px/);
+  assert.ok(gap, '.song-links must declare an explicit gap');
+  assert.ok(Number(gap[1]) >= 12, `the gap must grow past the old 6px; got ${gap[1]}px`);
+});
+
+test('E3: a news broadcast does not auto-fold the chevron', () => {
+  // The end marker must come AFTER updateNewsFold in the file.
+  // `function updatePlayingMarks` is at line ~3104 and updateNewsFold at
+  // ~3169, so using it as the end marker made `region()` search FORWARD
+  // from updateNewsFold and find nothing -- a test-side fault that read as
+  // a missing exemption.
+  const ctx = stripComments(region('function updateNewsFold', "['play', 'pause', 'ended']", APP_JS));
+  // A TEXTUAL guard here is not enough, and mutation M4 proved it: replacing the
+  // condition with `false && isNewsBroadcast()` disables the exemption entirely
+  // while the string `isNewsBroadcast()` is still present, so an indexOf()
+  // presence check reported GREEN on fully broken code. That is the §2 trap --
+  // a guard that cannot fail is not a guard.
+  //
+  // So the branch is EXTRACTED and EXECUTED. It reads `playing`,
+  // `isNewsBroadcast()`, `newsAutoCollapsed` and `newsManualExpanded`, sets
+  // `newsExpanded`/`newsAutoCollapsed`, and that is the whole surface. The
+  // extraction is by brace matching from the real source, so a disabled branch
+  // produces the wrong result rather than passing on a stale substring.
+  const fn = stripComments(grab('updateNewsFold'));
+  assert.ok(fn.includes('isNewsBroadcast()'),
+    'the news exemption must be present in updateNewsFold');
+  const newsBranch = fn.slice(fn.indexOf('if (playing && isNewsBroadcast())'));
+  const radioBranch = fn.slice(newsBranch.indexOf('} else if'));
+  // A branch whose body is not an empty statement would fold news too.
+  const newsBody = newsBranch.slice(0, newsBranch.indexOf('} else if'));
+  assert.doesNotMatch(newsBody.replace(/isNewsBroadcast\(\)[\s\S]*\{/, ''),
+    /newsExpanded\s*=\s*false/,
+    'the news branch must NOT fold the chevron');
+  // Radio and podcasts must keep the old behaviour.
+  assert.ok(radioBranch.includes('!newsAutoCollapsed') && radioBranch.includes('!newsManualExpanded'),
+    'the existing auto-collapse must remain for radio channels and podcasts');
+  assert.match(radioBranch, /newsExpanded = false/,
+    'radio and podcasts must still auto-fold');
+  // Order matters and is now checked on the EXTRACTED source.
+  const exemptAt = fn.indexOf('isNewsBroadcast()');
+  const collapseAt = fn.indexOf('newsExpanded = false');
+  assert.ok(exemptAt < collapseAt,
+    'the exemption must come BEFORE the auto-collapse, or it never runs');
+});
+
+test('E3: exactly one writer marks a track as news', () => {
+  // A second writer would let a podcast collapse the chevron, which is the one
+  // behaviour the owner explicitly excluded.
+  // The DEBUG PROBE also constructs a news-marked track, so the count is now 2
+  // and this guard caught it -- which is the guard working. The probe is
+  // test-only (`window.__srFoldProbe`, never called by app code), so the
+  // requirement is "only playNews() among the PLAYBACK paths", asserted by
+  // excluding the probe explicitly rather than by loosening the count to 2.
+  const playbackWrites = [...stripComments(APP_JS)
+    .replace(/window\.__srFoldProbe[\s\S]*?\n  };/, '')
+    .matchAll(/isNewsBroadcast:\s*true/g)].length;
+  assert.equal(playbackWrites, 1,
+    'only playNews() may mark a track as a news broadcast');
+  // Window measured, not guessed: the marker sits after the audioUrl guard
+  // and a 6-line comment. 600 chars was too small and reported a missing
+  // write on code that has one.
+  assert.match(APP_JS, /function playNews\([\s\S]{0,1400}isNewsBroadcast: true/,
+    'the marker must be written where "came from Nyheter" is still knowable');
+  // The reader must be a strict equality check, not a truthy one, so a track
+  // carrying some other truthy flag cannot be mistaken for news.
+  assert.match(APP_JS, /cur\.isNewsBroadcast === true/,
+    'the reader must compare strictly, or an unrelated flag could fold the chevron');
 });
 
 // ---------------------------------------------------------------------------
@@ -2898,4 +3016,153 @@ test('WS55: the scrolling list keeps its gestures', () => {
   assert.match(sheet, /overflow-y:\s*auto/,
     'the sheet is the scroll container; if this cannot match, the counterweight '
     + 'guard above is no longer checking the thing it claims to check');
+});
+
+// ===========================================================================
+// E4, second pass (2026-10-03) — the Info button and the Tests panel.
+//
+// OWNER, verbatim:
+//   "make the Info button visually to have the same design as the cog wheel
+//    icon. Under tests go through the diagnostics and make is much more
+//    structured for a user, still keeping the copy button ... remove the
+//    references to the prompt ids and make the diagnostics buttons easier to
+//    understand ... i propose that every button is on top of the page for user
+//    convenience, and all diagnostics to be copied beneath."
+// ===========================================================================
+
+test('E4: the Info button is visually the same design as the cog', () => {
+  // Declared here rather than reusing the WS55 `cssFlat` block above, so this
+  // guard stands alone if that block is ever moved.
+  const flat = cssAll.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\s+/g, ' ').trim();
+  const bodies = (sel) => {
+    const esc = sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return [...flat.matchAll(new RegExp('(?:^|[{}])\\s*' + esc + '\\s*\\{([^}]*)\\}', 'g'))]
+      .map((m) => m[1]);
+  };
+  const info = bodies('.info-btn').filter((b) => !/:active|:focus/.test(b)).join('\n');
+  const cog = bodies('.edit-btn').filter((b) => !/:active|:focus/.test(b)).join('\n');
+  assert.ok(info.length > 0, '.info-btn must have a rule of its own');
+  assert.ok(cog.length > 0, '.edit-btn must have a rule of its own');
+  // The four things that made them look like different kinds of control.
+  for (const prop of ['width', 'height', 'border-radius', 'background', 'color']) {
+    const i = info.match(new RegExp(prop + ':\\s*([^;]+);'));
+    const c = cog.match(new RegExp(prop + ':\\s*([^;]+);'));
+    assert.ok(i, `.info-btn must declare ${prop}`);
+    assert.ok(c, `.edit-btn must declare ${prop}`);
+    assert.equal(i[1].trim(), c[1].trim(),
+      `.info-btn ${prop} must MATCH .edit-btn — owner: "the same design as the cog"`);
+  }
+});
+
+test('E4: the prompt ids are gone from everything the owner reads', () => {
+  // Scoped to the three record-text builders and the copy builder -- the only
+  // functions whose output lands on the Tests panel. Code COMMENTS keep their
+  // WS ids on purpose: they are the audit trail, and stripping them would make
+  // a past decision unexplainable.
+  // grab() takes a BARE function name. Passing 'function NAME' made the
+  // extractor report "extraction is broken" on code that is perfectly fine --
+  // the same class of fault as the `grab()` destructured-parameter trap.
+  const bodies = ['ws40RecordText', 'seekMeasureRecordText',
+    'originMeasureRecordText', 'ws40CopyDiagnostics']
+    .map((fn) => stripComments(grab(fn)))
+    .join('\n');
+  assert.ok(bodies.length > 0, 'the diagnostics text builders must exist');
+  // STRING LITERALS ONLY. The first version matched `\bWS\d{2}\b` across the
+  // whole body and reported 48 hits -- every one of them a CODE IDENTIFIER
+  // (`WS40.atMs`, `WS40.transport`, the WS41/WS42 record objects). Those are
+  // the storage field names; renaming them would be a refactor, not a copy
+  // edit, and they never reach the panel. What reaches the panel is what the
+  // builder PUSHES, so the guard reads the literals.
+  // The VISIBLE TEXT of every literal, with `${...}` interpolations removed
+  // FIRST. A template literal like `   transport: ${WS40.transport}` contains
+  // WS40 in its INTERPOLATION -- an identifier the owner never sees. Matching
+  // the raw literal text therefore reported the whole record as contaminated.
+  // Cutting the interpolation out leaves only the words actually painted, which
+  // is the thing the owner asked about.
+  const visible = (lit) => lit.replace(/\$\{[^}]*\}/g, '');
+  const literals = [
+    ...[...bodies.matchAll(/'([^'\n]*)'/g)].map((m) => m[1]),
+    ...[...bodies.matchAll(/"([^"\n]*)"/g)].map((m) => m[1]),
+    ...[...bodies.matchAll(/`([^`]*)`/g)].map((m) => m[1]),
+  ].map(visible);
+  const found = [...new Set(literals.filter((t) => /\bWS\d{2}\b/.test(t)))];
+  assert.deepEqual(found, [],
+    `no workstream id may appear in text the owner reads; found: ${found}`);
+});
+
+test('E4: every diagnostics button sits ABOVE every result', () => {
+  const ctx = stripComments(region('function openAbout', 'function addLongPress', APP_JS));
+  // Order is the requirement, so this is asserted by POSITION, not presence.
+  // The DECLARATION order is not the APPEND order, and only the append order is
+  // what the owner sees. Mutation M5 swapped the two arguments in the final
+  // `el(...)` call -- a real, visible regression -- and this guard reported
+  // GREEN, because it was reading where the blocks are BUILT rather than where
+  // they are PUT. Both are asserted now.
+  const builtButtons = ctx.indexOf("const ws40Buttons = el('div', { class: 'diag-buttons' }");
+  const builtResults = ctx.indexOf("const ws40Results = el('div', { class: 'diag-results' }");
+  assert.ok(builtButtons > -1, 'the buttons block must be built');
+  assert.ok(builtResults > -1, 'the results block must be built');
+  const appended = ctx.slice(ctx.indexOf('const ws40Section = el('));
+  assert.ok(appended.indexOf('ws40Buttons') > -1, 'the buttons block must be appended');
+  assert.ok(appended.indexOf('ws40Results') > -1, 'the results block must be appended');
+  assert.ok(appended.indexOf('ws40Buttons') < appended.indexOf('ws40Results'),
+    'the owner asked for every button ON TOP: the buttons must be appended '
+    + 'BEFORE the results, or the controls render below the measurements');
+  const buttonsAt = ctx.indexOf('class: \'diag-buttons\'');
+  const resultsAt = ctx.indexOf('class: \'diag-results\'');
+  assert.ok(buttonsAt > -1, 'the buttons must be wrapped in .diag-buttons');
+  assert.ok(resultsAt > -1, 'the results must be wrapped in .diag-results');
+  assert.ok(buttonsAt < resultsAt,
+    'the owner asked for every button on top and all results beneath');
+  // All five controls inside the buttons block, and NONE of the five readout
+  // nodes inside it -- a readout that drifted up would scroll the buttons away.
+  // Bound the buttons block by the START of the results block. Slicing to the
+  // first ');' after .diag-results instead ended the slice INSIDE the el() call,
+  // so `readout` -- a sibling named in the results argument list -- appeared to
+  // sit in the buttons block and the guard reported a layout fault that did not
+  // exist.
+  const block = ctx.slice(buttonsAt, resultsAt);
+  for (const b of ['ws40Pick', 'ws40Measure', 'ws40SeekNew', 'ws40SeekOld', 'ws40CopyBtn']) {
+    assert.ok(block.includes(b), `${b} must be in the buttons block`);
+  }
+  // The results block must own every readout, and the buttons block must own
+  // none of them. Asserted on the declaration list, which is the only place a
+  // node can be placed.
+  const resultsBlock = ctx.slice(resultsAt, ctx.indexOf('const ws40Section'));
+  for (const r of ['readout', 'readoutNote', 'seekRecordBox', 'originRecordBox', 'ws40Box']) {
+    assert.ok(resultsBlock.includes(r), `${r} must be in the results block`);
+    // The buttons block is the text BETWEEN the two declarations, which is
+    // exactly `block` above. Checking that is sufficient and cannot leak: a
+    // 400-char window from the .diag-buttons declaration reaches straight
+    // through the short results list and matched `readout` in it, reporting a
+    // layout fault that did not exist.
+    assert.ok(!block.includes(r), `${r} must NOT be in the buttons block`);
+  }
+});
+
+test('E4: the copy button is KEPT', () => {
+  // The owner said "still keeping the copy button as we still are to develop a
+  // solution for our sync and offset issues". Reordering must not drop it.
+  const ctx = stripComments(region('function openAbout', 'function addLongPress', APP_JS));
+  assert.match(ctx, /ws40CopyBtn/,
+    'Kopiera all diagnostik must survive the restructure');
+  assert.match(ctx, /Kopiera all diagnostik/,
+    'the copy button must keep its label');
+});
+
+test('E4: each diagnostics button says what it DOES', () => {
+  // "Testseek FÖRESLAGEN" named a thesis, not an action. Asserted on the
+  // presence of a plain-language label AND the surviving hint, so simplifying
+  // the wording cannot quietly delete the developer detail.
+  const ctx = stripComments(region('function openAbout', 'function addLongPress', APP_JS));
+  for (const [needle, why] of [
+    ['Vilket program', 'picks which programme to test'],
+    ['Mät tidsförskjutning', 'reads the offset without touching playback'],
+    ['Testa ny tidsberäkning', 'the proposed formula, as an action'],
+    ['Testa nuvarande tidsberäkning', 'the current formula, as an action'],
+  ]) {
+    assert.ok(ctx.includes(`text: '${needle}'`), `the button must read "${needle}" — ${why}`);
+  }
+  assert.match(ctx, /setting-row-hint/,
+    'the muted hint must survive, or the labels lose what they measure');
 });
