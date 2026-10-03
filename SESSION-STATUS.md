@@ -1009,3 +1009,93 @@ again my own stale expected value, resolved by md5 rather than by assuming.
 tablå card, scroll to the middle, and check that (a) the header sits flush against
 "Igår" with no gap, (b) the grab mark is still there, (c) dragging from the P1
 header closes the card. Then repeat on a podcast.
+
+## WS55 — whole top band draggable + enhancements feature table — 2026-10-03
+
+**Baseline:** `npm test` → **528/528** (run). **Now 532/532.**
+**Owner report, verbatim:** *"visually all is okey, but the band to touch on for
+the dragging down doesn't seem to cover the whole top area that is possible to
+use for the dragging down. it feels like one has to be very close to the
+position of the horizontal mark."*
+Second instruction: *"go through all of the file and make a full table of
+features covered in it and mark them done or undone."*
+
+**MEASURED before fixing** — computed `touch-action` per band on the tablå card:
+
+| band | y-range | h | touch-action | app owns it? |
+|---|---|---|---|---|
+| `.sheet-grab-zone` | 91–124 | 33px | `none` | YES |
+| `.sheet-header` | 124–175 | 51px | `manipulation` | no |
+| `.card-day-label` Igår | 175–205 | 30px | `manipulation` | no |
+| `.card-day-label` Idag | 205–235 | 30px | `manipulation` | no |
+
+**33 px usable of 144 px visible.** The complaint, as a number.
+
+**Cause was NOT the JS binding.** WS54 already bound the header and a synthetic
+header drag closes the card on desktop. The cause is `touch-action`: the zone
+declares `none`, the header never did, so it computed to `manipulation` and the
+UA may claim the drag as a scroll. Desktop never exercises that, which is why
+the headless run looked fine while the phone did not.
+
+**THE REACHABILITY TRAP, caught by measuring.** The day labels are now a swipe
+surface by **delegation** on the sheet with a new `within` filter. The obvious
+loop over `.card-day-label` was written first and bound **zero** listeners:
+`openContextCard` calls `buildBody()` before binding, and the tablå builder
+creates labels inside an async `.then()`. Measured: drag from a label gave
+`transform: none` 3/3 while the header closed 3/3. Sampling showed 2 labels
+present at 0 ms — they exist, just AFTER the synchronous pass. WS21/WS26 class:
+correct code that never runs.
+
+**MEASURED after, driven DOM:** usable **144px of 144px** (was 33/144). Closes
+from zone (y=101), header (y=150) and both labels (y=190, y=218), polled to
+settlement. Programme-row drag does NOT close. Upward drag from header AND from
+a label springs back (WS50 intact). Header drag at `scrollTop 3000` closes.
+`gapToLabel 0`, mark visible deep-scrolled. Podcast card: both bands `none`,
+33px/51px — verified, not assumed.
+
+**Confirmed on the LIVE site** after deploy: live serves `app.8692ea6b.js` /
+`styles.0abfe714.css`; drag closes from all four bands.
+
+**A finding I did NOT act on.** The live matrix closed 1/4 at y=218 while the
+drag itself worked 4/4. Cause: a 90px drag is far below the 266px distance
+threshold, so the close rides entirely on the flick branch (`elapsed < 250 &&
+d > 40`). Five measured runs: **148–225 ms against a 250 ms window** — as little
+as 25 ms headroom. My driver's 16ms inter-move sleep inflates this, so it is
+NOT a demonstrated product defect and **the window is unchanged**. Widening it to
+make the numbers look clean is the fudge-factor move the rules forbid.
+
+**Test count:** 528 → 532. **7 mutations, 7 RED**, checksums restored each time.
+
+**One test restated (SUPERSEDED, form only).** The WS53 signature guard pinned
+`/{ axis = 'x', move = null }/` literally, so adding `within` broke a test whose
+requirement is unchanged. Restated to assert the properties (`move` accepted,
+defaults null, `mover` falls back to `panel`) and mutation-verified to still bite
+(mutation 7).
+
+**Four test-side faults, all mine, each reporting a defect that did not exist:**
+a regex that could not match across a CSS comment; a helper returning only the
+FIRST of a two-rule selector list (answered the `position: sticky` question
+while appearing to answer the `touch-action` one); a `.card-list` guard whose
+selector matched a descendant rule so the sticky band answered for the list; and
+`upwardDidNotClose: false` from a probe that scrolled the wrong element — the
+`.sheet` is the scroller, not `.card-list`.
+
+**Deploy checks:** suite 532/532 **PASS** · remote `153cfaf`→`014a227` **PASS** ·
+live `app.8692ea6b.js` + `styles.0abfe714.css` 200 **PASS** · both served files
+**byte-identical to local** (`76a18bc0`, `f5a041cb`) **PASS** · live DOM drag
+matrix **PASS**.
+
+**Enhancements log:** WS55 entry plus a FULL FEATURE TABLE over every E-, B-,
+owner-reported and context-card item, each DONE or UNDONE with evidence named.
+DONE and UNDONE are separated, and within them code-proven / driven-DOM-proven /
+device-verified. B4 was first written as one vague row from memory and corrected
+to its four real items, read back from the log rather than recalled.
+
+**NOT DONE / named as not done:** no iPhone verification of anything; E2
+exact-match links not buildable from SR data (product decision); the
+pre-existing `styles.css` brace imbalance untouched; the flick window unchanged
+pending one device reading from the owner.
+
+**Next:** owner to check build **`1eae491`** — drag down from anywhere in the top
+band of a tablå card, including on "Igår"/"Idag", and report whether a normal
+short flick closes it.
