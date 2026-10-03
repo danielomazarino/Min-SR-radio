@@ -8234,3 +8234,99 @@ comparison that **cannot fail** and therefore proved nothing.
 - **The lockscreen fix itself was never seen.** Chromium cannot load the stream.
 - Item 4's auto-fold has never run against a real song change; it is
   code-proven and driven-test-proven only.
+
+---
+
+## 2026-10-03 (second pass) — four owner corrections, LIVE, build `2828b59`
+
+Three of these four were **my previous work being wrong**. Two of the three were
+wrong in ways only the owner could see.
+
+### ITEM 1 — the Info page gets the settings sheet's swipe band
+
+**MEASURED before:** the settings sheet has a `.sheet-grab-zone` that owns the
+gesture; the Info page had a bare `.reader-topbar` and no band of its own.
+
+**MEASURED live after:** `grab h29 ta:none` + `topbar h53 ta:none` =
+**82 px** swipeable, was 53. `.reader-body` still `manipulation` — the scrolling
+text is deliberately not bound, which is the BUG 1 regression.
+
+### ITEM 2 — "the frist button now especially"
+
+**The problem was not the wording. It was that the control was MISLABELLED.**
+`ws40Pick` is not a test — it is the **SELECT that chooses which programme** the
+others measure. It opens a dropdown and produces no measurement by itself.
+
+Numbering it "1." and hinting "Börja med den här" therefore told the owner to
+press something that cannot produce a result, and made a dropdown look like
+step one of a four-step test.
+
+**MEASURED live:** `Vilket program` carries no number and reads "Väljer vilket
+PROGRAM du vill mäta"; the four actions are numbered **1–4**, copy last. The
+numbers now travel *with each entry* instead of being derived from the array
+index — an index silently renumbered every action the moment a non-action
+joined the table, which is the mistake being fixed.
+
+### ITEM 3 — "you have not done the changes of text i wanted under poddar"
+
+The owner was right, and the cause was **my misreading of the instruction**. The
+brief said *"Remove the text '371 poddar från Sveriges Radio och iTunes'"*. My
+first pass read that as "move the number into the explanatory sentence" and kept
+`${all.length} poddar`. The instruction was to remove the **count**.
+
+**MEASURED live:** channels sub-line is now `Sök på två tecken eller färre.` —
+no number anywhere. Verified as ABSENT in the hashed bundle too (`grep -c` → 0).
+
+The two-/three-character thresholds **stay**: they are what stops a short search
+looking broken (measured: two characters already return 45 SR rows). Removing
+them too would have been a second, unintended regression.
+
+### ITEM 4 — the expansion bug, and a DIAGNOSIS I DISCARDED
+
+**My first diagnosis was wrong, and the owner's correction is what proved it.**
+I concluded the manual override latched and never reset. The owner then wrote:
+*"i saw now once the extended menu expand when a song play, so what i wrote
+about is not fully true"*.
+
+That falsifies it: a latched override would have broken the **folding** too, and
+folding worked. Theory discarded rather than patched.
+
+**THE REAL CAUSE, measured.** The panel **opens** as soon as the song title
+exists, but the album cover arrives only after the iTunes lookup resolves — a
+network round trip **after** the panel opened. `repaintExpandPanel()` had three
+call sites (`paintNowPlaying`, `paintProgramTitle`, the timeline merge) and **the
+artwork writers were not among them**.
+
+So auto-open painted the ♪ placeholder and never caught up, while a manual
+unfold re-ran the render *after* the lookup had landed — which is exactly why
+the owner saw the full cover on a manual unfold.
+
+**It was never "not expanding". It was expanding with stale content.** Both
+writers now repaint (the cache hit and the fetch result), and the repaint is
+asserted to follow the write it repaints.
+
+The latch is still fixed, as a **later** fix rather than *the* fix, and the
+comment now says so: a comment claiming a reset that no code performed is a
+defect on its own terms. The override lapses on the next **song** via a key
+rather than a timer, so there is no reset step to forget.
+
+### DEPLOY
+
+`663230b`. First live check served the **old** `app.c432a352.js` with the new
+assets 404ing — **propagation, not a failed deploy**: the commit was confirmed on
+the remote and the raw host 404ed the new bundle. Confirmed propagated on the
+next poll, then re-verified against build `2828b59`.
+
+### TESTS
+
+545 → **547**. Two guards restated as SUPERSEDED, one correcting my misreading
+rather than a changed requirement. Mutations **M10–M13 all red first time**:
+M10 removes the fetch repaint, M11 relatches the override, M12 puts the count
+back, M13 renumbers the SELECT. Checksums byte-identical after each.
+
+### NOT PROVEN
+
+- **No iPhone verification.** The Info band, the swipe feel and the expanded
+  panel all still need the device.
+- **ITEM 4's fix has not been seen working.** The repaint is code-proven and
+  driven-test-proven; it has not been observed on a real song change.
