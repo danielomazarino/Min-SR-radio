@@ -1717,7 +1717,8 @@ body.player-gesture-lock {
   padding-top: 0;
 }
 .sheet.context-card > .sheet-grab-zone,
-.sheet.context-card > .sheet-header {
+.sheet.context-card > .sheet-header,
+.sheet.context-card > .card-body > .card-list > .card-day-label {
   position: sticky;
   /* Stacked offsets: the grab zone sticks at the very top, the header directly
      beneath it. Both are opaque, so a label can never show through either. */
@@ -1733,6 +1734,55 @@ body.player-gesture-lock {
 .sheet.context-card > .sheet-header {
   padding-top: 4px;
   box-shadow: 0 1px 0 var(--border);
+}
+
+/* ---- WS55: the WHOLE top band is a drag surface, not just the mark. ----
+ *
+ * The owner: "the band to touch on for the dragging down doesn't seem to cover
+ * the whole top area that is possible to use for the dragging down. it feels
+ * like one has to be very close to the position of the horizontal mark."
+ *
+ * MEASURED, in the driven DOM, on the tablå card (492x760):
+ *
+ *   band                 y-range   height  touch-action    app owns it?
+ *   -------------------  --------  ------  -------------  -----------
+ *   .sheet-grab-zone     91 - 124    33px  none           YES
+ *   .sheet-header       124 - 175    51px  manipulation   no
+ *   .card-day-label Igår 175 - 205   30px  manipulation   no
+ *   .card-day-label Idag 205 - 235   30px  manipulation   no
+ *
+ * So of the 144 px a finger sees at the top of the card, only 33 px -- the strip
+ * holding the 5 px mark -- was actually guaranteed to reach the app's gesture
+ * code. That is the owner's "one has to be very close to the mark", stated as a
+ * number: the reliable target was 33 px tall and centred on a 5 px line.
+ *
+ * The cause is not the JS binding. WS54 already bound enableSwipeToClose to
+ * BOTH the grab zone and the header, and a synthetic drag from y=145 (inside the
+ * header) really does close the card. The cause is `touch-action`.
+ *
+ * `.sheet-grab-zone` sets `touch-action: none`, which tells the browser "the app
+ * handles vertical gestures here, do not scroll". The header never got that
+ * declaration, so it computed to `manipulation` -- the UA is free to claim a
+ * drag as a scroll. On desktop Chromium that never matters; on the owner's
+ * iPhone Safari claims it and the sheet does not move. A headless run can
+ * therefore show the header swipe "working" while the device still refuses it,
+ * which is exactly the trap this repo keeps re-learning.
+ *
+ * The fix is to make the CSS authorise what the JS already binds, for the whole
+ * fixed band: the grab zone, the header, AND the day labels that stick directly
+ * beneath them. Every one of those is a FIXED, non-scrolling band -- the only
+ * ones in the card -- so giving them `touch-action: none` costs nothing and
+ * cannot fight the programme list, which keeps `manipulation` and stays
+ * scrollable.
+ *
+ * Deliberately NOT done: `touch-action: none` is not applied to the sheet or to
+ * `.card-list`. The list is the scroller. Taking its gestures would restore the
+ * very defect (WS50/WS51) where every scroll touch also ran the drag logic.
+ */
+.sheet.context-card > .sheet-grab-zone,
+.sheet.context-card > .sheet-header,
+.sheet.context-card > .card-body > .card-list > .card-day-label {
+  touch-action: none;
 }
 
 /* WS54: the GAP under the header.
