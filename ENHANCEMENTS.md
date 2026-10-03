@@ -8113,3 +8113,124 @@ Plus four test-side faults during the work: a wrong `region()` end marker, a
 Chromium. Specifically unproven: how the 34 px targets feel under a real thumb,
 and whether iOS Safari routes the chevron/fold gesture as expected.
 
+
+---
+
+## 2026-10-03 — the five-item pass + the stale lockscreen cover (LIVE, build `80b7f49`)
+
+Four owner-reported UI changes and one owner-reported bug, shipped together.
+Source `2ed615d` + `80b7f49`, artifacts `1aabf70`. Suite **541 → 545**.
+
+### ITEM 1 — the settings sheet's whole top band is now draggable
+
+**MEASURED before:** `.sheet-grab-zone` was **33 px**; `.sheet-header` 32 px and
+`.sheet-actions` 44 px both computed to `touch-action: manipulation`.
+
+**MEASURED after (live DOM):** all three report `touch-action: none`, heights
+33 + 32 + 44 = **109 px** swipeable, up from 33.
+
+BUG 1 still holds and that is why this is not a revert: none of the three bands
+scrolls. The pick list and the news slider are untouched, so a list touch still
+never reaches the drag logic.
+
+### WS56 — the stale lockscreen cover (the owner's bug)
+
+> *"there was a Taylor Swift album cover on the lock screen … but when the radio
+> talk started and the song from Taylor was over the cover showed that old stale
+> Tove Styrke cover … instead of not showing a cover at all."*
+
+**Two defects, not one.** Fixing only the first would have shipped the second.
+
+1. **The writer.** `playheadArtwork` was cleared only on a song **CHANGE**.
+   Reaching live again is not a change in that path, so a seek's cover survived
+   indefinitely.
+2. **The reader.** `resolvePlayheadMeta()` fell back to `playheadArtwork`
+   unconditionally. During talk the timeline carries no song, so the winning song
+   is not the on-air song and a **stale cover won by default**.
+
+Fixed at both. The cover now shows only when it was fetched **for** the song the
+playhead resolves — keyed on `seekArtworkSongKey` — and is `null` otherwise.
+
+**Why fixed at the reader too:** the reader is reached on every tick from the
+`timeupdate` path, so a cover that has become stale is corrected immediately. A
+writer-only fix would need *a seek* to trigger the clear — the WS21/WS26 shape,
+where correct code cannot run on the path the owner actually uses.
+
+**NOT device-verified.** Desktop Chromium cannot load SR's DVR stream, so the
+lockscreen itself was never observed. What is proven: the resolver returns
+`null` for a talk-radio world where the pre-fix code returned a cover, driven
+through the real extracted function with a canary on `pickByPosition`.
+
+### ITEM 2 — Tests page: numbered controls, each explained
+
+Numbers 1–5 so a bug report can say "tryck 3". **MEASURED live:** all five
+present, each with a hint, 8 px between controls, `hintInsideButton: false` on
+all five. Copy stays **last** — the workflow is "press 1–4, then 5 to copy".
+
+The hint is a **sibling** of the button, never a child: nested, it would enlarge
+the tap target the owner wants smaller.
+
+### ITEM 3 — search and empty states, both tabs
+
+**MEASURED live, channels tab:** box visible, placeholder + aria-label
+`Sök radiokanal`, heading `Kanaler från Sveriges Radio`, `52 kanaler`, 0 rows.
+Searching `p3` returns exactly the two P3 channels.
+
+**MEASURED live, podcasts tab:** heading `Poddar från Sveriges Radio och
+iTunes`, `371 poddar`, 0 rows.
+
+**Two defects I introduced and the browser caught, not the suite:**
+
+| defect | consequence |
+|---|---|
+| `switchTab` still had `style.display = tab === 'podcasts' ? '' : 'none'` | the channels tab had **no way to search at all** |
+| `clearSearch()` cleared `items.podcasts` unconditionally | switching Kanaler → Poddar rendered **channel rows under the podcast heading** |
+
+The first survived because my first pass edited the *other* `style.display` line.
+Neither was catchable by a source-text assertion — both lines were individually
+reasonable and only became wrong in combination with tab-generality. That is the
+§14 lesson made concrete: the browser read the rendered DOM and found both at
+once.
+
+### ITEM 4 — the expanded panel folds itself, and stops at the mid player
+
+Open when song information is present, closed when it is not. Driven from
+`paintNowPlaying` — the one function every song change already reaches — and
+**never** from `timeupdate`, which would fight the finger 4×/second. Guarded on
+`if (playerMinimized) return false`, the boundary the owner drew.
+
+The panel builder was lifted out of the click handler into a named toggle so the
+auto-fold drives the **same** panel; one builder, not two.
+
+Player rows gained vertical space only. **MEASURED live:** `padding: 11px 16px
+13px` (was `10px 16px 12px`) and `.player-header` `padding: 0 0 6px` (was `0 0
+4px`). Inline values byte-identical, so the structural text column does not move.
+
+### TESTING
+
+**Seven guards restated as SUPERSEDED**, each with the owner's reason recorded.
+Most are *stronger* than before — the WS53 guard went from checking one swipe
+call to checking three bands plus a regression guard that no scrolling surface
+is ever bound.
+
+**Mutations: 11 run. 8 went red first time; 3 did not, and are reported as
+failed guards rather than counted as coverage:**
+
+| # | mutation | first result | what was wrong |
+|---|---|---|---|
+| M5 | null out every rendered hint | **GREEN** | the guard read the table, not the rendering site |
+| M6 | revert separation to 2 px | **GREEN** | `region()` matched the rule name inside its own comment |
+| M7 | widen the player's inline padding | **GREEN** | nothing guarded "without moving anything horizontally" |
+
+All three now red. Two harness faults were found by *running* them: an extractor
+whose first brace matched the **destructuring** brace and returned a 43-char
+signature, and a cover-ownership check written as `x === (x || x)` — a
+comparison that **cannot fail** and therefore proved nothing.
+
+### NOT PROVEN
+
+- **No iPhone verification of anything here.** The swipe band, the fold
+  gesture, the tap-target size and the lockscreen all need the owner's device.
+- **The lockscreen fix itself was never seen.** Chromium cannot load the stream.
+- Item 4's auto-fold has never run against a real song change; it is
+  code-proven and driven-test-proven only.
