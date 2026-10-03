@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = 'd6f20f1';
+  const APP_BUILD = 'd416178';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -8563,7 +8563,29 @@ function seekMeasureRecordText() {
     // (see openAbout's close); it is NOT re-added per open, because an
     // accumulating listener per open is the WS1 leak this repo already paid
     // for once.
-    const dismissWs40List = () => { if (ws40ListOpen) closeWs40List(); };
+    // ITEM 2, THIRD PASS -- MEASURED LIVE, and the first version of this did not
+    // work at all: tapping "Vilket program" left aria-expanded on "false" and no
+    // list appeared.
+    //
+    // WHY IT IS AN EXPLICIT CONTAINMENT CHECK rather than a reliance on
+    // `stopPropagation`: the observed symptom was that one tap opened and closed
+    // the list, leaving `aria-expanded` on "false" with nothing rendered. The
+    // propagation semantics are fiddly enough that asserting them in a comment
+    // is how the first version got this wrong in the first place -- and a
+    // comment that argues about event ordering and is subtly wrong is worse than
+    // no comment.
+    //
+    // So the requirement is stated directly and is true regardless of ordering:
+    // a click that happened INSIDE the control or the list must not dismiss it.
+    // That is the property, it is checkable, and it cannot be broken by moving a
+    // listener or changing a registration phase.
+    const dismissWs40List = (e) => {
+      if (!ws40ListOpen) return;
+      const t = e.target;
+      if (t instanceof Element
+        && (t.closest('.diag-action') || t.closest('.diag-list'))) return;
+      closeWs40List();
+    };
     document.addEventListener('click', dismissWs40List);
     ws40Measure.addEventListener('click', () => {
       const e = ws40Candidates()[ws40Choice];
