@@ -9214,7 +9214,12 @@ function seekMeasureRecordText() {
       tab = next;
       tabChannels.setAttribute('aria-selected', String(tab === 'channels'));
       tabPodcasts.setAttribute('aria-selected', String(tab === 'podcasts'));
-      searchInput.style.display = tab === 'podcasts' ? '' : 'none';
+      // ITEM 3: the box is on BOTH tabs now. This line still hid it on the
+      // channels tab -- it was left over from when the box was podcast-only,
+      // and my first pass edited the OTHER `style.display` line in openSheet,
+      // so this one survived and the defect was invisible until the live DOM
+      // was read. Caught in the browser, not by the suite.
+      setSearchTab(tab);
       setTitle();
       if (!loaded[tab]) loadItems(tab);
       renderList();
@@ -9231,7 +9236,18 @@ function seekMeasureRecordText() {
     function clearSearch() {
       clearTimeout(searchTimer);
       searchQuery = '';
-      items.podcasts = [];
+      // ITEM 3, found IN THE BROWSER and not by the suite: this cleared
+      // `items.podcasts` only, because it was written when the search box
+      // existed on the podcast tab alone. With the box on BOTH tabs, switching
+      // Kanaler -> Poddar left the channel rows in place and rendered them
+      // under the podcast heading -- the owner would have seen channels listed
+      // as podcasts.
+      //
+      // The suite could not catch this: every guard asserted the SOURCE TEXT of
+      // the handler, and this line was perfectly reasonable source text. It is
+      // only wrong in combination with the new tab-generality, which is exactly
+      // the class the browser exists for (§14).
+      items[tab] = [];
       // NOT loaded.podcasts = false -- see the note in the input handler. The
       // catalogue is cached in memory; marking it unloaded strands the sheet on
       // skeletons with nothing scheduled to replace them.

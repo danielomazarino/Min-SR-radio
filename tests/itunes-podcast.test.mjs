@@ -1325,7 +1325,44 @@ test('WS44c: a stale external row cannot be labelled a result for a new query', 
     + 'tab and loading another shows results for a search nobody ran');
 });
 
-test('WS44c: the empty state is actually styled', () => {
+// ITEM 3 -- two defects the SUITE COULD NOT CATCH, found by reading the live
+// DOM (§14). Both were shipped in the first pass of this item and both are
+// guarded here so they cannot come back.
+//
+// What made them invisible: every WS44c guard asserts SOURCE TEXT. Both lines
+// were perfectly reasonable source text. They were only wrong in combination
+// with the new tab-generality, so no single-file assertion could see it. The
+// browser read the rendered box and the rendered rows and found both at once.
+test('ITEM 3: the search box is visible and correctly labelled on BOTH tabs', () => {
+  const switchTab = stripComments(region('function switchTab', '}', APP_JS));
+  // The old line hid the box on the channels tab. Asserted as ABSENT, because
+  // the requirement is that the box is reachable from both tabs and a
+  // `display: none` on either is the defect.
+  assert.doesNotMatch(switchTab, /searchInput\.style\.display/,
+    'ITEM 3: the box must be visible on both tabs -- hiding it on the channels '
+    + 'tab leaves the owner with no way to search for a channel');
+  assert.match(switchTab, /setSearchTab\(tab\)/,
+    'ITEM 3: switching tabs must retitle the box, or it reads "Sok radiokanal" '
+    + 'while a podcast list is on screen');
+});
+
+test('ITEM 3: switching tabs cannot show one tab\'s rows under the other\'s heading', () => {
+  // The clearSearch defect: it cleared `items.podcasts` unconditionally, written
+  // when the box was podcast-only. With the box on both tabs, Kanaler -> Poddar
+  // left the CHANNEL rows in place and rendered them under the podcast heading.
+  //
+  // Guarded on the PROPERTY -- the rows cleared must be the ACTIVE tab's rows.
+  // Asserting the literal `items[tab]` would break the next legitimate rename;
+  // asserting `items.podcasts` is the bug itself.
+  const clearSearch = stripComments(region('function clearSearch', '}', APP_JS));
+  assert.match(clearSearch, /items\[(\w+)\] = \[\];/,
+    'ITEM 3: clearSearch must clear the ACTIVE tab\'s rows');
+  assert.doesNotMatch(clearSearch, /items\.podcasts = \[\];/,
+    'ITEM 3: clearing a hardcoded tab is the defect -- switching Kanaler -> '
+    + 'Poddar then showed channel rows under the podcast heading');
+});
+
+test('ITEM 3: the empty state is actually styled', () => {
   // Added after the CSS was lost twice in one session by a stale /tmp snapshot
   // restore. The JS test above only asserts the class NAME is emitted; it
   // cannot tell whether any rule styles it, so a prompt could render as
