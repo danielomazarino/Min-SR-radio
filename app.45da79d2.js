@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '2828b59';
+  const APP_BUILD = 'd6f20f1';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -1747,7 +1747,57 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // MEASURED: with an empty timeline row 4 renders BLANK, which is not what
     // the owner saw, so the empty case was not their cause -- but the
     // fallback is still the correct degradation and is kept.
-    const song = hit || (atLiveEdge ? (nowPlaying.song || null) : null);
+    // ITEM 4, THIRD PASS -- and this is the SECOND attempt at this bug, so the
+    // first one's reasoning is recorded here rather than deleted.
+    //
+    // OWNER: "moving to live from being behind automatically loads the last
+    // song played in the player even if the song is not shown of row 4. so it
+    // looks lie the extended player falsely looks the last song in the playlist
+    // up wrongly."
+    //
+    // ATTEMPT 1 WAS WRONG, and the owner caught the reasoning before it shipped:
+    // it deleted the `|| (atLiveEdge ? nowPlaying.song : null)` fallback. The
+    // owner asked whether this had been fixed before, and it had -- WS27
+    // (c016cdb) introduced that fallback deliberately, for a reason stated in
+    // its own commit message: "the edge only decides the EMPTY-timeline
+    // fallback, which goes to the poll and never to a blank." During talk SR
+    // sends no per-song times, so the timeline IS empty, and deleting the
+    // fallback would blank the panel in exactly the case it exists to cover.
+    // That is a regression, and it was reverted.
+    //
+    // WHY THE FALLBACK IS STILL THE RIGHT SHAPE. Row 4 does not use it, so on
+    // its face the two surfaces can differ -- but that is not the defect the
+    // owner reported, and unifying the two selectors is not the fix. The real
+    // defect is that the fallback offers a song that is no longer CURRENT.
+    //
+    // MEASURED, why a finished song comes back at all. `fetchNowPlaying`
+    // assigns `nowPlaying.song` straight from `playlist.song`, and the SAME
+    // song is appended to the timeline by `keep(song)` with the same start and
+    // stop times. So the timeline entry expires at `stopMs`; after that `hit`
+    // is null and the timeline is empty. The poll, however, keeps reporting
+    // `playlist.song` -- SR returns the last song with its old timestamps while
+    // talk is on air -- so the fallback resurrects it. A song that ended
+    // minutes ago is therefore the panel's answer for a moment that has no
+    // song at all, while row 4 correctly shows nothing.
+    //
+    // THE FIX, and it is a GUARD not a removal: the fallback may only offer a
+    // song that still contains "now". One condition, stated once, on the one
+    // value that decides it. This keeps WS27's behaviour for a genuinely
+    // on-air song (the case its test protects) and refuses a finished one,
+    // which is the owner's case.
+    //
+    // It is deliberately NOT keyed on the playhead: the question is whether the
+    // SONG is current, and the song's own window answers that. Keying on the
+    // playhead would reintroduce the position/song conflation that WS27 spent
+    // its whole commit removing.
+    const onAirNow = nowPlaying.song;
+    const onAirStillCurrent = Boolean(
+      onAirNow
+      && Number.isFinite(onAirNow.startMs)
+      && Number.isFinite(onAirNow.stopMs)
+      && onAirNow.startMs <= Date.now()
+      && Date.now() < onAirNow.stopMs);
+    const song = hit || (atLiveEdge && onAirStillCurrent ? onAirNow : null);
     // The cover follows the SONG, not the position -- and now not the position
     // class either. Two cover fields belong to two different songs, so which
     // one is shown must be decided by WHICH SONG WON above. Behind live that
@@ -8371,6 +8421,8 @@ function seekMeasureRecordText() {
     // which programme to test, so a single session can cover three.
     const ws40Box = el('p', { class: 'about-diag-note', text: '' });
     let ws40Choice = 0;
+    let ws40List = null;
+    let ws40ListOpen = false;
     const ws40ChoiceLabel = el('span', { class: 'setting-minmax', text: '—' });
     // ---- E4, second pass (2026-10-03): labels a non-technical owner can act
     // on. "Testseek FÖRESLAGEN" named a THESIS, not an action; the owner is
@@ -8382,6 +8434,10 @@ function seekMeasureRecordText() {
     // of being lost. Renaming a control must not delete what it measures.
     const ws40Pick = el('button', {
       class: 'setting-row', type: 'button',
+      // ITEM 2, THIRD PASS: it is a real dropdown now, so it says so -- to
+      // assistive tech as well as to the eye. `aria-haspopup` without a real
+      // popup is the mismatch that let this ship described-but-not-built.
+      'aria-haspopup': 'listbox', 'aria-expanded': 'false',
     });
     ws40Pick.append(el('span', { class: 'setting-minmax', text: 'Vilket program' }),
       ws40ChoiceLabel);
@@ -8447,10 +8503,68 @@ function seekMeasureRecordText() {
         `${new Date(e.startMs).toISOString().slice(11, 19)} `
         + `${(e.title || '').slice(0, 22)}`;
     };
-    ws40Pick.addEventListener('click', () => {
-      ws40Choice += 1;
-      syncWs40Choice();
+    // ITEM 2, THIRD PASS. OWNER: "pressing on the button Vilket program- does
+    // not open a dropdown as you say."
+    //
+    // The owner is right and the fault is mine. I described this as "the SELECT
+    // that chooses which programme" and gave it the hint "Valjer vilket PROGRAM
+    // du vill mata", while the handler did `ws40Choice += 1` -- it cycled to the
+    // next programme on every tap and opened nothing. A control that advances
+    // without showing what it advanced to is the least understandable thing on
+    // the page, and describing it as a selector made that worse, not better.
+    //
+    // It is a real dropdown now: tapping reveals the candidate list, the current
+    // choice is marked, tapping a row selects it and closes.
+    //
+    // The candidates are unchanged -- still `ws40Candidates()`: programmes from
+    // the CURRENT channel's already-fetched schedule that have already started
+    // and sit inside the buffered window. Nothing new is fetched, so this adds
+    // no latency and no new failure mode.
+    //
+    // WHY `syncWs40Choice` STILL EXISTS: it is the single place that formats the
+    // chosen programme's label, and the dropdown now calls it instead of
+    // incrementing. One formatter, so the label in the button and the label in
+    // the list cannot describe the same choice differently.
+    const closeWs40List = () => {
+      ws40ListOpen = false;
+      if (ws40List) ws40List.remove();
+      ws40Pick.setAttribute('aria-expanded', 'false');
+    };
+    ws40Pick.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (ws40ListOpen) { closeWs40List(); return; }
+      const c = ws40Candidates();
+      if (!c.length) return; // nothing to choose; the label already says so
+      ws40ListOpen = true;
+      ws40Pick.setAttribute('aria-expanded', 'true');
+      ws40List = el('div', { class: 'diag-list', role: 'listbox' },
+        ...c.map((entry, i) => {
+          const label = `${new Date(entry.startMs).toISOString().slice(11, 19)} `
+            + `${(entry.title || '').slice(0, 30)}`;
+          const row = el('button', {
+            class: `diag-list-item${i === ws40Choice ? ' selected' : ''}`,
+            type: 'button', role: 'option',
+            'aria-selected': String(i === ws40Choice), text: label,
+          });
+          row.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            ws40Choice = i;
+            syncWs40Choice();
+            closeWs40List();
+          });
+          return row;
+        }));
+      // Placed AFTER the control, so it can never cover the numbered buttons
+      // above it -- the owner asked for those to be hard to mis-tap, and a
+      // popup over them would undo that.
+      ws40Pick.parentNode.insertBefore(ws40List, ws40Pick.nextSibling);
     });
+    // A tap elsewhere closes it. The listener is removed when the page closes
+    // (see openAbout's close); it is NOT re-added per open, because an
+    // accumulating listener per open is the WS1 leak this repo already paid
+    // for once.
+    const dismissWs40List = () => { if (ws40ListOpen) closeWs40List(); };
+    document.addEventListener('click', dismissWs40List);
     ws40Measure.addEventListener('click', () => {
       const e = ws40Candidates()[ws40Choice];
       if (!e) return;
