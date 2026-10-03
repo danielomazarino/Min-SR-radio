@@ -845,8 +845,32 @@ const GESTURES = stripComments(region(
   'function enablePlayerGestures(', '// ---- minimize:', APP_JS));
 const GESTURE_FINISH = stripComments(region(
   'const finish = (e) => {', 'const registered = [', APP_JS));
+// WS2's chevron guard. The start marker MOVED on 2026-10-03 and the reason is
+// worth recording, because it is the same trap as the `swipeSurface` rename and
+// the same trap the WS53 comment in itunes-podcast.test.mjs describes.
+//
+// The region used to begin at `expandBtn.addEventListener('click'`, which is
+// where the panel-building body used to LIVE. ITEM 4 lifted that body verbatim
+// into a named `toggleExpandPanel` so the auto-fold could drive the same panel,
+// leaving the listener as a one-line call. The region therefore began AFTER the
+// code it was guarding and both WS2 tests failed on correct code -- a guard
+// reporting a defect that does not exist, which is worse than no guard because
+// it invites "fixing" working code.
+//
+// The marker now points at the CONSTRUCT, not at the listener. The requirement
+// is "the chevron path builds and removes the panel, wires the swipe and grows
+// upward", and all of that is inside `toggleExpandPanel` now. Anchoring on the
+// construction means a future refactor that moves the body again cannot silently
+// stop this guard from seeing it.
 const EXPAND_BTN = stripComments(region(
-  "expandBtn.addEventListener('click'", '// Direct AAC streams', APP_JS));
+  'expandPanelToggle = function toggleExpandPanel()', '// Direct AAC streams', APP_JS));
+
+// The listener itself is still guarded separately: it must exist, and it must
+// route through the shared toggle rather than building a second panel. A second
+// builder would mean two panels that do not share the chevron state -- the exact
+// drift WS2 Bug 3 was about.
+const EXPAND_LISTENER = stripComments(region(
+  "expandPanelToggle = function toggleExpandPanel()", 'enableSwipeToClose(panel, panel, fold, { axis: \'y\' })', APP_JS));
 
 test('WS2 Bug 1 (WS23 restated): seekToLive targets just BEHIND the edge, not onto the boundary', () => {
   // The defect: `audioEl.currentTime = end` — exactly the buffered end.
@@ -1055,6 +1079,95 @@ test('WS2: the chevron path still works exactly as before', () => {
   assert.ok(APP_CODE.indexOf('function setExpandOpen(open)')
     < APP_CODE.indexOf("expandBtn.addEventListener('click'"),
   'setExpandOpen must be defined before the chevron handler that calls it');
+  // ITEM 4: the chevron must route through the SHARED toggle, not build a
+  // second panel. Two builders would mean two panels that do not share the
+  // chevron state or the swipe binding -- which is precisely the drift WS2
+  // Bug 3 was about, reappearing one level up.
+  assert.match(EXPAND_LISTENER, /expandPanelToggle = function toggleExpandPanel\(\)/,
+    'ITEM 4: the panel builder must be a named construct the auto-fold can '
+    + 'also call -- an inline listener cannot be driven from anywhere else');
+  assert.match(APP_CODE, /expandBtn\.addEventListener\('click', \(\) => \{[\s\S]{0,200}?expandPanelToggle\(\)/,
+    'ITEM 4: the chevron tap must go through the shared toggle');
+  // And the auto-fold must be REACHABLE, which is the WS21/WS26 lesson: a
+  // correct, tested driver that nothing calls is the most expensive defect in
+  // this repo, and it has happened twice. The first pass of ITEM 4 shipped
+  // exactly that -- autoFoldExpandPanel existed, was right, and was called from
+  // nowhere. The call site is asserted here so it cannot go missing again.
+  assert.match(APP_CODE, /if \(expandPanelToggle\) autoFoldExpandPanel\(\);/,
+    'ITEM 4: autoFoldExpandPanel must actually be CALLED -- an uncalled driver '
+    + 'changes nothing the owner can see');
+  // It must be called from a path every song change already reaches. Pinned to
+  // paintNowPlaying because that is the proven one: the live poll, the seek
+  // path and the episode path all call it. A driver hung off `timeupdate`
+  // instead would fire ~4x/second and could fight the user's finger.
+  const autoFoldAt = APP_CODE.indexOf('if (expandPanelToggle) autoFoldExpandPanel();');
+  assert.ok(autoFoldAt > -1, 'ITEM 4: the auto-fold call must exist');
+
+  // CONTAINMENT, not file offset. A first attempt asserted `autoFoldAt >
+  // paintNowPlayingIndex`, which is meaningless: `paintNowPlaying` is declared
+  // LATER in the file than the `timeupdate` listener that can also reach it, so
+  // the comparison tested the order of two declarations rather than where the
+  // call sits. It went red on correct code.
+  //
+  // What must actually be proven is that the call is INSIDE paintNowPlaying's
+  // body, which needs the body's extent -- so it is brace-matched here, with the
+  // same destructuring-brace care documented in fixpass.test.mjs. And the
+  // negative half is asserted by asking the timeupdate LISTENER's own slice,
+  // not by an offset.
+  function bodyEndOf(src, fnName) {
+    const start = src.indexOf(`function ${fnName}(`);
+    assert.ok(start > -1, `canary: ${fnName} must exist`);
+    const paren = src.indexOf(')', start);
+    const open = src.indexOf('{', paren);
+    let d = 0;
+    for (let i = open; i < src.length; i += 1) {
+      if (src[i] === '{') d += 1;
+      else if (src[i] === '}') { d -= 1; if (d === 0) return i; }
+    }
+    throw new Error(`canary: unbalanced braces after ${fnName}`);
+  }
+  const paintStart = APP_CODE.indexOf('function paintNowPlaying()');
+  const paintEnd = bodyEndOf(APP_CODE, 'paintNowPlaying');
+  assert.ok(paintEnd - paintStart > 200,
+    'canary: the brace match must reach the body, not stop at the signature');
+  assert.ok(autoFoldAt > paintStart && autoFoldAt < paintEnd,
+    'ITEM 4: the auto-fold must live INSIDE paintNowPlaying, the one function '
+    + 'every song change already reaches (the live poll, the seek path and the '
+    + 'episode path all call it)');
+  // The listener is a CALL, not a declaration, so the brace-matcher (which keys
+  // on `function NAME(`) cannot be used here. The negative half is therefore
+  // asserted on a fixed window from the call, which is safe because the listener
+  // body is short and the assertion is only that a 700-char window does not
+  // mention the driver -- a window far shorter than the distance to the next
+  // `function` declaration.
+  const tuAt = APP_CODE.indexOf("audioEl.addEventListener('timeupdate'");
+  assert.ok(tuAt > -1, 'canary: the timeupdate listener must exist');
+  assert.ok(!APP_CODE.slice(tuAt, tuAt + 700).includes('autoFoldExpandPanel'),
+    'ITEM 4: the auto-fold must NOT be driven from timeupdate -- that runs ~4x '
+    + 'a second and would fight the user\'s finger');
+  // The owner's boundary, verbatim: "this fold should stop at the mid player
+  // function and not go all the way down to the minimised player". A fold that
+  // fell through to minimize would collapse the whole bar instead of the panel.
+  // The slice must span the DRIVER FUNCTION, not run from the call site to some
+  // unrelated marker. A first attempt ran `autoFoldAt -> hasSongInformation`,
+  // but `hasSongInformation` is declared BEFORE `autoFoldExpandPanel`, so
+  // indexOf returned an EARLIER offset and the slice was empty -- the guard
+  // then reported the boundary missing on code that has it.
+  //
+  // `region()` is used, with the start marker the function header, so the slice
+  // is the function and can never come out empty or inverted.
+  // The end marker must be CODE, not a comment: `region()` searches the
+  // comment-stripped source, so a marker that is itself a comment is never
+  // found. The next statement after the driver is the `timeupdate`
+  // registration, which is code and is unambiguous.
+  const autoFoldBody = stripComments(region('function autoFoldExpandPanel()',
+    "audioEl.addEventListener('timeupdate'", APP_CODE));
+  assert.ok(autoFoldBody.length > 200,
+    'canary: the driver slice must contain the function, not be empty or '
+    + 'inverted');
+  assert.match(autoFoldBody, /if \(playerMinimized\) return false;/,
+    'ITEM 4: the auto-fold must stop at the mid player and never touch the '
+    + 'minimised player -- that is the boundary the owner drew');
 });
 
 // =====================================================================

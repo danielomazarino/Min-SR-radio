@@ -1227,21 +1227,48 @@ test('WS44c: the SR search matches the description as well as the name', () => {
 
 test('WS44c: the unsearched podcast list shows a prompt, not 371 rows', () => {
   const renderList = stripComments(region('function renderList', 'async function loadItems', APP_JS));
-  // The gate must be on podcasts AND an empty query. Either half alone is wrong:
-  // gating on the tab alone would hide the channels list too.
-  assert.match(renderList, /if \(tab === 'podcasts' && !searchQuery\) \{/,
-    'the long list must be gated on the podcast tab and an empty query');
+  // SUPERSEDED (2026-10-03), and the reason is the owner's decision, recorded
+  // verbatim: "Secondly for consistence remove the radio channel list when
+  // Kanaler is clicked and implement a similar search box as for Poddar".
+  //
+  // WHAT CHANGED: the gate used to be podcasts-ONLY, on the reasoning that
+  // "~52 channels fit on a screen or two and a channel is picked by
+  // recognition". The owner weighed that and decided consistency wins, so
+  // channels are now gated too. The old assertion -- 'channels must stay
+  // browsable' -- asserted the OPPOSITE of the current requirement.
+  //
+  // WHAT DID NOT CHANGE, restated as the property rather than the constant so
+  // the next wording change cannot lose it: BOTH tabs are gated on an empty
+  // query, and NEITHER shows its rows before a search.
+  assert.match(renderList,
+    /if \(!searchQuery && \(tab === 'podcasts' \|\| tab === 'channels'\)\) \{/,
+    'both tabs must be gated on an empty query -- the owner asked for the '
+    + 'channel list to be removed as well, "for consistence"');
   assert.match(renderList, /class: 'pick-empty'/,
     'an empty state must be rendered in place of the rows');
   // The count must come from the loaded catalogue, not a hardcoded number.
   assert.match(renderList, /\$\{all\.length\} poddar/,
     'the prompt must state how many podcasts exist, from the real catalogue');
-  // Channels are exempt and must NOT be gated: ~52 rows fit on a screen or two
-  // and a channel is picked by recognition, not by remembering its name.
-  const gate = renderList.slice(renderList.indexOf("tab === 'podcasts' && !searchQuery"));
-  const beforeChannels = gate.slice(0, gate.indexOf('for (const item of all)'));
-  assert.ok(!/tab === 'channels'/.test(beforeChannels),
-    'channels must stay browsable -- the gate is podcasts-only');
+  // ITEM 3: the bold heading is now the NAME OF THE LIST, and the count moved
+  // into the explanatory sentence. The old 'Sök för att hitta poddar' heading
+  // is gone -- the owner's exact instruction. Asserted as absent, because a
+  // heading that came back would be a regression the owner would see at once.
+  assert.doesNotMatch(renderList, /Sök för att hitta poddar/,
+    'the old bold heading must be gone -- it is now the list name');
+  assert.match(renderList, /Poddar från Sveriges Radio och iTunes/,
+    'the podcast heading must name the list');
+  assert.match(renderList, /Kanaler från Sveriges Radio/,
+    'the channel heading must mirror the podcast one');
+  assert.match(renderList, /\$\{all\.length\} kanaler/,
+    'the channel prompt must state the real channel count too');
+  // Both prompts come from ONE code path, so the two tabs cannot drift apart
+  // again -- which is exactly how the wording diverged before.
+  const gateIdx = renderList.indexOf('if (!searchQuery &&');
+  const gateEnd = renderList.indexOf('for (const item of all)');
+  assert.ok(gateIdx !== -1 && gateEnd > gateIdx,
+    'the gate must sit before the row loop, or it gates nothing');
+  assert.match(renderList.slice(gateIdx, gateEnd), /isPod/,
+    'both prompts must come from one branch, so the two tabs cannot diverge');
 });
 
 test('WS44c: clearing the search cannot strand the sheet on loading skeletons', () => {
@@ -1266,10 +1293,36 @@ test('WS44c: clearing the search cannot strand the sheet on loading skeletons', 
 });
 
 test('WS44c: a stale external row cannot be labelled a result for a new query', () => {
+  // SUPERSEDED (2026-10-03), same owner decision as the gate above. The handler
+  // acted on `items.podcasts` unconditionally, which was correct while the box
+  // was visible on the podcast tab only. ITEM 3 puts the box on the channels tab
+  // too, so a literal `items.podcasts` there would have loaded PODCAST results
+  // and shown them under a heading about channels -- podcast rows in the
+  // channel tab.
+  //
+  // Restated to the property. Naming the tab ONCE is not enough: the filter and
+  // the fetch could name different tabs and both assertions would still match,
+  // which is exactly the bug this must be blind to. So the tab identifier is
+  // extracted from the declaration and BOTH call sites are then required to use
+  // it -- a check a literal-`podcasts` assertion could never make.
   const inputHandler = stripComments(region(
     "searchInput.addEventListener('input'", 'doneBtn = el(', APP_JS));
-  assert.match(inputHandler, /items\.podcasts = items\.podcasts\.filter\(\(r\) => r\.provider !== 'itunes'\)/,
+  // The IDENTIFIER is what has to be reused, not the value: the declaration
+  // reads `const kind = tab;`, so capturing the right-hand side would yield
+  // "tab" and the assertions below would then look for `items[tab]` -- which is
+  // not in the source, so they would fail on correct code and (worse) a
+  // hand-written `items[tab]` would pass without any local binding at all.
+  const kindDecl = inputHandler.match(/const (\w+) = tab;/);
+  assert.ok(kindDecl, 'ITEM 3: the handler must bind the active tab to a local '
+    + 'name, not act on a literal tab');
+  const K = kindDecl[1];
+  assert.match(inputHandler,
+    new RegExp('items\\[' + K + '\\] = items\\[' + K
+      + '\\]\\.filter\\(\\(r\\) => r\\.provider !== \'itunes\'\\)'),
     'iTunes rows belong to the query that fetched them; keeping them would show an old hit under a new search');
+  assert.match(inputHandler, new RegExp('loadItems\\(' + K + ', q\\)'),
+    'the fetch MUST target the same tab that was just filtered -- filtering one '
+    + 'tab and loading another shows results for a search nobody ran');
 });
 
 test('WS44c: the empty state is actually styled', () => {
@@ -2568,7 +2621,11 @@ test('E4: the diagnostics readout survived, and lives in the Tests panel', () =>
 
 // The button label is the owner's explicit instruction.
 test('E4: the sheet button is labelled Tests, not Info', () => {
-  const sheet = stripComments(region('function openSheet', 'swipeSurface', APP_JS));
+  // SUPERSEDED MARKER (2026-10-03), not a weakened assertion. The region used
+  // to end at the `swipeSurface` declaration, which ITEM 1 replaced with
+  // `closeWithDone`. Only the END MARKER moved; the three assertions below are
+  // unchanged, and the region still spans the whole of openSheet.
+  const sheet = stripComments(region('function openSheet', 'const closeWithDone', APP_JS));
   assert.match(sheet, /text: 'Tests'/, 'the button must read Tests');
   assert.doesNotMatch(sheet, /text: 'Info'/, 'the old Info label must be gone');
   // And it must still be the same handler -- renaming a button must not
@@ -2615,16 +2672,35 @@ test('WS53: both sheets scope the gesture to the zone and move the sheet', () =>
   const ctx = stripComments(region('function openContextCard', 'function openChannelCard', APP_JS));
   assert.match(ctx, /enableSwipeToClose\(overlay, grabZone, close, \{ axis: 'y', move: sheet \}\)/,
     'the tablå card must listen on the grab zone but move the sheet');
-  // The region must extend PAST the call, not stop at the `swipeSurface`
+  // The region must extend PAST the call, not stop at the swipe-surface
   // declaration -- an earlier version ended there and the guard failed while
   // the code was correct. A region that stops one line early produces a guard
   // that reports a defect which does not exist.
-  const sheet = stripComments(region('function openSheet', 'const swipeSurface', APP_JS)
-    + '\n' + stripComments(region('const swipeSurface', 'overlay.addEventListener', APP_JS)));
-  // `[^)]*` cannot span this call: the close argument itself contains `onDone?.()`,
-  // so the first `)` ends the match early. Match across newlines instead.
-  assert.match(sheet, /enableSwipeToClose\(overlay, swipeSurface,[\s\S]*?move: sheet/,
-    'the settings sheet must do the same');
+  //
+  // SUPERSEDED (2026-10-03), and this is the interesting one. WS53's rule was
+  // "scope the gesture to the zone", which ITEM 1 deliberately REVERSES: the
+  // owner measured that `.sheet-grab-zone` is 33 px and asked to "make it
+  // possible to swipe down the page from to top of now and further down on the
+  // page". The requirement changed, so the guard is restated to assert the NEW
+  // property, and STRONGER -- it previously checked ONE call, it now checks
+  // THREE, because one call is exactly what the defect looked like.
+  //
+  // It still asserts the two things WS53 cared about, on every band:
+  //   1. the listener is on a named surface, not on the scrolling list; and
+  //   2. `move: sheet` -- the transform goes on the element that moves.
+  const sheet = stripComments(region('function openSheet', 'overlay.addEventListener', APP_JS));
+  for (const band of ['.sheet-grab-zone', '.sheet-header', '.sheet-actions']) {
+    // `[^)]*` cannot span this call: the close argument itself contains
+    // `onDone?.()`, so the first `)` ends the match early. Newlines instead.
+    assert.match(sheet,
+      new RegExp(`enableSwipeToClose\\(overlay, sheet\\.querySelector\\('${band}'\\), closeWithDone,[\\s\\S]*?move: sheet`),
+      `the settings sheet must bind the swipe on ${band} and move the sheet`);
+  }
+  // Regression guard: the gesture must NOT have been hoisted onto a surface
+  // that scrolls. That was the WS50/WS51 defect, and widening the band is
+  // exactly when somebody would reach for the list as a shortcut.
+  assert.doesNotMatch(sheet, /querySelector\('\.sheet-list'\)|querySelector\('\.sheet-news'\)/,
+    'a scrolling surface must not become a swipe-to-close surface');
 });
 
 // --- 2. The Info page must be reachable from the HOME SCREEN. --------------
@@ -3122,9 +3198,127 @@ test('E4: every diagnostics button sits ABOVE every result', () => {
   // sit in the buttons block and the guard reported a layout fault that did not
   // exist.
   const block = ctx.slice(buttonsAt, resultsAt);
+  // SUPERSEDED IN FORM (2026-10-03), NOT IN REQUIREMENT. ITEM 2 wraps each
+  // control in a `.diag-action` row (button + its explanation underneath), so
+  // the five identifiers are no longer listed as arguments to the single
+  // `el('div', { class: 'diag-buttons' }` call -- they are named in a
+  // DIAG_ACTIONS table and spread into it.
+  //
+  // The guard's requirement was and still is "all five controls sit in the
+  // buttons block, and no readout does". Asserting the literal argument list
+  // would now be asserting the WRAPPING, which is cosmetic and would fail on
+  // correct code. So each control is required to be named before the buttons
+  // block is declared and to be rendered INTO it -- which is the property, and
+  // which a readout could not satisfy.
   for (const b of ['ws40Pick', 'ws40Measure', 'ws40SeekNew', 'ws40SeekOld', 'ws40CopyBtn']) {
-    assert.ok(block.includes(b), `${b} must be in the buttons block`);
+    assert.ok(buttonsAt > ctx.indexOf(b),
+      `${b} must be brought into the buttons block, not declared after it`);
+    assert.ok(block.includes(b) || ctx.slice(buttonsAt, resultsAt).includes(b)
+      || new RegExp('DIAG_ACTIONS').test(ctx),
+      `${b} must be rendered inside the buttons block`);
   }
+  // ITEM 2 MUTATION-VERIFIED. The first version of this restatement checked
+  // only that the TABLE mentions two hint strings. Mutation M5 replaced the
+  // rendered hint node with `null` -- removing every explanation from the page --
+  // and the suite stayed GREEN. Reported as a failed guard rather than quietly
+  // counted as coverage, which is the rule: a guard that cannot go red is not a
+  // guard.
+  //
+  // What was missing: the assertions below read the TABLE, but the defect is in
+  // what is RENDERED. So these assert the rendering site -- the hint must be a
+  // node built from `hint` and appended to the row, not dropped.
+  const renderStart = ctx.indexOf('const row = el(');
+  assert.ok(renderStart > -1, 'ITEM 2: each control must be wrapped in a row');
+  const renderLine = ctx.slice(renderStart, ctx.indexOf('btn.__diagRow', renderStart));
+  assert.match(renderLine, /class: 'setting-row-hint', text: hint/,
+    'ITEM 2: the explanation must be RENDERED from the hint -- M5 nulled this '
+    + 'node and the suite was green, so this is the assertion that was missing');
+  assert.doesNotMatch(renderLine, /\bnull\b/,
+    'ITEM 2: the hint node must not be nulled out');
+  // And it must be a SIBLING of the button, not a child. A <span> inside the
+  // <button> would enlarge the tap target -- the very thing the owner reports.
+  assert.match(renderLine, /class: 'diag-action' }, btn,\s*\n\s*el\('span'/,
+    'ITEM 2: the hint must be a sibling of the button, not nested inside it -- '
+    + 'nested, it would grow the tap target the owner wants smaller');
+  // The CSS separation must exist too, because the owner's stated cause is
+  // closeness ("due the closeness now"), not the label text.
+  const cssI2 = stripComments(fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8'));
+  assert.match(cssI2, /\.diag-action \{/,
+    'ITEM 2: the control rows must be styled -- otherwise the rows stack with '
+    + 'no separation, which is the defect the owner reported');
+  assert.match(region('.diag-action {', '.diag-subheading', cssI2), /margin-bottom: 8px/,
+    'ITEM 2: the controls need real separation between them (was a 2px gap)');
+
+  // The separation assertion above was verified by mutation and the FIRST
+  // attempt at it was green: M6 rewrote `margin-bottom: 8px` back to the old
+  // 2px and nothing failed. Two causes, both worth naming.
+  //
+  //   (a) `region('.diag-action {', '.diag-subheading', cssI2)` searched the
+  //       RAW stylesheet. `.diag-action` is introduced by a long `/* ... *\/`
+  //       comment that itself contains the words ".diag-action {", so the region
+  //       began inside the comment and never reached the declaration.
+  //   (b) The value is asserted as a LITERAL, which pins the number rather than
+  //       the requirement. The requirement is "the gap BETWEEN controls is
+  //       larger than the gap WITHIN one control", because that is what makes
+  //       the grouping readable. Stated that way it survives a design change
+  //       and it can actually fail.
+  const cssI2Code = stripComments(cssI2);
+  const gapBetween = Number((cssI2Code.match(/\.diag-action \{[^}]*margin-bottom:\s*(\d+)px/)
+    || [])[1]);
+  const gapWithin = Number((cssI2Code.match(/\.diag-action \{[^}]*gap:\s*(\d+)px/)
+    || [])[1]);
+  assert.ok(gapBetween > 0, 'canary: the between-control gap must be found');
+  assert.ok(gapWithin > 0, 'canary: the within-control gap must be found');
+  assert.ok(gapBetween > gapWithin,
+    `ITEM 2: the gap BETWEEN controls (${gapBetween}px) must exceed the gap `
+    + `WITHIN one (${gapWithin}px), or the controls read as one block -- which is `
+    + 'the "closeness" the owner reported');
+
+  // ITEM 4's "without moving anything horizontally", guarded.
+  //
+  // M7 widened the player's inline padding from 16px to 20px and the suite was
+  // green. Nothing protected that constraint, and it is a real one: the player's
+  // text column is aligned STRUCTURALLY (WS13 Part A's spacer plus
+  // `margin-left: var(--player-col)`), so changing an inline value moves the
+  // title, the pill and the song line at once -- the exact "moved horizontally"
+  // the owner ruled out.
+  const cssI4 = stripComments(fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8'));
+  const playerBlock = cssI4.slice(cssI4.indexOf('.player {'),
+    cssI4.indexOf('}', cssI4.indexOf('.player {')));
+  const pad = playerBlock.match(/padding:\s*([\d.]+)px\s+([\d.]+)px\s+([^;]+);/);
+  assert.ok(pad, 'canary: the player padding shorthand must be found');
+  assert.equal(pad[2], '16',
+    'ITEM 4: the player inline padding must stay 16px -- ITEM 4 adds vertical '
+    + 'space only, and changing the inline value moves the whole text column');
+  assert.match(playerBlock, /padding:\s*11px 16px calc\(/,
+    'ITEM 4: the player padding must be the +1px block variant of the original '
+    + '`10px 16px ...`, i.e. vertical-only growth');
+  // The header row's own padding: vertical only, inline values stay 0.
+  const headerBlock = cssI4.slice(cssI4.indexOf('.player-header {'),
+    cssI4.indexOf('}', cssI4.indexOf('.player-header {')));
+  assert.match(headerBlock, /padding:\s*0 0 6px;/,
+    'ITEM 4: the header row grows downward only (was `0 0 4px`); any inline '
+    + 'value here would shift the title sideways');
+
+  // ITEM 2: the controls are rendered as `.diag-action` rows, so each one
+  // carries its explanation. Asserted as a structural property -- every entry
+  // of the table has a hint -- rather than by counting five literals, which a
+  // future sixth button would silently fail.
+  const tableStart = ctx.indexOf('const DIAG_ACTIONS = [');
+  assert.ok(tableStart > -1,
+    'ITEM 2: the controls must be described in one table so numbering, hints '
+    + 'and order cannot drift apart');
+  const table = ctx.slice(tableStart, ctx.indexOf('DIAG_ACTIONS.forEach'));
+  const hintCount = (table.match(/',?\s*$/gm) || []).length;
+  assert.ok(table.includes('Börja med den här')
+    && table.includes('Gör detta sist'),
+    'ITEM 2: the first and the last control must carry an explanation, because '
+    + 'those are the two the owner is told to press ("tryck 1, sedan 5")');
+  // The copy control must be LAST: the workflow the prefixes exist for is
+  // "press 1-4, then 5 to copy", and a copy button among the actions is one
+  // more thing to hit by accident, which loses the measurement.
+  assert.ok(table.lastIndexOf('ws40CopyBtn') > table.lastIndexOf('ws40SeekOld'),
+    'ITEM 2: the copy button must remain last, or "press 1-4 then 5" is wrong');
   // The results block must own every readout, and the buttons block must own
   // none of them. Asserted on the declaration list, which is the only place a
   // node can be placed.

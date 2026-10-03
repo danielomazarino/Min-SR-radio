@@ -38,6 +38,63 @@ const STYLES_CSS = fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'ut
 // because the assertions below target identifiers, not URL substrings.
 const CODE = APP_JS.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
 
+// A brace-matched extractor for one top-level `function NAME(` body.
+//
+// It exists because `region()` lives in itunes-podcast.test.mjs and is not
+// importable, and because a hard-coded END MARKER is a trap here: ITEM 1
+// renamed `swipeSurface` -> `closeWithDone` and two guards in the other file
+// silently became "end marker not found" rather than reporting a defect. This
+// version cannot go stale that way — the end is the function's own closing brace.
+//
+// TWO TRAPS this had to be built around, both found by running it, not by
+// reading it (AGENTS.md §7 — a harness must prove it executes the code):
+//
+//  1. `indexOf('{', start)` finds the DESTRUCTURING brace. The signature is
+//     `function openSheet({ initialTab, onDone }) {`, so the first `{` opens
+//     the parameter list, and its `}` closes it — the extractor returned a
+//     43-character SIGNATURE and every assertion below silently passed on an
+//     empty string. It is fixed by skipping to the `)` first.
+//  2. Because of (1), a bare "the function exists" canary was NOT a canary: it
+//     went green while the extractor returned nothing usable. The real canary
+//     is the length floor plus the marker, and it is asserted below.
+//
+// Comments are stripped, for the reason in the CODE note above: app.js's
+// comments legitimately name identifiers an assertion is trying to prove the
+// CODE does not use.
+const CODE_COMMENTS = /\/\*[\s\S]*?\*\//g;
+function extractFunction(src, name, mustContain) {
+  const start = src.indexOf(`  function ${name}(`);
+  assert.notEqual(start, -1, `canary: function ${name} must exist in app.js`);
+  // Skip the PARAMETER LIST — a destructured parameter is itself a brace pair,
+  // and treating it as the body is trap (1) above.
+  const paren = src.indexOf(')', start);
+  assert.notEqual(paren, -1, `canary: function ${name} has no closing paren`);
+  const open = src.indexOf('{', paren);
+  let depth = 0;
+  let end = -1;
+  for (let i = open; i < src.length; i += 1) {
+    const ch = src[i];
+    if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) { end = i + 1; break; }
+    }
+  }
+  assert.notEqual(end, -1, `canary: unbalanced braces after ${name}`);
+  const body = src.slice(start, end).replace(CODE_COMMENTS, '').replace(/\/\/[^\n]*/g, '');
+  // The canary that would have caught trap (1): a signature-only extract is
+  // ~43 chars; a real body is three orders of magnitude larger. The marker is
+  // what the caller actually needs, so its absence must be fatal too.
+  assert.ok(body.length > 500,
+    `canary: extractFunction('${name}') returned ${body.length} chars — ` +
+    'the brace match did not reach the body (destructuring-brace trap)');
+  if (mustContain) {
+    assert.ok(body.includes(mustContain),
+      `canary: extractFunction('${name}') is missing ${mustContain}`);
+  }
+  return body;
+}
+
 // ---- BUG A: mode pill shows minus-time ----
 
 function dvrOffsetLabel(secondsBehind) {
@@ -275,9 +332,32 @@ test('episode expanded artwork never borrows a live channel song artwork', () =>
   //
   // The sites are additionally asserted BY NAME, because a count alone cannot
   // say whether a new caller is the seek path or somewhere unsafe.
+  // WS56: RESTATED, 5 -> 6, and the sixth is NAMED rather than allowed in by a
+  // loosened number. The new site is the second seek-clear: the first fires when
+  // the resolved song CHANGES, this one fires when the resolved song is GONE
+  // (talk radio, or the gap between two songs). Without it the cover of a song
+  // that ended minutes ago survives -- the owner's exact report, "the cover
+  // showed that old stale Tove Styrke cover instead of not showing a cover at
+  // all".
+  //
+  // It is still ONE mechanism, which is what this test protects: one
+  // implementation, one cache, one seq guard, each still counted at exactly 1
+  // below. Five callers of a shared function is not five mechanisms.
   const calls = code.split('refreshNowPlayingArtwork(').length - 1;
-  assert.equal(calls, 5,
-    'four call sites (live, episode, seek-clear, seek-fetch) plus the definition');
+  assert.equal(calls, 6,
+    'five call sites (live, episode, seek-clear-on-change, seek-clear-on-gone, '
+    + 'seek-fetch) plus the definition');
+  // A count cannot say WHICH site is new, so the two seek-clears are pinned by
+  // their distinct guards -- one keyed on a song change, one on there being no
+  // song. If a future edit merges them, this fails rather than the count drifting.
+  assert.equal(
+    (code.match(/if \(nowPlaying\.playheadArtwork\) refreshNowPlayingArtwork\(null, 'playhead'\)/g) || []).length,
+    2,
+    'both seek-clears must exist and must both guard on a cover being present, '
+    + 'so neither can fire a pointless request');
+  assert.match(code, /if \(!\(hit && hit\.title && hit\.artist\)\)/,
+    'WS56: there must be a branch for "the playhead resolved to NO song" -- its '
+    + 'absence is the defect');
   assert.equal((code.match(/async function refreshNowPlayingArtwork/g) || []).length, 1,
     'exactly ONE implementation -- every path must reuse it, not clone it');
   // Only ONE cache and ONE seq guard, or the paths could disagree.
@@ -384,14 +464,43 @@ test('stopping live metadata invalidates pending artwork lookups', () => {
     'pending iTunes artwork response must be stale after channel/episode transition');
 });
 
-test('BUG 1: swipe-to-close on the sheet is scoped to the grab zone', () => {
-  // The sheet's enableSwipeToClose must target .sheet-grab-zone, not the
-  // whole sheet (whole-sheet scoping let vertical list touches drag the
-  // sheet and fight iOS scrolling).
-  assert.ok(APP_JS.includes("sheet.querySelector('.sheet-grab-zone')"),
-    'swipe surface must be the grab zone');
-  const sheetSwipe = APP_JS.indexOf('enableSwipeToClose(overlay, swipeSurface');
-  assert.ok(sheetSwipe !== -1, 'sheet swipe must use swipeSurface');
+test('BUG 1: swipe-to-close on the sheet never covers a scrolling surface', () => {
+  // BUG 1's original defect was WHOLE-SHEET scoping: every vertical touch in
+  // the list ran the drag logic and fought iOS scrolling. The grab zone was the
+  // fix.
+  //
+  // SUPERSEDED (2026-10-03), requirement genuinely changed. The owner measured
+  // that the grab zone is 33 px — out of a 144 px top band — and asked to "make
+  // it possible to swipe down the page from to top of now and further down on
+  // the page". ITEM 1 widened the band to three FIXED regions.
+  //
+  // WHAT DID NOT CHANGE, and is the whole point of this restatement: the
+  // gesture must still never cover a SCROLLING surface. That was BUG 1, and
+  // widening a band is exactly the moment somebody reaches for the list as a
+  // shortcut. So the guard moves from "one specific surface" to the property:
+  //
+  //   every bound surface is a fixed-height band, and
+  //   none of them is the list, the news slider, or the sheet itself.
+  //
+  // Asserting the property rather than the constant means a FUTURE band can be
+  // added without editing this test, but a list can never be bound by accident.
+  const openSheet = extractFunction(CODE, 'openSheet', 'enableSwipeToClose');
+  const scrollable = ['.sheet-list', '.sheet-news', '.sheet-body'];
+  for (const sel of scrollable) {
+    assert.ok(!openSheet.includes(`enableSwipeToClose(overlay, sheet.querySelector('${sel}')`),
+      `BUG 1 regression: ${sel} scrolls — binding the swipe there lets every list ` +
+      'touch drag the sheet and fight iOS scrolling');
+  }
+  assert.ok(!/enableSwipeToClose\(overlay, sheet[,)]/.test(openSheet),
+    'BUG 1 regression: the gesture must not be bound to the whole sheet');
+  // And the bands ITEM 1 added must all actually be bound, or the guard above
+  // passes vacuously on a sheet with no swipe at all.
+  const bound = [...openSheet.matchAll(/enableSwipeToClose\(overlay, sheet\.querySelector\('([^']+)'\)/g)]
+    .map((m) => m[1]);
+  assert.ok(bound.includes('.sheet-grab-zone'),
+    'the grab zone must remain a swipe surface');
+  assert.ok(bound.includes('.sheet-header'),
+    'ITEM 1: the 32px header band above the actions row must be swipeable');
 });
 
 test('BUG 1: sheet close button is appended to the header', () => {
@@ -878,7 +987,7 @@ test('WS26 R6: driven poll -> seek -> poll, the panel describes ONE moment', () 
   };
   const NOW = 1_700_000_000_000;
   const factory = new Function('deps', `
-    const { nowPlaying, state, audioEl } = deps;
+    const { nowPlaying, state, audioEl, seekArtworkSongKey } = deps;
     const _RealDate = Date;
     function Date(...a) { return a.length ? new _RealDate(...a) : new _RealDate(${NOW}); }
     Date.now = () => ${NOW};
@@ -906,6 +1015,12 @@ test('WS26 R6: driven poll -> seek -> poll, the panel describes ONE moment', () 
     },
     state: { current: { kind: 'live', id: 164, atLiveEdge, seekableEnd, _srProgramTitle: 'P' } },
     audioEl: { currentTime },
+    // WS56: the playhead cover is only shown when it was fetched FOR the song
+    // the playhead now resolves. In every world below the playhead cover
+    // belongs to HISTORIC (it is COVER-HIST), so the key names HISTORIC. That
+    // is the state a real seek leaves behind -- resolveMetadataForPosition sets
+    // this key at the moment it requests the cover.
+    seekArtworkSongKey: `${HISTORIC.artist}|${HISTORIC.title}`.toLowerCase(),
   });
 
   // ---- WS27 CORRECTION, with the reason recorded (§7b) ----
@@ -1004,7 +1119,7 @@ function ws27Harness(sourceText) {
     return src.slice(start, end + 1);
   };
   return new Function('deps', `
-    const { nowPlaying, state, audioEl, canary } = deps;
+    const { nowPlaying, state, audioEl, canary, seekArtworkSongKey } = deps;
     const _RealDate = Date;
     function Date(...a) { return a.length ? new _RealDate(...a) : new _RealDate(${WS27_NOW}); }
     Date.now = () => ${WS27_NOW};
@@ -1057,7 +1172,22 @@ const WS27_SHADOW = {
 };
 
 function ws27World({ atLiveEdge, timeline, currentTime, onAir = WS27_ON_AIR,
-                      onAirArtwork = 'COVER-ONAIR', playheadArtwork = 'COVER-PLAYHEAD' }) {
+                      onAirArtwork = 'COVER-ONAIR', playheadArtwork = 'COVER-PLAYHEAD',
+                      coverForSong = null }) {
+  // WS56: `seekArtworkSongKey` names the song the playhead cover was FETCHED
+  // FOR. It is derived from the entry covering the ACTUAL PLAYHEAD, not from
+  // `WS27_NOW` -- several of these worlds sit behind the edge, and keying off
+  // `now` there names the on-air song and silently withholds a correct cover.
+  // Deriving it from the playhead makes the key describe the world rather than
+  // being a constant that would make every assertion pass for the wrong reason.
+  //
+  // The playhead is `now` at the edge and `now + (currentTime - seekableEnd)`
+  // behind it, which is the same arithmetic playheadWallMs() performs.
+  const playheadMs = WS27_NOW
+    + (currentTime - WS27_NOW / 1000) * 1000;
+  const resolvedSong = coverForSong
+    || timeline.find((e) => e.startMs <= playheadMs && playheadMs < e.stopMs)
+    || null;
   return {
     nowPlaying: {
       song: onAir ? { ...onAir } : null,
@@ -1073,6 +1203,12 @@ function ws27World({ atLiveEdge, timeline, currentTime, onAir = WS27_ON_AIR,
     // playhead 150 s back was not, and that contradiction is corrected there.
     state: { current: { kind: 'live', id: 164, atLiveEdge, seekableEnd: WS27_NOW / 1000, _srProgramTitle: 'P' } },
     audioEl: { currentTime },
+    // WS56: derived from the entry actually covering the playhead, so the key
+    // describes the world rather than being a constant that would make every
+    // assertion pass for the wrong reason.
+    seekArtworkSongKey: resolvedSong
+      ? `${resolvedSong.artist}|${resolvedSong.title}`.toLowerCase()
+      : null,
     canary: { pickCalls: 0, resolveCalls: 0, lastPick: null },
   };
 }
@@ -1245,4 +1381,107 @@ test('WS27 talk radio at the live edge: empty timeline and no song, so artwork i
   // NOT asserted: "a cover must exist". See above. The value is whatever the
   // correct rule yields; the property worth guarding is that it does not throw
   // and does not invent a song.
+});
+
+// ===================================================================
+// WS56 -- the stale lock-screen cover. The owner's report, verbatim:
+//
+//   "there was a Taylor Swift album cover on the lock screen ... but when the
+//    radio talk started and the song from Taylor was over the cover showed
+//    that old stale Tove Styrke cover ... instead of not showing a cover at
+//    all."
+//
+// TWO defects, and only fixing the first would have shipped the second.
+//   (a) The WRITER never clears `playheadArtwork` when the resolved song is
+//       GONE -- only when it CHANGES. Reaching live again is not a change in
+//       that path, so the seek's cover survives.
+//   (b) The READER falls back to `playheadArtwork` unconditionally. Even with
+//       (a) fixed, the reader is reached every tick from the timeupdate path,
+//       so a cover that has become stale is corrected on the next tick --
+//       whereas (a) alone depends on a seek happening to trigger the clear.
+//       This is the WS21/WS26 shape: a fix that cannot run on the path the
+//       owner actually uses.
+//
+// RED on the pre-fix resolver: `playheadCover` did not exist, so every stale
+// case returned a cover.
+
+test('WS56: a cover for a song that is over is never shown', () => {
+  // The owner's world: the playhead sits 150 s BEHIND the edge, which is where
+  // a seek leaves you, and then playback walks forward to the edge and into
+  // talk. `playheadArtwork` still holds 'COVER-SEEKED' the whole time.
+  const SEEKED = { title: 'Tove Styrke Song', artist: 'Tove Styrke',
+                   startMs: WS27_NOW - 330_000, stopMs: WS27_NOW - 150_000 };
+  const ON_AIR = { title: 'Taylor Swift Song', artist: 'Taylor Swift',
+                   startMs: WS27_NOW - 150_000, stopMs: WS27_NOW - 120_000 };
+
+  // Step 1: BEHIND LIVE, on the seeked song. Its own cover must show.
+  const seekedTime = (WS27_NOW / 1000) - (WS27_NOW - (SEEKED.startMs + 60_000)) / 1000;
+  const w1 = ws27World({
+    atLiveEdge: false,
+    timeline: [SEEKED, ON_AIR],
+    currentTime: seekedTime,
+    onAir: ON_AIR,
+    onAirArtwork: 'COVER-TAYLOR',
+    playheadArtwork: 'COVER-SEEKED',
+  });
+  const behind = ws27Harness(CODE)(w1).resolvePlayheadMeta();
+  assert.equal(behind.song.title, SEEKED.title,
+    'harness: the playhead must resolve to the seeked song');
+  assert.equal(behind.artwork, 'COVER-SEEKED',
+    'R3 unchanged: behind live on a seeked song, its OWN cover must show. '
+    + 'This is the case that must not regress.');
+
+  // Step 2: TALK. The songs are over -- the timeline has no entry covering the
+  // playhead, and there is no on-air song either. This is the owner's moment.
+  const w2 = ws27World({
+    atLiveEdge: true,
+    timeline: [SEEKED, ON_AIR],
+    currentTime: WS27_NOW / 1000,
+    onAir: null,
+    onAirArtwork: null,
+    playheadArtwork: 'COVER-SEEKED',
+    coverForSong: null,
+  });
+  const talk = ws27Harness(CODE)(w2).resolvePlayheadMeta();
+  assert.equal(talk.song, null, 'harness: talk radio has no song at the playhead');
+  assert.equal(talk.artwork, null,
+    'WS56: during talk the cover must be NOTHING -- the owner asked for "not '
+    + 'showing a cover at all". A cover for a song that is over is the defect.');
+
+  // Step 3: the on-air song is a DIFFERENT one from the seeked song. Its cover
+  // must be used, and the seeked cover must not appear as a fallback.
+  const w3 = ws27World({
+    atLiveEdge: true,
+    timeline: [SEEKED, ON_AIR],
+    currentTime: WS27_NOW / 1000,
+    onAir: ON_AIR,
+    onAirArtwork: 'COVER-TAYLOR',
+    playheadArtwork: 'COVER-SEEKED',
+  });
+  const live = ws27Harness(CODE)(w3).resolvePlayheadMeta();
+  assert.equal(live.artwork, 'COVER-TAYLOR',
+    'WS56: at the edge the on-air song wins, so ITS cover must show');
+  assert.notEqual(live.artwork, 'COVER-SEEKED',
+    'WS56: the seeked song\'s cover must never be used as a fallback');
+});
+
+test('WS56: the fallback is gone even when a cover is present but for another song', () => {
+  // The narrow case a reader-side `|| playheadArtwork` would still get wrong:
+  // a cover EXISTS, so a truthiness check passes, but it belongs to a different
+  // song than the one the panel names. Ownership must be by KEY, not by
+  // presence.
+  const w = ws27World({
+    atLiveEdge: true,
+    timeline: [WS27_SHADOW, { ...WS27_ON_AIR }],
+    currentTime: WS27_NOW / 1000,
+    onAirArtwork: null,
+    playheadArtwork: 'COVER-PLAYHEAD',
+    coverForSong: WS27_SHADOW,
+  });
+  const card = ws27Harness(CODE)(w).resolvePlayheadMeta();
+  assert.equal(card.song.title, WS27_SHADOW.title,
+    'harness: the shadowing entry wins, so the panel names that song');
+  assert.equal(card.artwork, 'COVER-PLAYHEAD',
+    'the cover that was fetched FOR the winning song must still be shown -- '
+    + 'the key check must not withhold correct covers');
 });
