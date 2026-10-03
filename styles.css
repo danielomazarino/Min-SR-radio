@@ -560,6 +560,38 @@ a:focus-visible {
   will-change: transform; /* smooth swipe-to-close */
 }
 
+/* ---- ITEM 1, SECOND PASS: the Info page gets the settings sheet's band. ----
+ *
+ * OWNER: "The Info icon should open a ui layout of the page that is similar to
+ * the layout with the band that can close the page with gesture down."
+ *
+ * `.reader-grab-zone` is the SAME band the settings sheet uses, reused rather
+ * than reinvented: same height, same `.sheet-grab` pill inside it, same
+ * `touch-action`. Reusing it is the point -- a second band with its own
+ * dimensions is a second thing to keep in step, and this repo has already lost
+ * the stylesheet to a stale restore twice.
+ *
+ * `touch-action: none` on BOTH bands, and that is load-bearing rather than
+ * decorative: on iOS the UA claims a drag as a scroll unless the surface says
+ * otherwise, so binding the gesture in JS alone leaves it unreliable. WS53 and
+ * WS55 both measured this. `.reader-body` is deliberately NOT included -- it
+ * scrolls, and taking its gesture is the BUG 1 regression.
+ */
+.reader-grab-zone {
+  display: flex;
+  justify-content: center;
+  padding-top: 6px;
+  background: var(--surface);
+  flex: none;
+}
+
+.reader-grab-zone,
+.reader-topbar {
+  /* ITEM 1, second pass: see the note above. Without this the UA may claim the
+     drag as a scroll and the gesture is unreliable on iOS. */
+  touch-action: none;
+}
+
 .reader-topbar {
   display: flex;
   align-items: center;

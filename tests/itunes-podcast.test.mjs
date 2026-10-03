@@ -1246,9 +1246,34 @@ test('WS44c: the unsearched podcast list shows a prompt, not 371 rows', () => {
     + 'channel list to be removed as well, "for consistence"');
   assert.match(renderList, /class: 'pick-empty'/,
     'an empty state must be rendered in place of the rows');
-  // The count must come from the loaded catalogue, not a hardcoded number.
-  assert.match(renderList, /\$\{all\.length\} poddar/,
-    'the prompt must state how many podcasts exist, from the real catalogue');
+  // SUPERSEDED (2026-10-03, second pass) -- a correction of a MISREAD
+  // INSTRUCTION, not a changed requirement.
+  //
+  // The owner wrote: "Remove the text '371 poddar från Sveriges Radio och
+  // iTunes'". My first pass read that as "move the number into the explanatory
+  // sentence" and kept `${all.length} poddar` in the sub-line. The owner checked
+  // the live site and reported "you have not done the changes of text i wanted
+  // under poddar". They were right: the instruction was to remove the COUNT, and
+  // it is now gone from both tabs.
+  //
+  // Asserted as ABSENCE, because a count returning would be the exact regression
+  // the owner reported and nothing else in the suite would catch it.
+  assert.doesNotMatch(renderList, /\$\{all\.length\} poddar/,
+    'the podcast empty state must carry NO count -- the owner asked for the '
+    + '"371 poddar" text to be removed, and moving the number into the sub-line '
+    + 'is not removing it');
+  assert.doesNotMatch(renderList, /\$\{all\.length\} kanaler/,
+    'the channel empty state must carry no count either -- same design, same '
+    + 'rule');
+  assert.doesNotMatch(renderList, /\b371\b/,
+    'the literal 371 must not reappear anywhere in the empty state');
+  // What must REMAIN is the part that stops a mis-typed search looking broken:
+  // the two- and three-character thresholds. Measured -- two characters already
+  // return 45 SR rows and iTunes needs three -- so removing this too would be a
+  // second, unintended regression. The count went; this stayed.
+  assert.match(renderList, /Sök på två tecken för Sveriges Radio/,
+    'the per-source search thresholds must stay: they are what stops a short '
+    + 'search looking broken');
   // ITEM 3: the bold heading is now the NAME OF THE LIST, and the count moved
   // into the explanatory sentence. The old 'Sök för att hitta poddar' heading
   // is gone -- the owner's exact instruction. Asserted as absent, because a
@@ -1259,8 +1284,6 @@ test('WS44c: the unsearched podcast list shows a prompt, not 371 rows', () => {
     'the podcast heading must name the list');
   assert.match(renderList, /Kanaler från Sveriges Radio/,
     'the channel heading must mirror the podcast one');
-  assert.match(renderList, /\$\{all\.length\} kanaler/,
-    'the channel prompt must state the real channel count too');
   // Both prompts come from ONE code path, so the two tabs cannot drift apart
   // again -- which is exactly how the wording diverged before.
   const gateIdx = renderList.indexOf('if (!searchQuery &&');
@@ -3347,10 +3370,36 @@ test('E4: every diagnostics button sits ABOVE every result', () => {
     + 'and order cannot drift apart');
   const table = ctx.slice(tableStart, ctx.indexOf('DIAG_ACTIONS.forEach'));
   const hintCount = (table.match(/',?\s*$/gm) || []).length;
-  assert.ok(table.includes('Börja med den här')
-    && table.includes('Gör detta sist'),
-    'ITEM 2: the first and the last control must carry an explanation, because '
-    + 'those are the two the owner is told to press ("tryck 1, sedan 5")');
+  // SUPERSEDED (2026-10-03, second pass). OWNER: "Still to hard to understand
+  // the different tests. the frist button now especially."
+  //
+  // The problem was not the wording -- it was that the control was MISLABELLED.
+  // `ws40Pick` is not a test: it is the SELECT that chooses which programme the
+  // others measure. Numbering it "1." and hinting "Börja med den här" told the
+  // owner to press something that cannot produce a measurement by itself, and
+  // made a dropdown look like step one of a four-step test.
+  //
+  // So the SELECT is no longer numbered and the numbers 1-4 belong to the four
+  // genuine actions. What a bug report depends on is that "tryck 3" keeps
+  // meaning the same thing, so the numbers are asserted EXPLICITLY rather than
+  // derived from an array index -- an index would silently renumber every
+  // action the moment a non-action joined the table, which is the very mistake
+  // this pass is fixing.
+  assert.match(table, /ws40Pick,[^\]]*,\s*null\]/,
+    'the programme SELECT must carry an explicit null number: it is a choice, '
+    + 'not an action, and numbering it is what made it unreadable');
+  assert.match(table, /ws40Measure,[^\]]*,\s*1\]/,
+    'the measure button must be action 1');
+  assert.match(table, /ws40SeekNew,[^\]]*,\s*2\]/,
+    '"tryck 2" must be the new-formula seek');
+  assert.match(table, /ws40SeekOld,[^\]]*,\s*3\]/,
+    '"tryck 3" must be the current-formula seek');
+  assert.match(table, /ws40CopyBtn,[^\]]*,\s*4\]/,
+    '"tryck 4" must be the copy button -- last among the actions');
+  // And the SELECT must still be EXPLAINED, in words that say what it is for.
+  assert.match(table, /ws40Pick,[^\]]*Väljer vilket PROGRAM/,
+    'the SELECT must be explained as a choice of programme -- removing its '
+    + 'number without doing that would only make it more confusing');
   // The copy control must be LAST: the workflow the prefixes exist for is
   // "press 1-4, then 5 to copy", and a copy button among the actions is one
   // more thing to hit by accident, which loses the measurement.
@@ -3396,4 +3445,69 @@ test('E4: each diagnostics button says what it DOES', () => {
   }
   assert.match(ctx, /setting-row-hint/,
     'the muted hint must survive, or the labels lose what they measure');
+});
+
+
+// ===================================================================
+// ITEM 4, SECOND PASS -- the auto-expand showed STALE CONTENT.
+//
+// OWNER (device): "it folds when the songinfo is out, but ... it is not
+// expanding when songinfo comes, and when I unfold manually I see the full
+// album cover being there."
+//
+// OWNER'S CORRECTION, which is why this has two parts: "I saw now once the
+// extended menu expand when a song play, so what I wrote about is not fully
+// true." That falsified my first diagnosis -- a manual override that latched
+// would have broken the FOLDING too, and folding worked. Discarded, not patched.
+//
+// THE REAL CAUSE, measured: the panel OPENS as soon as the song title exists,
+// but the album cover arrives only after the iTunes lookup resolves -- a network
+// round trip AFTER the panel opened. `repaintExpandPanel()` had three call sites
+// (paintNowPlaying, paintProgramTitle, the timeline merge) and the artwork
+// writers were NOT among them. So auto-open painted the placeholder and never
+// caught up; a manual unfold re-ran the render after the lookup had landed,
+// which is why the cover was there.
+//
+// So it was never "not expanding". It was expanding with stale content -- a
+// distinction worth preserving, because the fix is a repaint and not a gate.
+
+test('ITEM 4: a resolved cover repaints the open panel', () => {
+  // Both writers, because both can be the one that lands while the panel is
+  // open: the cache hit (same song seen earlier in the session) and the fetch
+  // result. Guarding only the fetch would leave the cache path broken, and the
+  // cache path is the COMMON one when a channel repeats a song.
+  const fn = stripComments(region('async function refreshNowPlayingArtwork',
+    'function paintNowPlaying', APP_JS));
+  assert.ok(fn.length > 500, 'canary: the extractor must reach the function body');
+  const repaints = (fn.match(/repaintExpandPanel\(\)/g) || []).length;
+  assert.equal(repaints, 2,
+    'ITEM 4: BOTH artwork writers must repaint the open panel -- the cache hit '
+    + 'and the fetch result. Before this, neither did, so the panel opened with '
+    + 'the placeholder and only caught up if the owner folded and reopened it.');
+  // Asserted as a property, not a position: the repaint must come AFTER the
+  // field is written, or it repaints the previous value.
+  const cacheHit = fn.indexOf('artworkCache.has(key)');
+  const cacheWrite = fn.indexOf('nowPlaying.onAirArtwork = artworkCache.get(key)');
+  assert.ok(cacheHit > -1 && cacheWrite > cacheHit,
+    'ITEM 4: the cache-hit repaint must follow the write it repaints');
+  const fetchWrite = fn.indexOf('nowPlaying.onAirArtwork = big');
+  const fetchRepaint = fn.indexOf('repaintExpandPanel()', fetchWrite);
+  assert.ok(fetchWrite > -1 && fetchRepaint > fetchWrite,
+    'ITEM 4: the fetch repaint must follow the write, or the panel is painted '
+    + 'with the value from before the lookup returned');
+});
+
+test('ITEM 4: the manual override lapses instead of latching for the session', () => {
+  // Kept as a later, separate fix -- it is a real defect on its own terms (a
+  // comment claimed a reset that did not exist) but it is NOT what the owner
+  // saw, and the test says so so nobody re-derives the wrong cause from it.
+  const driver = stripComments(region('function autoFoldExpandPanel()',
+    "audioEl.addEventListener('timeupdate'", stripComments(APP_JS)));
+  assert.ok(driver.length > 200, 'canary: the driver slice must be the function');
+  assert.match(driver, /expandManualKey !== currentSongKey\(\)/,
+    'ITEM 4: the manual override must lapse when the song changes. Without this '
+    + 'it latched for the whole session after one tap.');
+  assert.doesNotMatch(driver, /^\s*if \(expandManual\) return false;/m,
+    'ITEM 4: a bare early return is the LATCH -- it is the defect, and it must '
+    + 'not come back');
 });
