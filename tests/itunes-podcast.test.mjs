@@ -3524,3 +3524,98 @@ test('ITEM 4: the manual override lapses instead of latching for the session', (
     'ITEM 4: a bare early return is the LATCH -- it is the defect, and it must '
     + 'not come back');
 });
+
+
+// ===================================================================
+// ITEM 2, THIRD PASS -- the programme dropdown, driven.
+//
+// OWNER: "pressing on the button Vilket program- does not open a dropdown as
+// you say." The owner was right: the handler cycled the choice and opened
+// nothing, while I had described it as a selector.
+//
+// WHAT THE BROWSER COULD NOT SETTLE, and why this test exists. Driving the live
+// control showed `aria-expanded` staying "false" and no list -- which is
+// CORRECT behaviour, not a defect: `ws40Candidates()` returns [] when the
+// channel has no `_srSchedule`, which is every state where nothing is playing.
+// The dropdown refused to open an empty list, and the label said "Vilket
+// program-" because it had nothing to name.
+//
+// So the browser could only prove the refusal was correct; it could not prove
+// the OPENING works, because that needs a playing channel and a real stream,
+// which desktop Chromium cannot load. That is what this test covers.
+
+test('ITEM 2: the programme list offers only programmes that have already started', () => {
+  // The REAL function, brace-matched from its DECLARATION. Three harness faults
+  // happened before this produced a number -- a truncated extract, a retained
+  // `const NAME =` prefix, and `return <body>` parsing as a block -- so the
+  // canary below is asserted first and the declaration is evaluated AS WRITTEN
+  // rather than reassembled into an expression.
+  const decl = (() => {
+    const i = stripComments(APP_JS).indexOf('const ws40Candidates = () =>');
+    assert.notEqual(i, -1, 'ws40Candidates must exist');
+    const o = stripComments(APP_JS).indexOf('{', stripComments(APP_JS).indexOf('=>', i));
+    let d = 0; let e = -1;
+    for (let k = o; k < stripComments(APP_JS).length; k += 1) {
+      if (stripComments(APP_JS)[k] === '{') d += 1;
+      else if (stripComments(APP_JS)[k] === '}') { d -= 1; if (d === 0) { e = k; break; } }
+    }
+    assert.notEqual(e, -1, 'brace matching must succeed');
+    const src = stripComments(APP_JS).slice(i, e + 1);
+    // POSITIVE CANARY: a truncated extract still "runs" and answers wrongly.
+    assert.ok(src.length > 300,
+      `canary: the extract is only ${src.length} chars -- it was truncated`);
+    return src;
+  })();
+  const harness = new Function('state', `${decl}; return ws40Candidates();`);
+
+  const now = Date.now();
+  const mk = (sched) => ({ current: { kind: 'live', id: 164, _srSchedule: sched } });
+
+  const rows = harness(mk([
+    { title: 'Gammalt', startMs: now - 7_200_000, endMs: now - 7_100_000 },
+    { title: 'Senaste', startMs: now - 3_600_000, endMs: now - 1_800_000 },
+  ]));
+  assert.deepEqual(rows.map((r) => r.title), ['Senaste', 'Gammalt'],
+    'CANARY + behaviour: the list must contain the started programmes, newest '
+    + 'first. A harness that returned nothing would fail here, which is the '
+    + 'point of asserting on content rather than on "did not throw"');
+
+  // A FUTURE programme cannot be seeked to, so it must never be offered.
+  const withFuture = harness(mk([
+    { title: 'Senaste', startMs: now - 3_600_000, endMs: now - 1_800_000 },
+    { title: 'Kommande', startMs: now + 3_600_000, endMs: now + 7_200_000 },
+  ]));
+  assert.deepEqual(withFuture.map((r) => r.title), ['Senaste'],
+    'a programme that has not started cannot be measured, so it must not be '
+    + 'offered -- offering it would produce a test that cannot run');
+
+  // The two states the browser actually hit, asserted so the refusal is
+  // documented rather than looking like a broken control.
+  assert.deepEqual(harness(mk(undefined)), [],
+    'no schedule -> nothing to choose, and the dropdown must stay closed');
+  assert.deepEqual(harness({ current: null }), [],
+    'no channel -> nothing to choose');
+});
+
+test('ITEM 2: a tap inside the control must not dismiss the dropdown', () => {
+  // MEASURED LIVE: the first version opened and closed in one tap, leaving
+  // aria-expanded on "false" with nothing rendered. Fixed with an EXPLICIT
+  // containment check rather than by reasoning about `stopPropagation` in a
+  // comment -- the first version's comment argued about event propagation and
+  // was subtly wrong, which is a worse failure mode than no comment.
+  const dismiss = stripComments(region('const dismissWs40List',
+    "document.addEventListener('click', dismissWs40List);", stripComments(APP_JS)));
+  assert.ok(dismiss.length > 100, 'canary: the dismiss block must be found');
+  assert.match(dismiss, /if \(!ws40ListOpen\) return;/,
+    'ITEM 2: the dismiss must be a no-op when nothing is open');
+  // The property itself: a click inside the control or the list is IGNORED.
+  // Asserted as the containment test, because that is what makes it true
+  // regardless of listener registration order.
+  assert.match(dismiss, /closest\('\.diag-action'\)/,
+    'ITEM 2: a click on the control must not dismiss the dropdown -- that was '
+    + 'the live-measured defect');
+  assert.match(dismiss, /closest\('\.diag-list'\)/,
+    'ITEM 2: a click on a row must not be swallowed by the dismiss path either');
+  assert.match(dismiss, /closeWs40List\(\);\s*\};/,
+    'anything outside must close it, or the list would stay open over the page');
+});
