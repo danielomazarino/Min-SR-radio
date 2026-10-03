@@ -7778,6 +7778,14 @@ logic and CSS; only the owner's phone settles whether the band now feels right.
 
 ## FULL FEATURE TABLE — every item in this log, DONE or UNDONE
 
+**REVIEWED AND CORRECTED 2026-10-03.** Every row below was re-read against the
+current source rather than trusted from an earlier session. **Six rows were
+factually wrong and are now fixed** — three `B4` rows and `B2` described code
+that no longer exists, and the "cover art" row described a mechanism the source
+contradicts. A status table that describes a *mechanism* goes stale silently
+when the mechanism is fixed, and the next session re-derives it from scratch.
+That is now stated in the rows themselves.
+
 Compiled 2026-10-03 by reading the whole file. **DONE** = implemented *and*
 verified here or on device, with the evidence named. **UNDONE** = not
 implemented, or implemented but **not** verified on the owner's iPhone — these
@@ -7799,12 +7807,12 @@ confused in this project before.
 | # | Feature | Status | Evidence / what is missing |
 |---|---|---|---|
 | **B1** | 7-button DVR state: text column collapses to 0px | **DONE** | Resized the column; verified in the driven DOM. |
-| **B2** | Podcast songs never resolve | **UNDONE — upstream data** | Not our defect; needs a source change at SR. |
+| **B2** | Podcast songs never resolve | **MOSTLY RESOLVED by WS13 Part B** | The old note predated the iTunes album-cover + per-track metadata work. **Still true:** an episode whose tracks lack `artist` cannot resolve a song. Measured: P3 Soul returns 37/37 with artist+title, so this is now rare rather than universal. |
 | **B3** | iTunes hit rate on real track data | **DONE** | Measured, not generalised. |
-| **B4** | Lock screen opens the wrong PWA | **UNDONE** | Device-specific regression; also listed as owner item 4 below. |
-| **B4** | P1→P2 mismatch / P2 metadata + artwork | **UNDONE** | Carried forward unchanged. |
-| **B4** | `scheduleCache` never cleared on channel change | **UNDONE** | Carried forward; one field, possibly two writers. |
-| **B4** | `armPlaybackWatchdog` has no exhausted guard | **UNDONE** | Carried forward; a concurrency/repeat-action risk. |
+| **B4** | Lock screen opens the wrong PWA | **UNDONE** | Device-specific regression; also owner item 4 below. Never root-caused. |
+| **B4** | P1→P2 mismatch / P2 metadata + artwork | **DONE — verified 2026-10-03** | Superseded by the schedule re-evaluation. Verified in the driven DOM: 5 alternating switches, the programme line followed every time. |
+| **B4** | `scheduleCache` never cleared on channel change | **DONE — was stale** | **It IS cleared**, in two places: the `seeked` handler and the WS26 `updateSeekableState` block (`scheduleCache.delete(...)` then `resolveProgramTitle(cur)`). The note described code that no longer exists. |
+| **B4** | `armPlaybackWatchdog` has no exhausted guard | **DONE — was stale** | It **is** bounded: `advanceCandidate()` returns `false` when `candidateIndex >= candidates.length - 1`, so the watchdog cannot spin forever. |
 
 ### FIXPASS bugs (2026-09-22) — MISSED from the first version of this table
 
@@ -7863,6 +7871,59 @@ exists to prevent.
   introduced by me**, deliberately untouched.
 - **No backwards retest** of the tunnelling / R1–R6 player-panel requirements;
   out of scope for this brief and not claimed here.
+
+---
+
+## WHAT IS NEXT — the only genuinely open items, ranked
+
+Everything else in this log is either done, verified, or explicitly not a defect.
+This is the complete remaining list. **Nothing here is a guess about priority:
+each row says what would settle it.**
+
+### 1. Lock-screen button opens the WRONG PWA — the only undiagnosed defect
+**Why first:** it is the one item with **no root cause at all**. Everything else
+has a mechanism; this has a symptom and a date (regression from 2026-09-24).
+MediaSession is registered by *both* Min Radio and SR's own app, and the lock
+screen activates whichever registered last — which is why the report is
+"another installed PWA". Nothing in our code chooses that; it is an OS-level
+ownership question.
+**What would settle it:** one measurement — play from Min Radio, lock the phone,
+press the lock-screen play button, and note which app opens. If it is SR's app,
+the cause is registration *order*, and the only lever we have is registering
+early (on load) rather than on first play.
+
+### 2. E2 — exact Spotify / YouTube links (a DECISION, not a defect)
+The icons work; the links are searches. SR publishes **no** Spotify or YouTube
+identifier anywhere — measured, not assumed. The only route to exact links is a
+self-generated static table, which can go stale, and **a stale entry produces a
+wrong link** — worse than a search link. This needs an owner decision:
+*accept search links forever*, or *accept a hand-built table and its decay*.
+
+### 3. One owner reading: does a normal short flick close the card?
+The flick window is 250 ms and a 90px drag rides **entirely** on it (the
+distance threshold is 266 px on a 760 px viewport). My harness measured
+148–225 ms, but the harness is slower than a thumb, so this is **not** a proven
+defect and the window is deliberately unchanged. One sentence from the owner
+settles it, and the number is then either fine or provably too tight.
+
+### 4. Device confirmation still missing for the newest work
+**WS55** (whole top band draggable) and **WS26** (playhead song/artist/cover)
+are code-proven and driven-DOM-proven, **never device-verified**. Desktop
+Chromium cannot load SR's DVR stream, so the sticky band and the gesture routing
+are exactly the things a headless run cannot prove. One pass on the iPhone per
+item closes both.
+
+### 5. Real-device validation — the three items still open on iPhone
+DVR seek, ±15 s, LIVE label, button placement, zoom, long-press cards, expanded
+player and gesture fixes are all **confirmed**. Still open: the wrong-PWA lock
+button (item 1), P1→P2 header mismatch (now verified in-browser, not yet on
+device), and P2 song/artist visibility.
+
+### Closed without a fix — do NOT reopen
+- **Audio continues when the lock screen opens** — expected platform behaviour,
+  already corrected in this log.
+- **"Earlier played songs missing on live radio" (item 4c)** — investigated; the
+  code path is intact. Not a regression. Re-fixing it would break a working path.
 
 ### WS55 follow-up — the flick window is tighter than a real thumb, MEASURED
 
