@@ -7806,6 +7806,32 @@ confused in this project before.
 | **B4** | `scheduleCache` never cleared on channel change | **UNDONE** | Carried forward; one field, possibly two writers. |
 | **B4** | `armPlaybackWatchdog` has no exhausted guard | **UNDONE** | Carried forward; a concurrency/repeat-action risk. |
 
+### FIXPASS bugs (2026-09-22) — MISSED from the first version of this table
+
+Added 2026-10-03 after re-reading the file. The first table covered the E-, B-
+and owner-item sections and the recent WS work, and **omitted this section
+entirely** — which is exactly the failure mode "go through ALL of the file"
+exists to prevent.
+
+| # | Feature | Status | Evidence |
+|---|---|---|---|
+| BUG A | Minus sign shows a clock time instead of −time | **DONE** | Fixed and verified 2026-09-22. |
+| BUG B | Live DVR slider instability + LIVE distance | **DONE** | Fixed 2026-09-22; explicitly **separate** from the episode drag bug. |
+| BUG 1 | Settings scroll works only the first time | **DONE** | Root cause established, not guessed: `enableSwipeToClose` was on the WHOLE sheet, so every vertical touch (including on the scroll list) ran the drag and set `transform` during scroll, which collides with native scroll on iOS. Fix: scope the swipe surface to the grab handle + header with `touch-action: none`. **This is the same defect WS55 was measured inside.** |
+| BUG 2 | News links do not open | **DONE** | Root cause: the feed's `/artikel/<id>` URLs are **dead** — SR 404s all of them (migrated to slug URLs, feed never updated). Fixed with slug-derived links / SR search, never id URLs. |
+
+### Other named open items (the "ÖPPNA POSTER" and validation sections)
+
+| # | Feature | Status | Evidence / what is missing |
+|---|---|---|---|
+| 1 | Episode song metadata unreliable in the field | **SOURCE FIX SHIPPED, iPHONE RETEST REQUIRED** | Never confirmed on device. |
+| 2 | Episode player: seek bar must be draggable on iPhone | **DONE (owner retested 2026-09-24)** | ⚠️ A person's report. Round thumb indicator extended to podcasts. |
+| 3 | Live channel: wrong programme title in expanded player after a channel switch | **OPEN — owner-verified 2026-09-24** | P1→P2 leaves `Europapodden / P1` in the header. Explicitly **separate** from the episode-track repaint. Unfixed. |
+| 4 | Cover art for music tracks in podcasts/episodes | **OPEN — investigate source first** | The code deliberately sets the episode track's artwork to `null`; the programme cover exists separately and is used in the fallback view. No source agreed yet, so nothing changed. |
+| 5 | PWA audio lifecycle (iPhone) | **OPEN, diagnostics deployed** | ⚠️ **Correction already recorded**: audio continuing when the lock screen opens is **expected behaviour, not a bug**. The remaining open part is the lock-screen button opening the wrong PWA — see owner item 4. |
+| 6 | Real-device validation | **PARTIAL** | Closed on iPhone: DVR seek, ±15 s, LIVE label, button placement, zoom, long-press cards, expanded player, gesture fixes. **Still open on iPhone:** lock-screen opens another PWA, P1→P2 header mismatch, P2 song/artist visibility. |
+| 7 | Lock screen MediaSession metadata + icon | **DONE with a reservation** | Owner confirmed the SR icons appear. The reservation is the wrong-PWA button, item 4 above. |
+
 ### Owner-reported open items
 
 | # | Item | Status | Note |
