@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '1eae491';
+  const APP_BUILD = '2ed615d';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -1409,6 +1409,89 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     btn.classList.toggle('open', open);
   }
 
+  // ---- ITEM 4 (2026-10-03), owner verbatim ----
+  //
+  //   "implement so that the extended player card automatically folds out when
+  //    song information is present, and automatically folds when it is not.
+  //    note that this fold should stop at the mid player function and not go
+  //    all the way down to the minimised player."
+  //
+  // TWO REQUIREMENTS, and the second is the one that is easy to get wrong.
+  //
+  //  1. Open when there IS song information, closed when there is NOT. "Song
+  //     information present" is read through resolvePlayheadMeta()/the episode
+  //     track -- the SAME resolvers the panel and row 4 use. Reading any other
+  //     source here would be a second answer to "what is playing", which is
+  //     the R6 defect class this repo has been bitten by twice.
+  //  2. IT MUST NOT TOUCH THE MINIMISED PLAYER. `playerMinimized` and
+  //     `.player-expand` are different states. A fold that fell through to
+  //     minimize would collapse the whole bar, and the owner named that
+  //     explicitly -- so this only ever adds or removes `.player-expand`, and
+  //     asserts nothing about `playerMinimized`.
+  //
+  // WHY IT IS NOT DONE IN `setExpandOpen`: that function is the single source
+  // of truth for the CHEVRON, and it is called from six places including the
+  // user's own tap and the swipe gesture. Folding from inside it would make an
+  // automatic fold fight a manual one, and the user's tap could be undone by the
+  // next timeupdate. Auto and manual are separate decisions and get separate
+  // functions; they meet only in the chevron.
+  //
+  // The panel is BUILT by the expand button's click handler, so the auto path
+  // reuses that same builder rather than writing a second one. To do that the
+  // click handler's body is lifted into a named function `toggleExpandPanel`,
+  // and the listener becomes a one-line call to it. That is a pure extraction:
+  // the behaviour on tap is unchanged, which a test asserts.
+  let expandPanelToggle = null;
+  // Whether the owner has taken manual control. Once they have, auto-fold stops
+  // until the next track: a panel that reopens under the finger that just
+  // closed it is worse than one that never opens by itself.
+  let expandManual = false;
+  function setExpandManual(v) { expandManual = !!v; }
+
+  // Is there song information to show right now?
+  function hasSongInformation() {
+    const cur = state.current;
+    if (!cur) return false;
+    if (cur.kind === 'episode') return Boolean(episodeCurrentTrack?.title);
+    const head = resolvePlayheadMeta();
+    return Boolean(head && head.song && head.song.title);
+  }
+
+  // Open or close the expanded panel to match `hasSongInformation()`.
+  // Returns true when it acted, so a caller can tell "did nothing because the
+  // state already matched" from "did nothing because it was suppressed".
+  // ITEM 4 REACHABILITY, and this is the part that decides whether the feature
+  // exists at all. A first pass added `autoFoldExpandPanel` and nothing called
+  // it: correct, tested, and never executed -- the exact defect this repo has
+  // paid for twice (WS21, WS26 Part 4). So the call site is named and proven
+  // rather than assumed:
+  //
+  //   call site : paintNowPlaying()
+  //   why there : it is the ONE function every song change already reaches --
+  //               the live poll (fetchNowPlaying), the seek path
+  //               (resolveMetadataForPosition), the episode path
+  //               (updateEpisodeTrack) and the channel switch all call it, and
+  //               it is already called on a CHANGE, never per timeupdate tick.
+  //               That matters: an auto-fold driven from `timeupdate` would run
+  //               four times a second and could fight the user's finger.
+  //
+  // It is wired in below, immediately after this function, so the driver cannot
+  // be "implemented but never reached" without the call site being right there
+  // in the same file.
+  function autoFoldExpandPanel() {
+    // The owner's boundary: the mid player is the floor. If the player is
+    // minimized there is nothing to fold INTO and nothing to fold OUT of, so
+    // this must not create a panel behind the mini bar.
+    if (playerMinimized) return false;
+    // Manual control wins, until the next track resets it.
+    if (expandManual) return false;
+    const want = hasSongInformation();
+    const open = $player.querySelector('.player-expand') !== null;
+    if (want === open) return false;
+    if (expandPanelToggle) expandPanelToggle();
+    return true;
+  }
+
   // Observe the window while HLS is playing. Cheap: only runs when a live
   // HLS track is active, piggybacks on timeupdate.
   metaDiagCountAdd('timeupdate');
@@ -1624,11 +1707,51 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     const onAir = nowPlaying.song;
     const winnerIsOnAir = Boolean(
       song && onAir && song.title === onAir.title && song.artist === onAir.artist);
+    // WS56 (2026-10-03, owner lead): "there was a Taylor Swift album cover on
+    // the lock screen ... but when the radio talk started and the song from
+    // Taylor was over the cover showed that old stale Tove Styrke cover ...
+    // instead of not showing a cover at all."
+    //
+    // THE FALLBACK IS THE DEFECT, and it is the `|| playheadArtwork` terms
+    // below. `playheadArtwork` is written ONLY by the seek path, so during
+    // ordinary live playback it holds whatever cover the LAST SEEK resolved --
+    // or nothing at all if the owner never seeked. Falling back to it means a
+    // cover for a song that ended minutes ago is the DEFAULT whenever the
+    // winning song is not the on-air song, and during talk the timeline carries
+    // no song at all, so winnerIsOnAir is false and the stale cover wins.
+    //
+    // The fix is to fall back to it ONLY when it can describe the winning song,
+    // i.e. when the playhead IS a resolved song and the cover was fetched for
+    // that same song. Any other reading shows nothing, which is what the owner
+    // asked for and is the honest state: no cover beats a stranger's face.
+    //
+    // Why this is the right layer and not the writer: this function is reached
+    // from the timeupdate path (the lock screen) AND from renderPlayer, on
+    // every tick, so a cover that has become stale is corrected on the next
+    // tick without depending on a seek happening. Fixing only the writer would
+    // need a seek to trigger the clear -- the WS21/WS26 class of defect, where
+    // the new code cannot run on the path the owner actually uses.
+    // `seekArtworkSongKey` is the "artist|title" key of the song the playhead
+    // cover was FETCHED FOR -- it is set in resolveMetadataForPosition at the
+    // same moment the cover is requested, and reset to null when the resolved
+    // song goes away. So comparing the winning song's key against it is a real
+    // test: it can be false, and it is false for every song except the one the
+    // cover belongs to.
+    //
+    // (A first attempt compared `song.title` against a `song.__coverFor` field
+    // that nothing ever wrote, which made the test `x === (x || x)` -- always
+    // true, a comparison that cannot fail and therefore proves nothing.)
+    const songKey = song && song.title && song.artist
+      ? `${song.artist}|${song.title}`.toLowerCase()
+      : null;
+    const playheadCoverBelongs = Boolean(
+      songKey && nowPlaying.playheadArtwork && songKey === seekArtworkSongKey);
+    const playheadCover = playheadCoverBelongs ? nowPlaying.playheadArtwork : null;
     const artwork = !atLiveEdge
-      ? (nowPlaying.playheadArtwork || null)
+      ? playheadCover
       : (winnerIsOnAir
-        ? (nowPlaying.onAirArtwork || nowPlaying.playheadArtwork || null)
-        : (nowPlaying.playheadArtwork || null));
+        ? (nowPlaying.onAirArtwork || playheadCover || null)
+        : playheadCover);
     // The programme at the playhead. For a live channel `_srProgramTitle` is
     // set by resolveMetadataForPosition() from _srSchedule, position-aware
     // already; at the live edge it is the programme on air, which is the same
@@ -2060,6 +2183,16 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // EPISODE → episodeCurrentTrack (ondemand tracks vs currentTime). The two
   // can never mix: an episode never reads rightnow, live never reads tracks.
   function paintNowPlaying() {
+    // ITEM 4: the auto-fold runs HERE, on every song change, and nowhere else.
+    // Placed first so the panel is already correct before the repaint below
+    // measures anything -- and it cannot throw into the repaint, because it is
+    // wrapped: a fold that failed must not stop the song line being painted.
+    //
+    // `expandPanelToggle` is null until renderPlayer builds the button, so this
+    // is a no-op on a player that has never been rendered rather than a throw.
+    try {
+      if (expandPanelToggle) autoFoldExpandPanel();
+    } catch { /* auto-fold must never break the now-playing line */ }
     const line = $player.querySelector('.now-playing-line');
     const cur = state.current;
     const isEpisode = Boolean(cur && cur.kind === 'episode');
@@ -2874,6 +3007,21 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       // switch cannot leave it pending.
       //
       // NOT added to any timeupdate handler: those run several times a second.
+      // WS56: the playhead resolved to NO song -- talk radio, or between two
+      // songs. Any cover resolved for a PREVIOUS song is now describing
+      // nothing, and the lock screen keeps showing it. This is the branch
+      // that did not exist, and it is the owner's exact symptom: the song
+      // ended, talk began, and the old cover stayed.
+      //
+      // The cache is not consulted here on purpose: `hit` is null, so there
+      // is no artist|title to key on. refreshNowPlayingArtwork(null, ...) is
+      // the existing, tested way to clear one writer's own field.
+      if (!(hit && hit.title && hit.artist)) {
+        if (seekArtworkTimer) { clearTimeout(seekArtworkTimer); seekArtworkTimer = null; }
+        if (nowPlaying.playheadArtwork) refreshNowPlayingArtwork(null, 'playhead');
+        seekArtworkSongKey = null;
+        return;
+      }
       if (hit && hit.title && hit.artist) {
         if (seekArtworkTimer) clearTimeout(seekArtworkTimer);
         const key = `${hit.artist}|${hit.title}`.toLowerCase();
@@ -2897,6 +3045,31 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         // blanking it there would be a visible regression of its own.
         if (seekArtworkSongKey !== key) {
           seekArtworkSongKey = key;
+          // WS56 (2026-10-03, owner lead): "there was a Taylor Swift album
+          // cover on the lock screen ... but when the radio talk started and the
+          // song from Taylor was over the cover showed that old stale Tove
+          // Styrke cover ... instead of not showing a cover at all."
+          //
+          // MECHANISM, and it is a liveness bug rather than a wrong-priority
+          // bug. `playheadArtwork` is written ONLY by the seek path
+          // (resolveMetadataForPosition), and the ONLY thing that clears it is
+          // the same path, on a song CHANGE. Reaching live again is not a song
+          // change in that path -- the seek handler is not called at all when
+          // the playhead moves by itself, so `key` still equals the seeked
+          // song's key and the clear never runs.
+          //
+          // So the field keeps the cover of a song that ended MINUTES ago, and
+          // resolvePlayheadMeta() falls back to it whenever the winning song is
+          // not the on-air song:
+          //     artwork = winnerIsOnAir ? (onAirArtwork || playheadArtwork)
+          //                               : (playheadArtwork)
+          // During talk the timeline carries no song, so winnerIsOnAir is false
+          // and playheadArtwork wins by default. A cover for a song that is
+          // over is therefore the DEFAULT on the lock screen during talk.
+          //
+          // The honest intermediate state is no cover at all, which is what the
+          // owner asked for. So the field is cleared whenever the resolved song
+          // is gone -- which is the `else` this branch never had.
           if (nowPlaying.playheadArtwork) refreshNowPlayingArtwork(null, 'playhead');
         }
         seekArtworkTimer = setTimeout(() => {
@@ -6271,7 +6444,12 @@ function seekMeasureRecordText() {
       return panel;
     };
 
-    expandBtn.addEventListener('click', () => {
+    // ITEM 4: the body is lifted verbatim into a named function so the
+    // auto-fold can drive the SAME panel. Two builders would be two panels, and
+    // the two would not share the chevron state or the swipe binding.
+    // Declared with `function` (not const) so it is defined before the
+    // assignment below and hoisting cannot bite on the first tap.
+    expandPanelToggle = function toggleExpandPanel() {
       const existing = $player.querySelector('.player-expand');
       if (existing) {
         existing.remove();
@@ -6293,6 +6471,11 @@ function seekMeasureRecordText() {
       enableSwipeToClose(panel, panel, fold, { axis: 'y' });
       // The grab zone must not scroll — it owns the vertical gesture.
       grabZone.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+    };
+    expandBtn.addEventListener('click', () => {
+      // A tap IS manual control, so the auto-fold stops fighting it.
+      setExpandManual(true);
+      expandPanelToggle();
     });
 
     // Direct AAC streams: confirm bitrate via icy-br HEAD (edge hosts only).
@@ -8203,8 +8386,61 @@ function seekMeasureRecordText() {
     // PAST the controls to find out what they had produced. Now: switch, then
     // every button, then every result. The results are grouped in their own
     // labelled block so a long readout cannot push the buttons off the screen.
+    // ---- ITEM 2 (2026-10-03), owner verbatim ----
+    //
+    //   "Make sure the buttons are explaning with a text under each button and
+    //    make the explanations clearer than now. on the buttons give them a
+    //    prefix that you can use for instructions later when we are to work on
+    //    the synk and offset issues. 'press x and then the copy..' by adding the
+    //    instructions under each button it is easier to not by mistake click on
+    //    the wrong button due the closeness now."
+    //
+    // THREE requirements, and the third is the one that drives the design:
+    //
+    //  1. A NUMBERED PREFIX on every button. The prefixes are stable references
+    //     -- "tryck 3" is an instruction the owner can be given in a bug report
+    //     and act on, and it does not go stale when a label is reworded.
+    //  2. AN EXPLANATION UNDER each button. The reasons exist but were on the
+    //     buttons themselves, where a long label both wraps and crowds its
+    //     neighbour. E4 already moved this text out of the labels for the
+    //     switch; this does it for the actions.
+    //  3. SEPARATION so a mis-tap is not possible. The owner names the cause
+    //     exactly -- "due the closeness now". A wider gap and a full-width
+    //     stacked layout gives each control its own row, so the vertical
+    //     distance between two controls is no longer the only thing separating
+    //     them.
+    //
+    // The buttons are NOT renamed -- the labels are prepended to, so the text
+    // the owner reads is the text that was already there.
+    //
+    // NOTE ON THE COPY BUTTON: it is deliberately LAST in both the visual order
+    // and the numbering. The workflow the prefixes are for is "press 1-4, then
+    // 5 to copy", and a copy button sitting among the actions is one more thing
+    // to hit by accident -- which loses the measurement the owner wanted.
+    const DIAG_ACTIONS = [
+      [ws40Pick, 'Läser av aktuell tid och läge. Börja med den här.'],
+      [ws40Measure, 'Mäter tidsförskjutningen just nu. Kör den efter att du '
+        + 'ställt in något.'],
+      [ws40SeekNew, 'Hoppar tillbaka en bit och mäter igen. Används för att se '
+        + 'om en förskjutning växer eller minskar.'],
+      [ws40SeekOld, 'Jämför mot den äldre mätningen från samma ställe.'],
+      [ws40CopyBtn, 'Kopierar allt du just mätte. Gör detta sist, så finns '
+        + 'hela mätningen kvar att skicka.'],
+    ];
+    DIAG_ACTIONS.forEach(([btn, hint], i) => {
+      // Prefixed, not replaced. The original label is kept intact after the
+      // number so a bug report that quotes the button still matches the app.
+      const original = btn.textContent;
+      btn.textContent = `${i + 1}. ${original}`;
+      // The hint is a sibling, NOT a child of the button: a <span> inside a
+      // <button> is inside the tap target, so a long explanation would grow the
+      // button and make the mis-tap the owner reported MORE likely, not less.
+      const row = el('div', { class: 'diag-action' }, btn,
+        el('span', { class: 'setting-row-hint', text: hint }));
+      btn.__diagRow = row;
+    });
     const ws40Buttons = el('div', { class: 'diag-buttons' },
-      ws40Pick, ws40Measure, ws40SeekNew, ws40SeekOld, ws40CopyBtn);
+      ...DIAG_ACTIONS.map(([btn]) => btn.__diagRow));
 
     const ws40Results = el('div', { class: 'diag-results' },
       el('h4', { class: 'diag-subheading', text: 'Mätvärden' }),
@@ -8839,15 +9075,40 @@ function seekMeasureRecordText() {
       // Nothing is hidden FROM the owner: every one of the 371 rows is one
       // keystroke away, and the search already reaches all of them. This is a
       // change of presentation, not of access.
-      if (tab === 'podcasts' && !searchQuery) {
+      // ITEM 3 (2026-10-03, owner): "remove the text '371 poddar från Sveriges
+      // Radio och iTunes' and change the bold text 'Sök för att hitta poddar'
+      // to 'Poddar från Sveriges Radio och iTunes'. Secondly for consistence
+      // remove the radio channel list when Kanaler is clicked and implement a
+      // similar search box as for Poddar, and in the search box show 'Sök
+      // radiokanal', then the info header and text under it with the same
+      // design as for poddar but for the Sveriges Radio channels."
+      //
+      // So the bold heading BECOMES the name of the list. The count moves out of
+      // the heading and into the sentence that explains how to search, because
+      // "371 poddar ..." read as a heading is what the owner asked to remove --
+      // the information itself is not lost, it is said in the place where it is
+      // actually useful.
+      //
+      // The CHANNELS case is the new half, and it is a change of presentation
+      // only: the channel rows are still one keystroke away and the search
+      // reaches all of them. Channels were previously exempt (they are ~52 and
+      // fit on a screen); the owner has now decided consistency wins, so both
+      // tabs are identical in shape and differ only in wording. That EXEMPTION
+      // comment above is therefore now false and must not be left to mislead.
+      if (!searchQuery && (tab === 'podcasts' || tab === 'channels')) {
+        const isPod = tab === 'podcasts';
         listWrap.appendChild(el('div', { class: 'pick-empty' },
-          el('p', { class: 'pick-empty-title', text: 'Sök för att hitta poddar' }),
+          el('p', { class: 'pick-empty-title', text: isPod
+            ? 'Poddar från Sveriges Radio och iTunes'
+            : 'Kanaler från Sveriges Radio' }),
           // The wording is exact on purpose. TWO characters already search
           // Sveriges Radio (measured: "ek" -> 45 rows), but iTunes needs THREE
           // (EXT_SEARCH_MIN_CHARS). Saying "minst tre tecken" would imply two
           // shows nothing, which is false -- so the threshold is stated as what
           // it is: what each source needs.
-          el('p', { class: 'pick-empty-sub', text: `${all.length} poddar från Sveriges Radio och iTunes. Sök på två tecken för Sveriges Radio, tre eller fler för att även söka iTunes.` })));
+          el('p', { class: 'pick-empty-sub', text: isPod
+            ? `${all.length} poddar. Sök på två tecken för Sveriges Radio, tre eller fler för att även söka iTunes.`
+            : `${all.length} kanaler. Sök på två tecken eller färre.` })));
         return;
       }
       if (!all.length) {
@@ -8888,7 +9149,19 @@ function seekMeasureRecordText() {
     async function loadItems(kind, query) {
       try {
         if (kind === 'channels') {
-          items.channels = await fetchChannels();
+          // ITEM 3 (2026-10-03): channels are now searched too, because the
+          // browsable list is hidden until a search -- so WITHOUT this filter a
+          // query would return all ~52 channels, which is both useless as a
+          // search and a dead end for the owner.
+          //
+          // MEASURED before this change: this branch ignored `query` entirely
+          // and always assigned the full catalogue. The podcasts branch below
+          // had to be extended by hand for the same reason.
+          const chans = await fetchChannels();
+          const cq = (query || '').trim().toLowerCase();
+          items.channels = cq
+            ? chans.filter((c) => (c.name || '').toLowerCase().includes(cq))
+            : chans;
         } else {
           const all = await fetchPodcasts();
           // client-side search (SR's server-side name filter is broken)
@@ -8965,10 +9238,23 @@ function seekMeasureRecordText() {
       if (searchInput) searchInput.value = '';
     }
 
+    // ITEM 3: one search box for both tabs. The PLACEHOLDER changes with the
+    // tab (the owner's exact words, 'Sök radiokanal' / the podcast equivalent),
+    // and the `aria-label` changes with it -- a label that still says "Sök podd"
+    // while a channel list is on screen is a real accessibility defect, not a
+    // cosmetic one, and it is invisible to a sighted owner and obvious to a
+    // screen-reader user.
     searchInput = el('input', {
       class: 'search-input', type: 'search',
       placeholder: 'Sök podd…', 'aria-label': 'Sök podd',
+      dataset: { tab: 'podcasts' },
     });
+    const setSearchTab = (t) => {
+      const pod = t === 'podcasts';
+      searchInput.placeholder = pod ? 'Sök podd…' : 'Sök radiokanal';
+      searchInput.setAttribute('aria-label', pod ? 'Sök podd' : 'Sök radiokanal');
+      searchInput.dataset.tab = t;
+    };
     let searchTimer = null;
     searchInput.addEventListener('input', () => {
       clearTimeout(searchTimer);
@@ -8984,17 +9270,24 @@ function seekMeasureRecordText() {
       // branch and the sheet showed five permanent grey loading bars instead
       // of the search prompt. The catalogue is already in memory, so there is
       // nothing to load and nothing to wait for.
+      // ITEM 3: the handler used to act on `podcasts` unconditionally, which
+      // was correct while the box was visible on that tab only. With the box on
+      // the channels tab too, a channel search would have loaded PODCAST
+      // results and shown them under a heading about channels -- the owner would
+      // see podcast rows in the channel tab. It now acts on the active tab.
+      const kind = tab;
       if (!q) {
-        items.podcasts = [];
+        items[kind] = [];
         renderList();
         return;
       }
       // Show what we already have for this text immediately, then refine when
       // the debounce fires. iTunes rows for a previous query are dropped so a
       // stale external hit is never labelled as a result for a new query.
-      items.podcasts = items.podcasts.filter((r) => r.provider !== 'itunes');
+      // (Channels have no external rows, so the filter is a no-op there.)
+      items[kind] = items[kind].filter((r) => r.provider !== 'itunes');
       renderList();
-      searchTimer = setTimeout(() => loadItems('podcasts', q), 300);
+      searchTimer = setTimeout(() => loadItems(kind, q), 300);
     });
 
     doneBtn = el('button', { class: 'sheet-action sheet-save', type: 'button', text: 'Spara',
@@ -9544,10 +9837,44 @@ function seekMeasureRecordText() {
     // touches ANYWHERE — including on the scrollable pick list — ran the drag
     // logic and set transform on the sheet during scroll (finger-down = d>0 =
     // sheet drags). On iOS this fights the native scroll and can leave the
-    // sheet unscrollable. Fix: scope the swipe surface to the grab handle +
-    // header zone only; list touches never reach the swipe logic.
-    const swipeSurface = sheet.querySelector('.sheet-grab-zone');
-    enableSwipeToClose(overlay, swipeSurface, () => { closeSheet(); onDone?.(); },
+    // sheet unscrollable.
+    //
+    // ITEM 1 (2026-10-03) -- the fix above was too narrow, and this is the
+    // owner's measurement, not a preference: "the top bar for Info och
+    // anpassningar is to small. make it possible to swipe down the page from to
+    // top of now and further down on the page."
+    //
+    //   MEASURED, before:  .sheet-grab-zone  y 103-136   33px  SWIPEABLE
+    //                      .sheet-header     y 136-168   32px  manipulation
+    //                      .sheet-actions    y 174-218   44px  manipulation
+    //
+    // 33 px out of a ~115 px top band. The other two computed to
+    // `touch-action: manipulation`, which lets the UA claim a drag as a scroll,
+    // so even binding them would have been unreliable on iOS. Both the CSS
+    // touch-action AND the binding are changed; either alone is insufficient.
+    // This is the same class of defect WS55 fixed on the tabla card.
+    //
+    // The three bands are bound INDIVIDUALLY rather than wrapped in one
+    // container: they are already siblings in the correct stacking order, and
+    // re-parenting them would move them, which the owner did not ask for.
+    //
+    // BUG 1 STILL HOLDS, and it is the reason this is not a revert: none of the
+    // three bands scrolls. The pick list and the news slider are untouched, so a
+    // list touch still never reaches the drag logic.
+    //
+    // SAFE ALONGSIDE THE BUTTONS in `.sheet-actions` (Tests / Spara). This is
+    // worth stating because it looks unsafe: enableSwipeToClose never calls
+    // preventDefault, so a TAP still reaches the button. With no touchmove `d`
+    // stays 0, neither close condition can be met (flick needs d > 40; the
+    // distance rule needs d > 35% of viewport height), and the transform is
+    // reset. The gesture only engages once the finger has actually moved
+    // DOWNWARD -- a tap cannot reach that threshold.
+    const closeWithDone = () => { closeSheet(); onDone?.(); };
+    enableSwipeToClose(overlay, sheet.querySelector('.sheet-grab-zone'), closeWithDone,
+      { axis: 'y', move: sheet });
+    enableSwipeToClose(overlay, sheet.querySelector('.sheet-header'), closeWithDone,
+      { axis: 'y', move: sheet });
+    enableSwipeToClose(overlay, sheet.querySelector('.sheet-actions'), closeWithDone,
       { axis: 'y', move: sheet });
 
     overlay.addEventListener('click', (e) => {
@@ -9556,7 +9883,11 @@ function seekMeasureRecordText() {
 
     tabChannels.setAttribute('aria-selected', String(tab === 'channels'));
     tabPodcasts.setAttribute('aria-selected', String(tab === 'podcasts'));
-    searchInput.style.display = tab === 'podcasts' ? '' : 'none';
+    // ITEM 3: the box is no longer hidden on the channels tab. It was hidden
+    // because the channel list was always visible, so a box above it was
+    // redundant -- but the list is now hidden until a search, so hiding the box
+    // too would leave the channels tab with no way in at all.
+    setSearchTab(tab);
     setTitle();
     clearSearch();
     loadItems(tab);

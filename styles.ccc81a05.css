@@ -852,6 +852,36 @@ a:focus-visible {
      reachable without a scroll on a short page. */
   margin-top: 4px;
 }
+/* ---- ITEM 2 (2026-10-03): one control per row, with its explanation under
+ * it. OWNER: "by adding the instructions under each button it is easier to not
+ * by mistake click on the wrong button due the closeness now."
+ *
+ * The cause is named by the owner, so the fix targets the cause and not the
+ * label: the controls were separated by a 2px gap, and a 2px gap is not a
+ * separator. Each action is now its own block with a real gap, and the
+ * explanation sits inside that block so the visual group is exactly the tap
+ * group -- a reader can see which text belongs to which button instead of
+ * guessing.
+ *
+ * The explanation is deliberately a SIBLING of the button and not a child. A
+ * <span> inside the <button> would enlarge the tap target, which is the very
+ * thing the owner is trying to avoid.
+ */
+.diag-action {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  /* The separation the owner asked for. 2px -> 8px between controls; the gap
+     INSIDE a control (button to its own hint) is smaller than the gap BETWEEN
+     controls, so the grouping reads correctly without any extra border. */
+  margin-bottom: 8px;
+}
+.diag-action:last-child { margin-bottom: 0; }
+.diag-action > button { width: 100%; }
+/* The hint is muted and inset to the button's own left edge, so it reads as
+   belonging to the button above it rather than as a new control. */
+.diag-action > .setting-row-hint { padding-left: 2px; }
+
 .diag-subheading {
   font-size: 12px;
   text-transform: uppercase;
@@ -882,6 +912,29 @@ a:focus-visible {
 }
 
 /* ---------- mini player ---------- */
+/* ---- ITEM 4 (2026-10-03): a little more vertical room in the mid player. ----
+ *
+ * OWNER: "the midplayer area could benefit from becoming a bit bigger so that
+ * the risk of tapping the wrong buttons i smaller. so every row can be getting
+ * 1-2 pixels more vertical space now without moving anything horizontally."
+ *
+ * WHY PADDING AND NOT A HEIGHT. Every row in here is `display: flex` with
+ * `align-items: center`, so its height is driven by its tallest child plus its
+ * own padding. Raising a row's `padding-block` adds space ABOVE AND BELOW the
+ * content and leaves the content's own size and its horizontal box untouched --
+ * which is precisely "more vertical space, nothing moved horizontally". Setting
+ * an explicit `height` instead would clip or re-centre the content and could
+ * change where a label sits.
+ *
+ * WHY ONLY VERTICAL PROPERTIES APPEAR HERE. The owner's "without moving
+ * anything horizontally" is a real constraint, not a figure of speech: this
+ * panel is a shared text column whose alignment is STRUCTURAL (see WS13 Part A
+ * below and WS19 -- `margin-left: var(--player-col)` is what lines the title,
+ * the pill and the song up on the artwork's edge). Touching a horizontal value
+ * here would move that column for every row at once. So: `padding-block` and
+ * `row-gap` only. `padding` shorthand is deliberately NOT used, because its
+ * horizontal components would be easy to change by accident.
+ */
 .player {
   position: fixed;
   left: 0;
@@ -890,7 +943,9 @@ a:focus-visible {
   z-index: 30;
   background: var(--surface);
   box-shadow: 0 -4px 20px rgba(28, 28, 30, 0.12);
-  padding: 10px 16px calc(var(--safe-bottom) + 12px);
+  /* Was `10px 16px ...`. Only the BLOCK values change (+1px top, +1px bottom);
+     the 16px inline padding is byte-identical so nothing moves sideways. */
+  padding: 11px 16px calc(var(--safe-bottom) + 13px);
   transform: translateY(110%);
   transition: transform 0.25s ease;
   max-width: 480px;
@@ -1008,7 +1063,10 @@ body.player-gesture-lock {
   align-items: center;
   gap: var(--player-gap);
   min-width: 0;
-  padding: 0 0 4px;
+  /* ITEM 4: was `0 0 4px` (measured 36px tall). +2px below the header text, so
+     the title block is less likely to be read as belonging to the row under it.
+     Vertical only; the inline values stay 0. */
+  padding: 0 0 6px;
 }
 /* ---- WS13 Part A: the header holds a WIDTH-ONLY SPACER ----
    The close button moved to the transport row, at the owner's request, to
@@ -2038,6 +2096,31 @@ body.player-gesture-lock {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain; /* keep scroll inside the sheet — no bleed-through to the page behind */
+}
+
+/* ---- ITEM 1 (2026-10-03): the settings sheet's whole top band swipes. ----
+ *
+ * The owner, from a screenshot: "the top bar for Info och anpassningar is to
+ * small. make it possible to swipe down the page from to top of now and further
+ * down on the page."
+ *
+ * MEASURED: `.sheet-grab-zone` is 33 px and already had `touch-action: none`.
+ * `.sheet-header` (32 px) and `.sheet-actions` (44 px) -- the row holding the
+ * Tests and Spara buttons -- computed to `manipulation`, so the UA could claim a
+ * drag there as a scroll. 33 px was the entire reliable target.
+ *
+ * `touch-action: none` on the two missing bands is what makes the binding
+ * reliable on iOS; the JS binding alone is not enough, and neither is this
+ * declaration alone. Both are applied, exactly as WS55 did for the context card.
+ *
+ * The news slider and the favourites list are deliberately NOT included: they
+ * scroll, and taking their gestures would restore the WS50/WS51 defect where
+ * every scroll touch also ran the drag logic.
+ */
+.sheet-grab-zone,
+.sheet-header,
+.sheet-actions {
+  touch-action: none;
 }
 
 .sheet-grab-zone {
