@@ -580,7 +580,13 @@ a:focus-visible {
 .reader-grab-zone {
   display: flex;
   justify-content: center;
-  padding-top: 6px;
+  /* ITEM 1, THIRD PASS: the sheet's band uses `10px 0 0`, and this matches it.
+     The pill's own margin was set to 0 so that the two surfaces share ONE
+     spacing rule -- which meant this band lost the height it used to get from
+     the pill's old `4px auto 14px` margin and collapsed to 11 px, measured live.
+     The padding is therefore what carries the spacing on both surfaces, and it
+     has to be the same value or they drift apart again. */
+  padding: 10px 0 0;
   background: var(--surface);
   flex: none;
 }
