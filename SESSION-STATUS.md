@@ -1,36 +1,51 @@
 # SESSION-STATUS
 
-## Four owner corrections, second pass — 2026-10-03T19:45+02:00
+## Third pass — four owner corrections — 2026-10-04
 
-**Baseline:** `npm test` → 545/545. **Now:** → **547/547** (run, not quoted).
-**Scope:** COMPLETE and DEPLOYED as `2828b59` / commit `663230b`.
+**Baseline:** 547/547. **Now:** **550/550** (run, not quoted).
+**Shipped:** `f557861` = `origin/main`. Live bundle `app.9b33fc01.js` /
+`styles.671eb90d.css`, confirmed served and matching the local build.
 
-**Finding worth keeping:** three of the four items were **my previous work being
-wrong**, and the most valuable moment was the owner saying *"what I wrote about is
-not fully true"* — that falsified my expansion diagnosis, which I then discarded
-instead of patching. A latched manual override would have broken the FOLDING too,
-and folding worked.
+**THE MOST IMPORTANT EVENT OF THIS PASS was a correction I received, not a fix
+I made.** The owner asked whether the item-4 change was a regression of WS27.
+It was — I had deleted `hit || (atLiveEdge ? nowPlaying.song : null)`, which is
+exactly what WS27 (`c016cdb`) put in on 29 Sep. The fallback is deliberate: it is
+what stops the panel going blank during talk, when SR sends no per-song times.
 
-**MEASURED (live, build 2828b59):**
-- Info band 53 → **82 px** swipeable, both bands `touch-action: none`, scrolling
-  body untouched
-- `Vilket program` unnumbered and explained; four real actions numbered **1–4**
-- Podcast/channel empty states carry **no count**; grep on the hashed bundle → 0
-- Expanded panel: both artwork writers now repaint it
+So the regression was reverted and the real cause fixed instead:
+`song = hit || (atLiveEdge && onAirStillCurrent ? onAirNow : null)`.
 
-**What this does NOT prove:** nothing here is device-verified. ITEM 4's fix has
-not been observed on a real song change — it is code-proven only. The Info swipe
-band has never been felt.
+**MEASURED, and the guard is a real check:** the poll's song now only wins while
+`Date.now()` is inside that song's own `[startMs, stopMs)` window. A song that
+has ended can never be shown, which was the owner's symptom. The WS27
+empty-timeline fallback is preserved, so the panel still does not blank.
 
-**Deploy checks:** suite green + count up PASS · diff 3 files, nothing outside
-scope PASS · driven in the live browser on rendered DOM PASS · all four stated
-defects confirmed fixed PASS · neighbours untouched PASS · hashed bundles grepped
-PASS · propagation: first poll served the OLD bundle with new assets 404 —
-confirmed as propagation (commit on remote, raw host 404), then PASS on re-poll.
+**M17** reverts to the unguarded fallback -> 2 failures. Checksum byte-identical
+after restore.
 
-**Mutations:** M10–M13, all red first time. Checksums byte-identical after each.
+**The other three:**
+1. Info page band: measured live at **330 px = exactly half of the 659 px
+   viewport** (owner asked for "half the size of the screen"). Pill margin
+   unified to one rule so the two surfaces align; Info band padding aligned to
+   the sheet's (11px -> 15px, measured).
+2. The programme button is a **real dropdown** — it previously cycled silently on
+   each tap, which is what the owner reported. Fixing it required a real bug
+   fix: `stopPropagation` does not stop the document-level dismiss listener
+   firing in the same tap, so the list opened and closed at once. Measured live.
+3. Verified only — owner confirmed.
+
+**NOT PROVEN — the important caveat.** Desktop Chromium cannot load SR's DVR
+stream, so **item 4 has never been observed on a real seek back and return to
+live.** The guard is code-proven and mutation-tested; the behaviour is not
+device-verified. Same for the half-screen drag area.
+
+**Deploy checks:** suite green + count up PASS · diff read, nothing outside scope
+PASS · live DOM driven PASS · item 4 checked against the owner's words PASS ·
+neighbours spot-checked PASS · hashed bundles grepped PASS · propagation
+confirmed PASS.
 
 **Blocked:** nothing.
 
-**Next:** owner checks build **`2828b59`** on the iPhone — the small line under
-NYHETER. If it does not read 2828b59 they are testing old code.
+**Next:** owner checks build **`f557861`** on the iPhone (small line under
+NYHETER), and specifically: seek back behind live, then press Till Direkt, and
+confirm the panel does NOT show the finished song.
