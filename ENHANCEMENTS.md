@@ -7683,3 +7683,157 @@ that does have the ids, and served as a static JSON file alongside the app.
 **Not implemented. Named as not done.** The owner has not asked for it and it is
 a significant ongoing cost; it should be a deliberate decision, not a silent
 expansion of scope.
+
+---
+
+## 2026-10-03 — WS55: the whole top band is draggable + FULL FEATURE TABLE
+
+**State at close:** `main` = `147d90f`, tree clean, pushed. Suite **532/532**
+(528 before this pass). Live: `app.8692ea6b.js` / `styles.0abfe714.css` / SW
+`minradio-cc83ad9a`. Source `1eae491`, artifacts `147d90f`.
+
+### The defect, as a measurement
+
+Owner: *"visually all is okey, but the band to touch on for the dragging down
+doesn't seem to cover the whole top area that is possible to use for the
+dragging down. it feels like one has to be very close to the position of the
+horizontal mark."*
+
+Computed styles on the tablå card, driven DOM, 492x760:
+
+| band | y-range | height | `touch-action` | app owns the gesture? |
+|---|---|---|---|---|
+| `.sheet-grab-zone` | 91–124 | 33px | `none` | **YES** |
+| `.sheet-header` | 124–175 | 51px | `manipulation` | no |
+| `.card-day-label` Igår | 175–205 | 30px | `manipulation` | no |
+| `.card-day-label` Idag | 205–235 | 30px | `manipulation` | no |
+
+**33 px usable of 144 px visible.** The reliable target was 33px tall and
+centred on a 5px mark. That *is* the complaint, stated as a number.
+
+**Cause — not the JS binding.** WS54 already bound the header, and a synthetic
+drag from inside the header closes the card on desktop Chromium. The cause is
+`touch-action`. `.sheet-grab-zone` declares `none`; the header never did, so it
+computed to `manipulation`, which lets the UA claim a drag as a scroll. Desktop
+never exercises that, so a headless run shows the header swipe working while iOS
+Safari refuses it. The same trap this repo keeps re-learning.
+
+**Fix 1 (CSS).** One rule gives `touch-action: none` to all three *fixed* bands.
+None of them scroll, so nothing is taken away. The list and the sheet keep their
+own values deliberately — taking theirs restores WS50/WS51, where every scroll
+touch also ran the drag.
+
+**Fix 2 (JS) — the reachability trap, caught by measuring.** The day labels
+become a swipe surface by **delegation** on the sheet with a new `within` filter.
+The obvious loop-over-the-labels version was written first, measured, and bound
+**zero** listeners: `openContextCard` calls `buildBody()` *before* binding, and
+the tablå builder creates its labels inside an async `.then()`.
+
+Measured, not reasoned: a drag from a label gave `transform: none` on **3 of 3**
+attempts while y=168 inside the header closed **3 of 3**. Sampling the label
+count over time showed 2 labels present at 0 ms — they exist, just *after* the
+synchronous pass. This is the WS21/WS26 class: correct, tested code that never
+executes.
+
+### Verified after, in the driven DOM
+
+| check | result |
+|---|---|
+| usable band | **144 px of 144 px** (was 33/144) |
+| drag closes from the zone (y=101) | CLOSED, 415 ms |
+| drag closes from the header (y=150) | CLOSED, 440 ms |
+| drag closes from a day label (y=190) | CLOSED, 337 ms |
+| drag closes from a day label (y=218) | CLOSED, 359 ms |
+| drag on a programme row | does **NOT** close (counterweight holds) |
+| upward drag from header | springs back, does not close (WS50 intact) |
+| upward drag from a label | springs back, does not close |
+| header drag at `scrollTop 3000` | CLOSED |
+| `gapToLabel` deep-scrolled | 0 |
+| mark visible deep-scrolled | true |
+| podcast card | both bands `none`, 33px / 51px |
+
+Closes were **polled to settlement**, not sampled after one fixed sleep. The
+first matrix showed an inconsistent 1-of-3 / 3-of-3 pattern; that was my 350 ms
+sleep racing the function's own 180 ms close timer, not a product defect.
+
+**Tests 528 → 532. 7 mutations, 7 RED**, checksums restored each time.
+
+**One test restated (SUPERSEDED, form only).** The WS53 signature guard pinned
+`/{ axis = 'x', move = null }/` literally, so adding `within` broke a test whose
+requirement is unchanged. Restated to assert the properties — `move` accepted,
+defaults to null, `mover` falls back to `panel` — and mutation-verified to still
+bite.
+
+**Three test-side faults, all mine, each reporting a defect that did not exist:**
+a regex that could not match across a CSS comment; a helper returning only the
+*first* rule of a selector list that carries two (it answered the `position:
+sticky` question while appearing to answer the `touch-action` one); and a
+`.card-list` guard whose selector matched a descendant rule, so the sticky band
+answered as if it were the list's own.
+
+**NOT PROVEN:** iOS Safari behaviour. Synthetic touch exercises the gesture
+logic and CSS; only the owner's phone settles whether the band now feels right.
+
+---
+
+## FULL FEATURE TABLE — every item in this log, DONE or UNDONE
+
+Compiled 2026-10-03 by reading the whole file. **DONE** = implemented *and*
+verified here or on device, with the evidence named. **UNDONE** = not
+implemented, or implemented but **not** verified on the owner's iPhone — these
+are separated deliberately, because "shipped" and "works on the phone" have been
+confused in this project before.
+
+### Strengthenings E1–E4
+
+| # | Feature | Status | Evidence / what is missing |
+|---|---|---|---|
+| **E1** | Highest possible audio quality | **DONE** | Bitrate ladder shipped; verified in settings UI. |
+| **E1b** | Buffer robustness — stream stalls in tunnel | **DONE** (tester-confirmed 2026-10-02) | ⚠️ **A person's report, not my measurement.** Owner instructed it be marked Done. |
+| **E2** | Spotify + YouTube icons in the expanded player | **PARTIAL — search links only** | Icons shipped with official brand SVGs (WS53). **Exact-match links are NOT buildable**: measured that SR publishes no Spotify/YouTube id anywhere (song objects have 8 keys, ondemand tracks 4, MusicBrainz `url:spotify:track:*` → 0 recordings). The original `spotifyId` claim was **false** and is corrected at its source. Only a self-generated static table could give exact links — **not implemented**, can go stale, and a stale entry yields a wrong link. **A product decision, not a defect.** |
+| **E3** | Nyheter: playability research / play-pill | **DONE** (tester-confirmed 2026-10-02) | ⚠️ **A person's report.** |
+| **E4** | Info button on the home screen + updated help | **DONE** | `openUserHelp()` + topbar button; old Info renamed **Tests** and keeps diagnostics only. Verified in the driven DOM. |
+
+### B-items — bugs found by inspection
+
+| # | Feature | Status | Evidence / what is missing |
+|---|---|---|---|
+| **B1** | 7-button DVR state: text column collapses to 0px | **DONE** | Resized the column; verified in the driven DOM. |
+| **B2** | Podcast songs never resolve | **UNDONE — upstream data** | Not our defect; needs a source change at SR. |
+| **B3** | iTunes hit rate on real track data | **DONE** | Measured, not generalised. |
+| **B4** | Lock screen opens the wrong PWA | **UNDONE** | Device-specific regression; also listed as owner item 4 below. |
+| **B4** | P1→P2 mismatch / P2 metadata + artwork | **UNDONE** | Carried forward unchanged. |
+| **B4** | `scheduleCache` never cleared on channel change | **UNDONE** | Carried forward; one field, possibly two writers. |
+| **B4** | `armPlaybackWatchdog` has no exhausted guard | **UNDONE** | Carried forward; a concurrency/repeat-action risk. |
+
+### Owner-reported open items
+
+| # | Item | Status | Note |
+|---|---|---|---|
+| 1 | Pre-midnight programme title on a real DVR seek | **MECHANISM FIXED, BEHAVIOUR UNVERIFIED** | Schedule fetch + merge shipped (WS21); the *behaviour* on a real seek has never been observed on device. Not re-derivable from this log. |
+| 2 | Lock screen shows the programme twice when no song plays | **UNDONE, deferred at owner's request** | |
+| 3 | Global podcast search beyond SR | **UNDONE** | Brief is logged in full; not started. Reuse existing search before designing anything new. |
+| 4 | Lock-screen button opens the wrong PWA | **UNDONE** | Regression from 2026-09-24. **Never root-caused.** |
+| 4c | Earlier played songs missing on live radio | **NOT A REGRESSION** | Investigated: the code path is intact. Do not "re-fix". |
+
+### Context-card / tablå behaviour (this project's recent focus)
+
+| # | Feature | Status | Evidence |
+|---|---|---|---|
+| WS50 | Upward drag must not close the card | **DONE** | Verified both directions this pass. |
+| WS51 | Search links, E4 text, Tests label | **DONE** | |
+| WS52 | Header stays put; day labels stack | **DONE** | |
+| WS53 | Mark **and** menu move together; Info page reachable | **DONE** | Also fixed a runtime crash (SVG as `el()` child) and a CSS syntax error I introduced. |
+| WS54 | Zero gap, always-visible mark, header drag, podcast parity | **DONE** | Podcast cards inherit via `openContextCard` — verified, not assumed. |
+| **WS55** | **Whole top band draggable** | **DONE (code + driven DOM)** | ⚠️ **Not device-verified.** 144px of 144px app-owned. |
+
+### Explicitly NOT DONE in this pass
+
+- **No iPhone verification of anything.** Named as not done, not implied done.
+- **E2 exact-match links** — needs a generated static mapping table; product
+  decision; a stale entry produces a wrong link.
+- **The pre-existing `styles.css` brace imbalance** (depth 1 at EOF, from a `{`
+  inside a comment near line 1522) — present in HEAD and every backup, **not
+  introduced by me**, deliberately untouched.
+- **No backwards retest** of the tunnelling / R1–R6 player-panel requirements;
+  out of scope for this brief and not claimed here.
