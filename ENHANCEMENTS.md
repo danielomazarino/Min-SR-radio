@@ -7837,3 +7837,34 @@ confused in this project before.
   introduced by me**, deliberately untouched.
 - **No backwards retest** of the tunnelling / R1–R6 player-panel requirements;
   out of scope for this brief and not claimed here.
+
+### WS55 follow-up — the flick window is tighter than a real thumb, MEASURED
+
+The live drag matrix showed `y=218` closing 1 of 4 while the drag itself worked
+4 of 4 (`translateY(90px)` every time). The inconsistency was **not** the band.
+It is the gesture's own timing rule.
+
+MEASURED on the live site, five consecutive gestures from a day label:
+
+| run | gesture duration | flick window | `d` | flick rule | distance rule | closed |
+|---|---|---|---|---|---|---|
+| 1 | 162 ms | 250 ms | 90px | met | not met (90 < 266) | yes |
+| 2 | 177 ms | 250 ms | 90px | met | not met | yes |
+| 3 | 183 ms | 250 ms | 90px | met | not met | yes |
+| 4 | **225 ms** | 250 ms | 90px | met | not met | yes |
+| 5 | 148 ms | 250 ms | 90px | met | not met | yes |
+
+So the close depends **entirely on the flick branch**: `elapsed < 250 && d > 40`.
+A 90px drag must be completed inside 250 ms or the card springs back. Run 4 sat
+at 225 ms — 25 ms of headroom.
+
+**What this does and does not mean.** My synthetic driver sleeps 16 ms between
+moves, so its 148–225 ms is **harness-inflated**; a real thumb is typically
+faster. So this is NOT evidence of a product defect, and I am not changing the
+window. It IS a real fragility finding: the flick branch is the sole path to
+close for any drag shorter than 35 % of the viewport (266 px here), and on this
+card a natural short drag is well under that. Recorded, not "fixed" — widening
+250 ms would be exactly the kind of number tuned to make a report go away that
+the project rules forbid, and the correct value needs a device measurement the
+owner can give in one sentence: *does a normal short flick on the card close it?*
+
