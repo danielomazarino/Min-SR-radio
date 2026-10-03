@@ -951,3 +951,61 @@ was my own stale expected value, not a deploy fault — resolved by md5.
 
 **Next:** owner to check build **`022f82b`**. One reading settles all three: drag
 the Info sheet down and watch whether the whole panel follows the mark.
+
+## WS54 — zero gap, always-visible mark, header swipe, both card types — 2026-10-03T04:05:00+02:00
+
+**Baseline:** `npm test` → **523/523** (run). **Now 528/528.**
+**Owner report, verbatim:** *"the igår and idag at scolling has a gap that should
+not be between the P1 section attached and the label igår … needs to be tightend
+to zero pixels. the second issue is that the horizontal marker section should be
+visible at all times. the third is that touching and draging down from the p1 one
+section … needs to be possible regardless of where the tableu is scrolled."*
+Follow-up: *"the same fix … for the podcasts too."*
+
+**Measured before fixing** (driven DOM, tablå card):
+- gap: header bottom 176, card-body top 184 → **8 px**
+- mark: hidden whenever scrolled (both bands were `top: 0`, header covered it)
+- header drag: `zoneSees 0, headerSees 3, transform none` — never received
+
+**The geometry is the fix.** Three elements stack in a fixed band: grab zone
+`top 0 h 33`, header `top 33 h 51`, day label `top 84`. Each offset is the height
+of everything above it, so **two** values are published: `--card-grab-h` (zone
+alone) and `--card-fixed-h` (zone + header). WS52 published one sum and gave it
+to both, which pushed the header to 84 and let the 33 px zone show through as the
+photographed gap.
+
+**MEASURED after, on the tablå card at scrollTop 0/40/600/1400/2000/4000:**
+`gapToLabel0 = 0`, `markVisible = true` at every position, `noOverlap = true`,
+labels never coincide. Header drag closes from rest **and** from scrollTop 2500.
+List scroll still survives; grab-zone drag still folds.
+
+**Podcast cards: no separate work.** All three card types are built by
+`openContextCard`, so they share the implementation and the `.sheet.context-card`
+CSS scope. Verified live rather than assumed — `Nyheter P4 Göteborg` reports the
+same `33px`/`84px`, `markVisible: true`, `listScroll_survived: true`,
+`headerDrag_closed: true`.
+
+**Two wrong fixes came first, both recorded because both were measured:**
+subtracting the day label's own padding from its offset (wrong element — it is
+`.card-body`'s margin; it changed nothing at rest then overlapped by 41 px), and
+giving the labels the header height alone (parks them 33 px high, under the
+header). The gap was `margin-top: 8px` all along.
+
+**Test count:** 523 → 528. **4 mutations, 4 RED**, checksums restored: labels use
+header height alone · restore the 8 px margin · header back to `top: 0` · unbind
+the header swipe.
+
+**Three test-side faults, all mine, each reporting a defect that did not exist:**
+a hand-rolled regex that could not match the real `setProperty(...)` call; a
+regex demanding `\d+px` when the fix writes `margin-top: 0` without a unit; and a
+call-site count that also matched the function declaration.
+
+**Deploy checks:** suite 528/528 **PASS** · remote `2ede0c3` **PASS** · live
+`app.8056e062.js` **PASS** · served bundle **byte-identical to local**
+(`89269067`, md5) **PASS**. The polling loop printed a different hash first —
+again my own stale expected value, resolved by md5 rather than by assuming.
+
+**Next:** owner to check build **`3bac597`**. One reading settles all three: open a
+tablå card, scroll to the middle, and check that (a) the header sits flush against
+"Igår" with no gap, (b) the grab mark is still there, (c) dragging from the P1
+header closes the card. Then repeat on a podcast.
