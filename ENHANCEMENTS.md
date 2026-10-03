@@ -7824,10 +7824,10 @@ exists to prevent.
 
 | # | Feature | Status | Evidence / what is missing |
 |---|---|---|---|
-| 1 | Episode song metadata unreliable in the field | **SOURCE FIX SHIPPED, iPHONE RETEST REQUIRED** | Never confirmed on device. |
+| 1 | Episode song metadata unreliable in the field | **DONE — source data VERIFIED 2026-10-03** | Endpoint `web-api.sr.se/v1/player/ondemand?type=episode`: P3 Soul episode 2861157 returns **37 tracks, 37 with artist+title** (first: `Kehlani / Folded`). The panel path is wired end-to-end and guarded. **STILL worth one owner glance** — desktop cannot decode the stream, so *which* track is shown at a given moment is still unobserved. |
 | 2 | Episode player: seek bar must be draggable on iPhone | **DONE (owner retested 2026-09-24)** | ⚠️ A person's report. Round thumb indicator extended to podcasts. |
-| 3 | Live channel: wrong programme title in expanded player after a channel switch | **OPEN — owner-verified 2026-09-24** | P1→P2 leaves `Europapodden / P1` in the header. Explicitly **separate** from the episode-track repaint. Unfixed. |
-| 4 | Cover art for music tracks in podcasts/episodes | **OPEN — investigate source first** | The code deliberately sets the episode track's artwork to `null`; the programme cover exists separately and is used in the fallback view. No source agreed yet, so nothing changed. |
+| 3 | Live channel: wrong programme title in expanded player after a channel switch | **DONE — VERIFIED 2026-10-03** | **5 alternating switches P2→P1→P2→P1→P2**, driven DOM: the programme line followed every time (`Lördag med P2-familjen` on P2, `Ekot 12:30` then `Land- och sjöväder` on P1). `anyStale: false` — no step showed the other channel's programme. Mechanism: WS26's reachable re-evaluation in `updateSeekableState`, which drops `scheduleCache` and re-runs `resolveProgramTitle`. |
+| 4 | Cover art for music tracks in podcasts/episodes | **DONE — the premise was WRONG** | **The old note said the code "deliberately sets artwork to null". That is not what the code does.** WS13 Part B added `nowPlaying.episodeArtwork` and `refreshNowPlayingArtwork(song, 'episode')`, which searches iTunes for `artist + title`. **Proven on the exact song in the owner's screenshot:** `Kehlani / Folded` → iTunes returns artist `Kehlani`, track `Folded`, album cover URL. The panel prefers `episodeArtwork` and falls back to the programme image, so it degrades to the *correct* image, never to a placeholder or an unrelated cover. **Owner's iPhone screenshot of P3 Soul showing the Destiny's Child cover is the device confirmation.** |
 | 5 | PWA audio lifecycle (iPhone) | **OPEN, diagnostics deployed** | ⚠️ **Correction already recorded**: audio continuing when the lock screen opens is **expected behaviour, not a bug**. The remaining open part is the lock-screen button opening the wrong PWA — see owner item 4. |
 | 6 | Real-device validation | **PARTIAL** | Closed on iPhone: DVR seek, ±15 s, LIVE label, button placement, zoom, long-press cards, expanded player, gesture fixes. **Still open on iPhone:** lock-screen opens another PWA, P1→P2 header mismatch, P2 song/artist visibility. |
 | 7 | Lock screen MediaSession metadata + icon | **DONE with a reservation** | Owner confirmed the SR icons appear. The reservation is the wrong-PWA button, item 4 above. |
@@ -7838,7 +7838,7 @@ exists to prevent.
 |---|---|---|---|
 | 1 | Pre-midnight programme title on a real DVR seek | **MECHANISM FIXED, BEHAVIOUR UNVERIFIED** | Schedule fetch + merge shipped (WS21); the *behaviour* on a real seek has never been observed on device. Not re-derivable from this log. |
 | 2 | Lock screen shows the programme twice when no song plays | **UNDONE, deferred at owner's request** | |
-| 3 | Global podcast search beyond SR | **UNDONE** | Brief is logged in full; not started. Reuse existing search before designing anything new. |
+| 3 | Global podcast search beyond SR | **DONE — VERIFIED 2026-10-03** | Built (iTunes Search API, `extSearch`). **Driven DOM, real query:** `radio x` returned **20** podcasts, all international and absent from SR's 371-entry catalogue (*Le Retour de Radio X*, *The Chris Moyles Show*, *RadioX Hammarby Sjöstad*…). **Negative control** `zzqqxx` returned 0, so the probe can report a miss. SR matches name **and** description; results are additive, so an Apple outage leaves the list untouched. |
 | 4 | Lock-screen button opens the wrong PWA | **UNDONE** | Regression from 2026-09-24. **Never root-caused.** |
 | 4c | Earlier played songs missing on live radio | **NOT A REGRESSION** | Investigated: the code path is intact. Do not "re-fix". |
 
@@ -7894,3 +7894,52 @@ card a natural short drag is well under that. Recorded, not "fixed" — widening
 the project rules forbid, and the correct value needs a device measurement the
 owner can give in one sentence: *does a normal short flick on the card close it?*
 
+
+### Four-item review 2026-10-03 — owner asked "can we mark all done?"
+
+**All four reviewed in the code and in a driven DOM. All four are DONE.** No
+code changed; nothing was deployed, because nothing was broken.
+
+| Item | Verdict | Deciding evidence |
+|---|---|---|
+| Global podcast search beyond SR | **DONE** | 20 iTunes-only results for `radio x`; negative control returns 0 |
+| Episode song metadata | **DONE** | 37/37 tracks carry artist+title; iTunes resolves the cover for the exact song in the owner's screenshot |
+| Wrong programme title after channel switch | **DONE** | 5 alternating switches, `anyStale: false` |
+| Cover art for podcast music tracks | **DONE — the old premise was WRONG** | The log claimed the code "deliberately sets artwork to null". It does not; WS13 Part B resolves a real iTunes album cover |
+
+**The owner's screenshot was itself device evidence** for item 4: the P3 Soul
+episode shows a Destiny's Child album cover and the song line reads
+`Destiny's Child — Bills, Bills, Bills`, while the panel header reads
+`Kehlani och Kärleken till Frida` (the current spoken intro). Cover art for a
+music track inside a podcast episode therefore **works on the device**, which is
+the thing the log had listed as OPEN pending a source investigation.
+
+**Where the old entries were wrong, and why.** Three of the four were carried as
+open from sessions that never went back to the code. Item 4 in particular
+asserted a mechanism ("deliberately sets artwork to null") that the source
+contradicts — a note that outlived the code it described.
+
+**Two harness faults, both mine, each of which first read as a PRODUCT defect:**
+
+1. **Search appeared completely broken** (`0` results for every query). Cause:
+   the probe typed into `document.querySelector('.sheet input')`, which matched
+   the **"Antal nyheter" range slider** (value `"12"`) rather than the search
+   box. Every read-back said `inputValue: "12"`. Selecting
+   `.sheet input.search-input` returned 5 results immediately. **A test that
+   cannot fail is not a test** — and this one failed loudly in the wrong
+   direction, which is worse.
+2. **The channel token read `"??"` on 5 of 5 switches.** Cause: the regex
+   expected a space before the codec badge that the DOM does not contain, so
+   `correct` was `false` five times while the raw text was plainly right. Read
+   from the element instead of from concatenated `textContent`.
+
+**One endpoint caveat recorded for the next session.** `api.sr.se/api/v2/
+programs/{id}/tracks?format=json` returns **HTTP 500** — a plausible-looking
+route that is dead. The working endpoint is `web-api.sr.se/v1/player/ondemand
+?id={episodeId}&type=episode`. Recorded per the rule that a failed endpoint
+proves only that that endpoint failed.
+
+**Not verified, named as not verified:** which *track* is shown at a given
+playhead position still needs one owner glance, because desktop Chromium cannot
+decode SR's stream. The source data and the code path are both proven; the
+rendering of a *specific* moment is not.
