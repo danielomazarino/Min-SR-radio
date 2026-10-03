@@ -1099,3 +1099,65 @@ pending one device reading from the owner.
 **Next:** owner to check build **`1eae491`** — drag down from anywhere in the top
 band of a tablå card, including on "Igår"/"Idag", and report whether a normal
 short flick closes it.
+
+## E2/E3/E4 UX pass — 2026-10-03
+
+**Baseline:** `npm test` → **532/532** (run). **Now 541/541.**
+**Scope:** E2 icons · E3 news chevron · E4 Info button + Tests page. Plus a
+5-minute status report in chat, which the owner asked for and which was given
+throughout.
+
+**E2 MEASURED before/after** (driven DOM, then live): glyph 14px → **20px**;
+the 26px round button with its tinted ring and fill **removed** (radius 0, no
+border, no background); gap 6px → **14px**; `margin-left:auto` pins the pair to
+the right edge. At a short AND a long title `offsetFromRightEdge` = **0**,
+`grewBy` = **0**. Tap target 26×26 → **34×34**, so the thumb target got BIGGER
+even though the visible box shrank — the padding is load-bearing and the CSS
+says so.
+
+**E3 MEASURED**, live, twice each direction: news → `expanded:true`, radio →
+`expanded:false`, `allCorrect:true`. `playNews()` marks the track
+`isNewsBroadcast:true`; `updateNewsFold()` exempts it BEFORE the auto-collapse.
+Needed a marker because news and podcast episodes are both `kind:'episode'` —
+guessing from kind would have folded podcasts, the one thing excluded.
+**A debug handle was required**: SR's stream is CORS-blocked, so `playing` is
+permanently false offline and a click-check reports "never folds" for BOTH kinds.
+
+**E4 MEASURED**, live: cog and Info both 44×44, same tint `rgb(227,239,238)`,
+same colour `rgb(0,80,78)`, `sameDesign:true`. Tests page: buttons y273–464
+(5 controls), results y464–534 under a "Mätvärden" heading, all buttons on the
+first screen, 1013 chars of results rendered, **prompt ids visible: none**,
+copy button kept. Labels rewritten to actions; formula detail moved to a muted
+hint so simplification does not delete what they measure.
+
+**Test count:** 532 → 541. **SIX mutations. First pass: 4 red, 2 GREEN.**
+Both greens were guards that could not fail:
+- **M4** disabled the exemption with `false && isNewsBroadcast()`; the string is
+  still present so a presence check passed. Guard now asserts branch BODIES.
+- **M5** swapped the append order in the final `el(...)`; the guard read where
+  blocks are BUILT, not APPENDED. Both asserted now.
+**M6 then exposed a third: a heredoc-escaping bug in the guard's own scanner**
+— `/'([^'\\n]*)'/g` matched a literal backslash-n and scanned **nothing**. Found
+only because M6 was run rather than assumed. After fixes: **6/6 RED**.
+
+**Four test-side faults during the work**, all mine, each reporting a defect
+that did not exist: a wrong `region()` end marker (`updatePlayingMarks` is
+BEFORE `updateNewsFold`); a 600-char window too small for the marker it looked
+for; `grab()` given `'function NAME'` instead of a bare name; a block slice
+ending inside the `el()` call.
+
+**Deploy checks:** suite 541/541 **PASS** · remote `39d0e21` **PASS** · live
+`app.e23e4764.js` + `styles.171d5438.css` 200 **PASS** · both served files
+**byte-identical to local** (`e61994f3`, `12568d1c`) **PASS** · live DOM
+re-verified: `sameDesign true`, `allCorrect true`, `grewBy 0`, buttons 273–464 /
+results 464–534, `promptIdsInOutput false`.
+
+**NOT DONE / named as not done:** no iPhone verification — every number above is
+desktop Chromium, including how the 34px targets feel under a real thumb. The
+E3 fold probe is a test-only handle, not user UI. E2 exact-match links remain a
+product decision (unchanged). The flick window remains unchanged pending the
+owner's reading.
+
+**Next:** owner to check build `1b78db3` — open a podcast, expand the player,
+check the icons; play a news item and confirm the chevron stays open; then play a
+radio channel and confirm it folds as before; open Tests and read the page.
