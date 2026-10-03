@@ -2586,8 +2586,19 @@ test('E4: the sheet button is labelled Tests, not Info', () => {
 // --- 1. The Info drag: `move` must be a SEPARATE argument from `panel`. -----
 test('WS53: the swipe target and the moving element are separate parameters', () => {
   const fn = stripComments(grab('enableSwipeToClose'));
-  assert.match(fn, /\{ axis = 'x', move = null \}/,
-    'enableSwipeToClose must accept an explicit `move` target');
+  // WS55 SUPERSEDED THE FORM, NOT THE REQUIREMENT. This guard asserted the
+  // options object LITERALLY -- /{ axis = 'x', move = null }/ -- so adding the
+  // `within` filter (WS55, needed to reach the async-created day labels) broke
+  // a test whose actual requirement is untouched: `move` must stay a separate
+  // parameter from `panel`, defaulting to null.
+  //
+  // Restated to assert the PROPERTIES instead of the punctuation, at least as
+  // strongly: `move` must still be an accepted option, still default to null,
+  // and `mover` must still fall back to `panel`. A test that pins the exact
+  // option list cannot survive any future option, and its failure mode is to
+  // report a product defect when the code is right.
+  assert.match(fn, /move = null/,
+    'enableSwipeToClose must accept an explicit `move` target defaulting to null');
   // The transform must be written to `mover`, never to `panel`. Writing it to
   // `panel` is the bug: the gesture surface is a 33 px grab zone, so only the
   // grab MARK moved while the sheet stayed put.
@@ -2742,4 +2753,149 @@ test('WS54: all three card types go through openContextCard', () => {
   const calls = [...APP_JS.matchAll(/openContextCard\(\{/g)].length - (def ? 1 : 0);
   assert.ok(def, 'openContextCard must exist');
   assert.equal(calls, 3, 'the tablå card plus both podcast cards share one implementation');
+});
+
+// ===========================================================================
+// WS55 -- "the band to touch on for the dragging down doesn't seem to cover the
+// whole top area ... it feels like one has to be very close to the position of
+// the horizontal mark."
+//
+// MEASURED in the driven DOM, on the tabla card (492x760):
+//
+//   band                   y-range    height  touch-action    app owns it?
+//   ---------------------  --------  ------  -------------  -----------
+//   .sheet-grab-zone       91 - 124     33px  none           YES
+//   .sheet-header         124 - 175     51px  manipulation   no
+//   .card-day-label Igar  175 - 205     30px  manipulation   no
+//   .card-day-label Idag  205 - 235     30px  manipulation   no
+//
+//   -> 33 px usable of 144 px visible. The reliable target was 33 px tall and
+//      centred on a 5 px mark.
+//
+// WHY THIS NEEDS A TEST AND NOT A COMMENT. The JS binding already existed
+// (WS54 bound the header). A synthetic drag from inside the header DOES close
+// the card on desktop Chromium, so a behaviour test passes on the broken code.
+// The defect is only visible in the COMPUTED `touch-action`, which is what the
+// browser uses to decide whether the app or the UA owns the gesture. These
+// guards therefore assert the CSS property, BY VALUE, on the named bands.
+//
+// WHAT DOES NOT PROVE: that iOS Safari now behaves. Only the owner's phone can
+// settle that.
+// ---------------------------------------------------------------------------
+
+const cssAll = fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8');
+
+/**
+ * CSS with comments REMOVED and whitespace collapsed to single spaces.
+ *
+ * Two normalisations, and the second one was a real failure: the band rule is
+ * followed by a long explanatory comment, so in the raw file the NEXT selector
+ * is not adjacent to the preceding `}`. The `(?:^|[{}])` anchor therefore did not
+ * match it and the guard read only the FIRST rule of the pair -- answering the
+ * sticky question while appearing to answer the touch-action one, and returning
+ * an empty list on correct CSS.
+ *
+ * Comments are stripped rather than made adjacency-tolerant because a comment
+ * is not CSS: it can contain `{`, `}`, or the word `touch-action`, and a guard
+ * that reads them is measuring prose. Strip first, then match.
+ *
+ * Replaced with a single space, never an empty string, so two identifiers
+ * separated only by a comment cannot be glued into one token.
+ */
+const cssFlat = cssAll.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\s+/g, ' ').trim();
+
+/**
+ * EVERY declaration block whose selector list is EXACTLY `selector`.
+ *
+ * Returns an array because one selector list can legitimately carry SEVERAL
+ * rules. The band selector appears twice in the file: once for `position:
+ * sticky` and once for `touch-action: none`. A helper returning only the FIRST
+ * match therefore answered the sticky question while appearing to answer the
+ * touch-action one -- and reported `null` on correct CSS. That is the third
+ * test-side fault in this area, and the same shape as the others: the guard
+ * was reading the wrong thing and dressed the result as a product defect.
+ *
+ * Exact selector, so a DESCENDANT selector that merely mentions the name -- the
+ * day-label rule contains `.card-list` -- cannot leak its body into an answer
+ * about the list itself. The first version used `[^{}]*\.card-list[^{}]*`,
+ * which matched that leak and reported the sticky band as the list's own rule.
+ */
+function ruleBodiesFor(selector) {
+  const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp('(?:^|[{}])\\s*' + esc + '\\s*\\{([^}]*)\\}', 'g');
+  return [...cssFlat.matchAll(re)].map((m) => m[1]);
+}
+
+/** The single declaration block for a selector, or null if not exactly one. */
+function ruleBodyFor(selector) {
+  const all = ruleBodiesFor(selector);
+  return all.length === 1 ? all[0] : null;
+}
+
+/** Every `touch-action` value a selector sets, across ALL of its rules. */
+function touchActionsFor(selector) {
+  return ruleBodiesFor(selector)
+    .map((b) => (b.match(/touch-action:\s*([a-z-]+)/) || [])[1])
+    .filter(Boolean);
+}
+
+const BAND_SELECTOR = '.sheet.context-card > .sheet-grab-zone, '
+  + '.sheet.context-card > .sheet-header, '
+  + '.sheet.context-card > .card-body > .card-list > .card-day-label';
+
+test('WS55: the WHOLE fixed band is app-owned, not just the mark strip', () => {
+  // Checked across EVERY rule carrying this selector list, so the sticky rule
+  // cannot mask the touch-action one -- that was the previous version's bug.
+  assert.deepEqual(touchActionsFor(BAND_SELECTOR), ['none'],
+    'the grab zone, header and day labels must set touch-action: none -- a '
+    + '33px-only target was exactly the reported defect');
+});
+
+test('WS55: the band rule names all three surfaces, not a subset', () => {
+  // Guard against a future edit quietly dropping the labels from the selector
+  // list while leaving the rule valid CSS. Matched per-selector, so shortening
+  // the list is a failure rather than a silent narrowing of the target.
+  assert.ok(ruleBodiesFor(BAND_SELECTOR).length > 0, 'the shared band rule must exist');
+  for (const sel of ['.sheet.context-card > .sheet-grab-zone',
+                     '.sheet.context-card > .sheet-header',
+                     '.sheet.context-card > .card-body > .card-list > .card-day-label']) {
+    assert.ok(cssFlat.includes(sel),
+      `the band rule must still name ${sel}`);
+  }
+});
+
+test('WS55: the day labels are a swipe surface, by DELEGATION not a loop', () => {
+  const ctx = stripComments(region('function openContextCard', 'function openChannelCard', APP_JS));
+  // Delegated on the sheet, filtered by `within`. Asserted as the delegation
+  // form because the LOOP form looks right in source text and does nothing --
+  // MEASURED: the loop bound 0 listeners and a drag from a day label gave
+  // `transform: none` 3 of 3, because the labels are created inside the async
+  // `.then()` that runs AFTER this binding pass.
+  assert.match(ctx, /enableSwipeToClose\(overlay, sheet, close, \{\s*axis: 'y',\s*move: sheet,\s*within: '\.card-day-label',\s*\}\)/,
+    'the labels must be reached by delegation, so async creation cannot miss it');
+  assert.doesNotMatch(ctx, /for \(const \w+ of sheet\.querySelectorAll\('\.card-day-label'\)\)/,
+    'a loop over the labels binds nothing -- they do not exist yet at this point');
+  // The filter must be honoured by the gesture function itself, not only named.
+  const fn = stripComments(grab('enableSwipeToClose'));
+  assert.match(fn, /within/,
+    'enableSwipeToClose must accept and apply the `within` filter');
+  assert.match(fn, /e\.target\.closest\(within\)/,
+    'the filter must test the touch TARGET, or a drag from a label scrolls away');
+});
+
+test('WS55: the scrolling list keeps its gestures', () => {
+  // The counterweight. `touch-action: none` on the list would restore the
+  // WS50/WS51 defect where every scroll touch also ran the drag logic.
+  // Asserted on the list's OWN rule, via the exact-selector helper.
+  const body = ruleBodyFor('.card-list');
+  assert.ok(body !== null, '.card-list must still have a rule of its own');
+  assert.doesNotMatch(body, /touch-action:\s*none/,
+    'the programme list must keep its scrolling -- it is the scroller');
+  // Canary: this guard is only meaningful if it CAN fail. The scroller is the
+  // .sheet, so assert that explicitly rather than assuming it from context.
+  const sheet = ruleBodyFor('.sheet');
+  assert.ok(sheet !== null, '.sheet must have a rule of its own');
+  assert.match(sheet, /overflow-y:\s*auto/,
+    'the sheet is the scroll container; if this cannot match, the counterweight '
+    + 'guard above is no longer checking the thing it claims to check');
 });

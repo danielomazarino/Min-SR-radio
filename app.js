@@ -7431,7 +7431,7 @@ function seekMeasureRecordText() {
   // The two jobs are genuinely different, so they get two parameters. The
   // gesture is still scoped to the zone (so list touches never reach the drag
   // logic), while the SHEET slides -- which is what the user sees moving.
-  function enableSwipeToClose(overlay, panel, close, { axis = 'x', move = null } = {}) {
+  function enableSwipeToClose(overlay, panel, close, { axis = 'x', move = null, within = null } = {}) {
     // Defaults to the gesture surface, so all pre-existing call sites keep
     // their exact current behaviour.
     const mover = move || panel;
@@ -7441,6 +7441,14 @@ function seekMeasureRecordText() {
 
     panel.addEventListener('touchstart', (e) => {
       if (e.touches.length !== 1) return;
+      // WS55: optional delegation filter. When `within` is set, the gesture only
+      // counts if it STARTED on a descendant matching that selector. Used for
+      // the day labels, which do not exist when the card is built -- see the
+      // binding site for why enumeration cannot work there.
+      if (within && !(e.target instanceof Element && e.target.closest(within))) {
+        dragging = false;
+        return;
+      }
       startX = e.touches[0].clientX;
       startY = e.touches[0].clientY;
       t0 = Date.now();
@@ -8339,6 +8347,42 @@ function seekMeasureRecordText() {
     // actually touched receives the events.
     enableSwipeToClose(overlay, grabZone, close, { axis: 'y', move: sheet });
     enableSwipeToClose(overlay, header, close, { axis: 'y', move: sheet });
+
+    // WS55: the day labels join the two bands above.
+    //
+    // MEASURED on the tabla card: of the 144 px a finger sees at the top of the
+    // card, only 33 px -- the strip holding the 5 px mark -- was guaranteed to
+    // reach this code. That is the owner's "it feels like one has to be very
+    // close to the position of the horizontal mark", stated as a number.
+    //
+    // ---- WHY THIS IS DELEGATION AND NOT A LOOP OVER THE LABELS ----
+    //
+    // The obvious implementation is a `for` loop calling enableSwipeToClose on
+    // each `.card-day-label`. IT DOES NOT WORK, and a source-text test cannot
+    // tell the difference because the two versions read almost identically.
+    //
+    // openContextCard calls buildBody() and only THEN binds the bands. For the
+    // tabla card buildBody() returns immediately after starting
+    // `Promise.all([...]).then(...)`, and the day labels are created INSIDE
+    // that .then(). So a loop here runs while there are zero labels.
+    //
+    // MEASURED, not reasoned: the loop bound 0 listeners, and a drag from y=190
+    // (inside the first day label) gave `transform: none` on 3 of 3 attempts,
+    // while y=168 inside the header closed 3 of 3. Sampling the label count over
+    // time showed 2 labels present at 0 ms -- which is exactly the trap. They
+    // ARE there; they are there AFTER this synchronous pass. "The element
+    // exists" and "the element existed when you looked" are different claims.
+    //
+    // This is the WS21 / WS26 class of defect: correct, tested code that never
+    // executes. Binding to the SHEET with a `within` filter fixes it for good --
+    // one listener, correct for labels created before OR after this line, so the
+    // async timing stops mattering.
+    //
+    // The sheet has no other touch listener, so this cannot double-fire, and
+    // `within` scopes it to the labels only, leaving the list alone.
+    enableSwipeToClose(overlay, sheet, close, {
+      axis: 'y', move: sheet, within: '.card-day-label',
+    });
   }
 
   // Channel card: tablå for YESTERDAY + TODAY via scheduledepisodes (live
