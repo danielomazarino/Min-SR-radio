@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '80b7f49';
+  const APP_BUILD = '2828b59';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -1446,7 +1446,32 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // until the next track: a panel that reopens under the finger that just
   // closed it is worse than one that never opens by itself.
   let expandManual = false;
-  function setExpandManual(v) { expandManual = !!v; }
+  // The song the override was set under. Compared against the current song, so
+  // the override lapses on the next SONG rather than after a timer.
+  //
+  // Why a key and not a boolean: the bug was a boolean that was never cleared.
+  // A key is self-clearing -- a new song simply does not equal the old key, so
+  // there is no separate "reset" step to forget. That removes the failure mode
+  // rather than patching it, which is what the boolean version did.
+  let expandManualKey = null;
+  function setExpandManual(v) {
+    expandManual = !!v;
+    expandManualKey = v ? currentSongKey() : null;
+  }
+  // The identity of "what is playing now", or null when nothing is. Used only to
+  // expire the manual override, so it is deliberately cheap and total: it must
+  // never throw and never return a value the caller has to interpret.
+  function currentSongKey() {
+    const cur = state.current;
+    if (!cur) return null;
+    if (cur.kind === 'episode') {
+      const t = episodeCurrentTrack;
+      return t && t.title ? `episode|${t.artist || ''}|${t.title}`.toLowerCase() : null;
+    }
+    const head = resolvePlayheadMeta();
+    const s = head && head.song;
+    return s && s.title ? `${s.artist || ''}|${s.title}`.toLowerCase() : null;
+  }
 
   // Is there song information to show right now?
   function hasSongInformation() {
@@ -1483,8 +1508,39 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // minimized there is nothing to fold INTO and nothing to fold OUT of, so
     // this must not create a panel behind the mini bar.
     if (playerMinimized) return false;
-    // Manual control wins, until the next track resets it.
-    if (expandManual) return false;
+    // Manual control wins -- but ONLY until the song changes.
+    //
+    // The comment here used to claim a reset existed ("until the next track
+    // resets it") while no code performed one, which is the WS26 Part 4 shape:
+    // a comment asserting a mechanism, written first, never implemented. That
+    // made the override a one-way latch -- once the owner unfolded by hand, the
+    // auto-fold was dead for the rest of the session.
+    //
+    // IMPORTANT: that latch was NOT what the owner saw, and saying so is the
+    // point of the correction below. The owner reported "it is not expanding when
+    // songinfo comes", and a latched override would have broken the FOLDING too.
+    // The owner then observed the panel auto-expanding once, which falsifies the
+    // latch as the cause of the reported symptom.
+    //
+    // The reset is still implemented, because a comment that lies is a defect
+    // and because an override that never expires is wrong on its own terms -- but
+    // it is a LATER fix, not THE fix. The real cause was the missing repaint when
+    // the artwork resolves; see refreshNowPlayingArtwork.
+    //
+    // WHY A SONG AND NOT A TIMER: a timer would let the panel re-open under a
+    // finger that had just closed it, which is the complaint that made the
+    // manual override necessary. The song key is self-clearing -- a new song
+    // simply does not equal the old key -- so there is no separate reset step to
+    // forget, which removes the failure mode rather than patching it.
+    if (expandManual) {
+      // Lapsed? Then the override is over and auto-fold resumes.
+      if (expandManualKey === null || expandManualKey !== currentSongKey()) {
+        expandManual = false;
+        expandManualKey = null;
+      } else {
+        return false;
+      }
+    }
     const want = hasSongInformation();
     const open = $player.querySelector('.player-expand') !== null;
     if (want === open) return false;
@@ -2157,6 +2213,10 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       if (kind === 'poll') { nowPlaying.onAirArtwork = artworkCache.get(key); paintNowPlaying(); }
       else if (kind === 'playhead') { nowPlaying.playheadArtwork = artworkCache.get(key); paintNowPlaying(); }
       else nowPlaying.episodeArtwork = artworkCache.get(key);
+      // ITEM 4, SECOND PASS: the open panel must show a CACHED cover too. It
+      // showed the placeholder instead, because a cache hit returned before any
+      // repaint -- see the note on the fetch path below for why this matters.
+      repaintExpandPanel();
       return;
     }
     try {
@@ -2171,6 +2231,31 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       if (kind === 'poll') { nowPlaying.onAirArtwork = big; paintNowPlaying(); }
       else if (kind === 'playhead') { nowPlaying.playheadArtwork = big; paintNowPlaying(); }
       else nowPlaying.episodeArtwork = big;
+      // ITEM 4, SECOND PASS -- THE CAUSE OF "it does not expand when songinfo
+      // comes". OWNER, device: "I saw now once the extended menu expand when a
+      // song play, so what I wrote about is not fully true." That correction
+      // matters and it is why the first diagnosis was wrong.
+      //
+      // I had concluded the manual override latched and never reset. That cannot
+      // be the cause: a latched override would have stopped the FOLDING too,
+      // and the owner saw folding work. Discarded rather than patched -- the
+      // symptom was half right and the mechanism did not fit.
+      //
+      // THE REAL CAUSE, measured: the panel OPENS as soon as the song title
+      // exists, but the full album cover appears only once the iTunes lookup
+      // RESOLVES, which is a network round trip AFTER the panel opened. Nothing
+      // repainted the panel when it resolved -- `repaintExpandPanel()` had three
+      // call sites (paintNowPlaying, paintProgramTitle, the timeline merge) and
+      // the artwork writers were not among them.
+      //
+      // The visible consequence is exactly what the owner described: unfold by
+      // hand and the cover IS there, because that re-runs the render AFTER the
+      // lookup has landed. Auto-open shows the placeholder and never catches up.
+      // So it was never "not expanding" -- it was expanding with stale content.
+      //
+      // Fixed at the source rather than by a timer: repaint where the cover is
+      // written, which is the same place the panel's other data is refreshed.
+      repaintExpandPanel();
     } catch {
       // Artwork failure: never blocks anything. Keep old image briefly to
       // avoid flicker; clear only when the song itself changes.
@@ -8067,6 +8152,23 @@ function seekMeasureRecordText() {
     const overlay = el('div', { class: 'reader-overlay', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Om Min Radio' });
     const article = el('article', { class: 'reader' });
     const close = () => { overlay.remove(); document.body.style.overflow = ''; };
+    // ITEM 1, SECOND PASS. OWNER: "The Info icon should open a ui layout of
+    // the page that is similar to the layout with the band that can close the
+    // page with gesture down."
+    //
+    // The gap, measured: the settings sheet has a `.sheet-grab-zone` -- a
+    // dedicated fixed band at the top that owns the swipe-down-to-close gesture.
+    // This page had a bare `.reader-topbar` with no such band, so the gesture
+    // worked only by accident of where the finger happened to land. It is the
+    // same class of defect as ITEM 1 in the previous pass (33 px of 144 px),
+    // on the other surface: a gesture with no band of its own.
+    //
+    // The three bands are the settings sheet's, unchanged: the grab zone, the
+    // title row, and (here) the topbar itself. All three are bound, and all
+    // three get `touch-action: none` in the stylesheet -- binding without the
+    // CSS is what made WS53's original fix unreliable on iOS.
+    article.appendChild(el('div', { class: 'reader-grab-zone' },
+      el('div', { class: 'sheet-grab' })));
     article.appendChild(el('div', { class: 'reader-topbar' },
       el('div', { class: 'reader-brand', text: 'Min Radio' }),
       el('button', { class: 'reader-close', type: 'button', 'aria-label': 'Stäng', text: '✕', onclick: close })));
@@ -8079,7 +8181,13 @@ function seekMeasureRecordText() {
     document.addEventListener('keydown', function esc(e) {
       if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc); }
     });
-    enableSwipeToClose(overlay, article, close, { axis: 'y' });
+    // Bound on the BANDS, not on the whole article. Binding the article is what
+    // BUG 1 was about: every vertical touch inside the scrolling text ran the
+    // drag logic and fought iOS scrolling. `.reader-body` is a long scrollable
+    // region and must never be a swipe surface.
+    const closeHelp = () => { close(); };
+    enableSwipeToClose(overlay, article.querySelector('.reader-grab-zone'), closeHelp, { axis: 'y' });
+    enableSwipeToClose(overlay, article.querySelector('.reader-topbar'), closeHelp, { axis: 'y' });
     body.appendChild(el('h2', { class: 'about-title', text: 'Om Min Radio' }));
     body.appendChild(el('p', { class: 'about-version', text: `bygg ${APP_BUILD} · Utvecklad av ${APP_DEVELOPER}` }));
 
@@ -8417,21 +8525,43 @@ function seekMeasureRecordText() {
     // and the numbering. The workflow the prefixes are for is "press 1-4, then
     // 5 to copy", and a copy button sitting among the actions is one more thing
     // to hit by accident -- which loses the measurement the owner wanted.
+    // ITEM 2, SECOND PASS. OWNER: "the frist button now especially" -- still
+    // too hard to understand. Checked what the button actually IS rather than
+    // what its label says: `ws40Pick` is not a test at all. It is a SELECT that
+    // chooses WHICH PROGRAMME the other four tests measure. It opens a dropdown
+    // and changes no measurement by itself.
+    //
+    // Numbering it "1." and writing "Börja med den här" therefore told the owner
+    // to PRESS something that cannot be pressed into producing a result, and
+    // made it look like the first step of a four-step test. The numbering was
+    // the owner's own idea -- prefixes so a bug report can say "tryck 3" -- and
+    // it only works for the buttons that are genuinely actions.
+    //
+    // So the selector is taken OUT of the numbered sequence and labelled for
+    // what it is. The action buttons keep 1-4 and the copy button keeps 5, so a
+    // reference like "tryck 3" still means the same thing it meant yesterday.
     const DIAG_ACTIONS = [
-      [ws40Pick, 'Läser av aktuell tid och läge. Börja med den här.'],
-      [ws40Measure, 'Mäter tidsförskjutningen just nu. Kör den efter att du '
-        + 'ställt in något.'],
+      [ws40Pick, 'Väljer vilket PROGRAM du vill mäta. De fyra knapparna nedan '
+        + 'mäter just det du valt här.', null], // a SELECT, not an action
+      [ws40Measure, 'Mäter tidsförskjutningen just nu, för programmet ovan.', 1],
       [ws40SeekNew, 'Hoppar tillbaka en bit och mäter igen. Används för att se '
-        + 'om en förskjutning växer eller minskar.'],
-      [ws40SeekOld, 'Jämför mot den äldre mätningen från samma ställe.'],
+        + 'om en förskjutning växer eller minskar.', 2],
+      [ws40SeekOld, 'Jämför mot den äldre mätningen från samma ställe.', 3],
       [ws40CopyBtn, 'Kopierar allt du just mätte. Gör detta sist, så finns '
-        + 'hela mätningen kvar att skicka.'],
+        + 'hela mätningen kvar att skicka.', 4],
     ];
-    DIAG_ACTIONS.forEach(([btn, hint], i) => {
+    // The number comes from an EXPLICIT list, not the array index. With the
+    // selector in the array, an index would have made it "1." and pushed every
+    // action down by one -- so "tryck 3" would silently have changed meaning.
+    // The number travels WITH the entry, not derived from the array index. With
+    // the selector in the array an index would have made it "1." and pushed
+    // every action down by one -- so "tryck 3" would have silently changed
+    // meaning between two builds. `null` means "not a numbered action".
+    DIAG_ACTIONS.forEach(([btn, hint, n]) => {
       // Prefixed, not replaced. The original label is kept intact after the
       // number so a bug report that quotes the button still matches the app.
       const original = btn.textContent;
-      btn.textContent = `${i + 1}. ${original}`;
+      btn.textContent = n ? `${n}. ${original}` : original;
       // The hint is a sibling, NOT a child of the button: a <span> inside a
       // <button> is inside the tap target, so a long explanation would grow the
       // button and make the mis-tap the owner reported MORE likely, not less.
@@ -9106,9 +9236,25 @@ function seekMeasureRecordText() {
           // (EXT_SEARCH_MIN_CHARS). Saying "minst tre tecken" would imply two
           // shows nothing, which is false -- so the threshold is stated as what
           // it is: what each source needs.
+          // OWNER, SECOND PASS 2026-10-03: "you have not done the changes of
+          // text i wanted under poddar". Checked against the original brief
+          // rather than my memory of it, and the brief said: Remove the text
+          // "371 poddar från Sveriges Radio och iTunes". The COUNT was the thing
+          // to remove -- my first pass moved the number into this sentence and
+          // called the instruction satisfied, which is not what it asked.
+          //
+          // The sentence now says only what the owner has to DO. There is no
+          // number anywhere in the empty state, on either tab: the list name is
+          // the heading, and the sub-line is the instruction.
+          //
+          // The two-tabe / three-character thresholds are KEPT, because they are
+          // the part that prevents a mis-typed search looking broken (measured:
+          // two characters already return 45 SR rows, and iTunes needs three).
+          // Losing that would be a real regression, so it stays and the count
+          // goes.
           el('p', { class: 'pick-empty-sub', text: isPod
-            ? `${all.length} poddar. Sök på två tecken för Sveriges Radio, tre eller fler för att även söka iTunes.`
-            : `${all.length} kanaler. Sök på två tecken eller färre.` })));
+            ? 'Sök på två tecken för Sveriges Radio, tre eller fler för att även söka iTunes.'
+            : 'Sök på två tecken eller färre.' })));
         return;
       }
       if (!all.length) {
