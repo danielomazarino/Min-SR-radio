@@ -9120,3 +9120,103 @@ unmeasured.
 1. does the **close gesture** now work from anywhere on the top band, at any scroll position?
 2. are the **channel and podcast rows** in the tablå card tappable?
 3. does the **dropdown** open on "Klicka här för val av program i listan som följer"?
+
+---
+
+## 2026-10-04 (fifth) — WS61: the close gesture covers the top half, and scrolling is priority 1
+
+Owner, in three messages on 2026-10-04, each correcting the last:
+
+> *"yes, but the top band has always worked. it is the 50 percent of the screen with clickable channels, podcasts and button being clickable at the same time"*
+>
+> *"of course it should close the the sheet as doing the same from the banner earlier. the whole requirement is about increasing the area that allows the card to close"*
+>
+> *"for channels and long podcast lists of course scrolling within the list is prio1 and when the list is on top halft the screen to be used for closing the card. clear?"*
+
+**The rule, as the three together state it:** scrolling the list is priority 1, and
+**when the list is at the top**, the **top half of the screen** closes the card.
+
+**What I had wrong, twice.** WS60 shrank the gesture to a 44px band because I judged the
+owner's two halves mutually exclusive — reasoning about a *capture overlay*, which must sit
+above or below the controls. `enableSwipeToClose` binds *listeners*: nothing is painted over
+anything, all listeners are `{passive:true}`, `preventDefault` is never called. Then I
+implemented "scroll wins" *without* the half bound, then reverted it entirely on message
+two alone. Only message three makes both clauses true at once. All three corrections are
+recorded verbatim in the source.
+
+**The mechanism.** `scroller()` walks up from the panel for the first genuinely scrollable
+element — asking the DOM, because the news reader scrolls a different box.
+`closeZoneBottom()` is half the **visible** height below the top of the surface, not half the
+panel, which would grow with the content. Both are read **once, at touchstart**, the only
+moment the two gestures are distinguishable: mid-drag the list has already moved under the
+finger.
+
+### DEPLOY RECORD — build `577d13e`, artifacts `b5a806d` + `d22b31a`
+
+| # | check | result |
+|---|---|---|
+| 1 | suite green, count **up** | **PASS** — 564 → **567** |
+| 2 | whole diff read | **PASS** — `app.js` (`enableSwipeToClose` only, plus four call sites and their notes), 2 test files. **`styles.css` unchanged.** `index.html`/`sw.js`/bundles are artifacts, in separate commits |
+| 3 | driven in a browser, rendered DOM | **PASS** — locally and re-driven on production |
+| 4 | the stated defect is actually fixed | **PASS** — see the measurements below |
+| 5 | nothing else moved | **PASS** — transport, poll, schedule, timing, DVR untouched |
+| 6 | artifacts contain the change | **PASS** — served `app.f002372a.js`: `scrollOwnsIt` ×8, `closeZoneBottom` ×3, `r.top + (H() - r.top) / 2` ×1, `scrollTop > 0` ×1, 4 whole-sheet bindings |
+| 7 | propagation | **PASS** — six asset paths 200; served `index.html` references `app.f002372a.js`; remote head confirmed at `d22b31a` **before** the asset checks |
+
+### PRODUCTION RE-DRIVE — 10 of 10, build id read off the page: `577d13e`
+
+| page | scroll wins (prio 1) | top half closes |
+|---|---|---|
+| cog — Info och anpassningar | **True** | **True** |
+| radio card — tablå | **True** | **True** |
+| podcast card | **True** | **True** |
+| Info page | **True** | **True** |
+| Tests page | **True** | **True** |
+
+Edges, also on production: the **bottom half does not close** (the bound is real, not
+decorative), **0 blocked controls**, and a tab still switches (`aria-selected` false → true,
+sheet open).
+
+### A FALSE ALARM THAT WAS WORTH CHASING
+
+The first production run reported `cog: top-half closes = False` against `True` locally.
+**Hypothesis before instrumenting:** a real difference between builds.
+
+**What it actually was:** the probe dragged 120px. The slow threshold is `35%` of 713px =
+**250px**, so 120px can *only* close as a **flick** (`elapsed < 250ms`). Measured elapsed
+across 6 identical runs:
+
+| elapsed | 200 | 235 | 222 | 208 | **272** | **287** |
+|---|---|---|---|---|---|---|
+| closed? | yes | yes | yes | yes | **no** | **no** |
+
+A clean 6/6 split on the flick boundary — a harness artifact sitting on a knife edge, not a
+product defect. Re-run with an unambiguous 300px slow drag: **10 of 10**.
+
+Recorded because the failure mode is the dangerous one: had I "fixed" the 272ms runs I would
+have changed a gesture rule that was already correct, and the 5 passing runs would have
+hidden it. **A measurement that changes with the weather is a measurement of the rig.**
+
+### Mutations — each guard proved able to go red
+
+| # | mutation | result |
+|---|---|---|
+| 1 | remove the half-screen bound | red on `WS61 … TOP HALF only` + the zone guard |
+| 2 | make the scroll test unreachable (`scrollTop > 1e9`) | red on `SCROLLING IS PRIORITY 1` + the zone guard |
+| 3 | judge the zone on the **end** position instead of the start | red on the zone guard |
+
+`app.js` restored by checksum (`b4bc47e…`) and re-verified. **M2 was first written as an
+orphaned `else if` — not valid JS, which crashed the file instead of failing a test. That is
+a NO-OP wearing a red suit; it was redone as a valid mutation.**
+
+### NOT DONE
+
+- **No iOS device run.** Real touch hardware, momentum scrolling and the `touch-action` /
+  scroll interplay are unverified. Desktop Chromium cannot load SR's DVR stream and has no
+  audio output. **The owner's iPhone remains the only thing that can settle behaviour.**
+- **The podcast-catalogue fetch uses `size=500`, which SR answers with HTTP 500.** Measured:
+  `size=400` returns 200 with 371 items; `size=500` returns 500 from the page while `curl`
+  from the host returns 200. **Not fixed here** — outside the stated scope, and reported
+  rather than silently patched. It is why an empty podcast list is the default first-run
+  state and why this verification had to seed real podcast ids.
+- The lock-screen wrong-PWA card remains blocked on the owner's re-install.
