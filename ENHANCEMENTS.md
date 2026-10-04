@@ -9333,3 +9333,101 @@ Both files restored by checksum: `styles.css 8c2953aa…`, `app.js b4bc47e4…` 
   **fixture/browser-proven only**.
 - The podcast-catalogue `size=500` → HTTP 500 bug is still unfixed (outside scope, reported).
 - The lock-screen wrong-PWA card remains blocked on the owner's re-install.
+
+---
+
+## 2026-10-04 (seventh) — WS63: `touch-action` does not inherit, and the desktop harness cannot see it
+
+Owner, 2026-10-04:
+
+> *"the second bug is not fixed and for radio channels selecting the banner and drag down must close the sheet"*
+
+**Reported as NOT WORKING on the iPhone, while a Chromium drag of the banner PASSED. That
+combination was the signal** — something about the real device is invisible to the harness, and
+the first thing to check is the declaration this repo already documents as the iOS
+make-or-break.
+
+### The fact
+
+`touch-action` applies to **the element the touch starts on**, and it is **NOT INHERITED**. So
+`.sheet-grab-zone { touch-action: none }` covers only the band's own pixels. A touch landing on
+a **child** is judged by that child's own computed value — and the default, `manipulation`,
+explicitly permits the UA to claim the drag as a scroll.
+
+### MEASURED, driven DOM, every 4px down the banner on the radio card
+
+| y | topmost element | computed `touch-action` |
+|---|---|---|
+| 78–82 | `sheet-grab-zone` | **`none`** ← covered |
+| **86–90** | **`sheet-grab`** (the visible pill, 5px) | **`manipulation`** |
+| 94–118 | `sheet-grab-zone` | **`none`** ← covered |
+| **126–170** | **`card-head`** (logo + title + close, 45px) | **`manipulation`** |
+
+**50 of the ~96px the owner calls "the banner" computed to `manipulation`.** Desktop Chromium
+never arbitrates, so it approves; iOS Safari does, and the sheet does not move.
+
+**This is the same defect WS55 described for the header, one level deeper.** That fix was
+correct but incomplete: it named the band and not what sits on it. The existing WS55 guard
+checks that the **band selectors** set `none` — and it passed throughout while the device
+refused. *A guard that cannot fail on the real defect is the documented trap*, so the new
+guard asserts the **descendant** selectors instead.
+
+### The fix, scoped so it cannot reach the list
+
+```css
+.sheet.context-card > .sheet-grab-zone *,
+.sheet.context-card > .sheet-header * { touch-action: none; }
+```
+
+`pointer-events` is untouched — the close button must stay tappable, and this changes only how
+the **browser arbitrates a drag**, never whether a tap lands.
+
+### MEASURED after, and the counterweights
+
+| check | result |
+|---|---|
+| every element sampled across the banner | **`none`** |
+| `.card-list` / `.card-row` `touch-action` | **`manipulation`** — still scrollable, WS61 priority 1 |
+| programme rows reachable | **41 / 41** |
+| close button still closes the card | **yes** |
+| banner drag closes radio card | **yes** |
+| banner drag closes podcast card | **yes** |
+| all five pages, `sheetTop` 76, blocked controls 0, scroll-wins, top-half-closes | **all OK** |
+
+**A "3 rows unreachable" reading appeared and was chased rather than accepted.** It reproduced
+*identically with the rule removed*, so it was **not** a regression; at a finer 60px scroll step
+**all 41 rows are reachable**. The 150px sampling step was skipping positions. Two of this
+repo's recurring lessons in one measurement.
+
+### DEPLOY RECORD — CSS `57529901`, commits `511211c` / `f5c2a3f` / `5b3fbe1`
+
+| # | check | result |
+|---|---|---|
+| 1 | suite green, count **up** | **PASS** — 568 → **569** |
+| 2 | whole diff read | **PASS** — `styles.css` (+45, one rule) and one test file. **`app.js` UNCHANGED** |
+| 3 | driven in a browser, rendered DOM | **PASS** — locally **and re-driven on production** |
+| 4 | the stated defect is actually fixed | **MECHANISM FIXED, DEVICE UNVERIFIED** — the before/after is measured, but `touch-action` arbitration is exactly what desktop Chromium does not model |
+| 5 | nothing else moved | **PASS** — the list, the rows, `pointer-events` and the close button all unchanged; all five pages re-verified |
+| 6 | artifacts contain the change | **PASS** — served `styles.57529901.css`: descendant rule **1**, `.sheet *` blanket **0**, `.card-list` touch-action **0** |
+| 7 | propagation | **PASS** — all five asset paths 200; served `index.html` references `styles.57529901.css` |
+
+### Mutations — each guard proved able to go red
+
+| # | mutation | result |
+|---|---|---|
+| 1 | remove the descendant rule (the defect itself) | red |
+| 2 | blanket `.sheet *` — overreach that would stop the list scrolling | red |
+| 3 | keep the grab zone, drop the header — half the banner | red |
+
+`styles.css` restored by checksum (`ee55675a…`).
+
+### NOT DONE / NOT PROVEN
+
+- **This is NOT proven to fix it on the iPhone.** `touch-action` arbitration is the one thing
+  desktop Chromium does not model, so this is a mechanism-level fix with a measured
+  before/after. **The owner's phone is the only instrument that can close it.** Build
+  `577d13e` + CSS `57529901`.
+- The **layer-drift** report from the previous round is still unreproduced and still unfixed.
+  If it persists, a **screenshot taken mid-swipe on the phone** is the measurement that would
+  settle it — not another offline guess.
+- The podcast-catalogue `size=500` → HTTP 500 bug is still unfixed.
