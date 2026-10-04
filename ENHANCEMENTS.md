@@ -9507,8 +9507,8 @@ detect a code path the harness cannot reach.**
 | 3 | driven in a browser, rendered DOM | **PASS** — locally **and re-driven on production** |
 | 4 | the stated defect is actually fixed | **PASS** — the exact four scroll positions the owner named |
 | 5 | nothing else moved | **PASS** — list scrolling, day labels, zone bound, close button and all five pages re-verified |
-| 6 | artifacts contain the change | see git log |
-| 7 | propagation | see git log |
+| 6 | artifacts contain the change | **PASS** — served `app.d6578f48.js`: `chromeSelector` **2**, `onChrome` **2**; the whole-sheet bindings retained |
+| 7 | propagation | **PASS** — all five asset paths 200; served `index.html` references `app.d6578f48.js` and `styles.57529901.css` |
 
 ### Mutations — each guard proved able to go red
 
@@ -9540,3 +9540,19 @@ enhancements.md for now."*
 - **What would settle it:** a measurement on the device — record `scrollTop` while dragging on
   those two sheets — not another offline guess. Desktop Chromium cannot model iOS scroll
   arbitration, which is why this cannot be closed offline.
+
+### PRODUCTION RE-DRIVE — the owner's exact four scroll positions
+
+| `scrollTop` | banner drag closes? (before → after) |
+|---|---|
+| 0 | yes → **yes** |
+| 300 | **NO** → **yes** |
+| 700 | **NO** → **yes** |
+| 1348 | **NO** → **yes** |
+
+Counterweights, also on production: drag on a programme row while scrolled **scrolls**
+(scrollTop 700 → 700, sheet open); drag on a day label while scrolled **scrolls**; bottom half
+still does **not** close; top half at scroll-top still **closes**.
+
+All five pages on production: `sheetTop` **76**, blocked controls **0**, scroll-wins **True**,
+top-half-closes **True** — cog, radio card, podcast card, Info, Tests.
