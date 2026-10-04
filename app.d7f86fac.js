@@ -168,6 +168,25 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     return typeof v === 'string' ? v.slice(0, max) : '';
   }
 
+  /**
+   * A short Swedish date for a search row: "17 sep", "5 jan 2025".
+   *
+   * WS66. The year is omitted only when it is the current one, so a row from
+   * last year does not read as this year's, and a stale feed is visible as a
+   * date rather than as a feeling. Formatting is done here, by hand, rather
+   * than with `toLocaleDateString` because the app already has one date style
+   * (the card rows) and two would drift.
+   */
+  function extDateLabel(ms) {
+    const d = new Date(ms);
+    if (Number.isNaN(d.getTime())) return null;
+    const months = ['jan', 'feb', 'mar', 'apr', 'maj', 'jun',
+      'jul', 'aug', 'sep', 'okt', 'nov', 'dec'];
+    const thisYear = new Date().getFullYear();
+    const label = `${d.getDate()} ${months[d.getMonth()]}`;
+    return d.getFullYear() === thisYear ? label : `${label} ${d.getFullYear()}`;
+  }
+
   function episodeAudioFields(ep) {
     const pod = ep?.listenpodfile;
     if (pod?.url) {
@@ -323,7 +342,63 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       provider: 'itunes',
       artist: safeStr(x.artistName, 120) || null,
       feedUrl: safeStr(x.feedUrl, 800) || null,
+      // ---- WS66: THE FEED IDENTITY, which was fetched and then DISCARDED. ----
+      //
+      // OWNER, 2026-10-05: "the most important thing this told me is that we now
+      // need to enhancement the search results and show the feed name. i was not
+      // aware that the api have duplicates and triplets".
+      //
+      // MEASURED: iTunes returns FIVE collections named "Lex Fridman Podcast"
+      // for one search. They differ ONLY in `feedUrl`, `trackCount` and
+      // `releaseDate` -- the name, the artwork and the genre ("Teknologi") are
+      // identical, so every row rendered identically and the owner had no way to
+      // tell them apart. Two of them are dead feeds: the app had saved
+      // collectionId 6797394108, whose newest episode is #499 from July.
+      //
+      // All three fields were already in the API response and already being
+      // parsed one line above `feedUrl` -- the information was on the page and
+      // simply not shown. So this is a DISPLAY fix, not a new request.
+      feedHost: extFeedHost(x.feedUrl),
+      latestEpisodeUtc: Date.parse(x.releaseDate || '') || null,
+      episodeCount: Number.isInteger(x.trackCount) ? x.trackCount : null,
     };
+  }
+
+  /**
+   * A podcast's SOURCE, as a short human label taken from its feed host.
+   *
+   * OWNER, 2026-10-05: "can you add the sources under Teknologi for lex as an
+   * example?" -- i.e. the second line of a search row should say where the
+   * podcast comes from, not repeat the genre that every same-named duplicate
+   * shares.
+   *
+   * Why the HOST and not the publisher name: `artistName` is the same string
+   * ("Lex Fridman") on all three duplicates, so it cannot tell them apart. The
+   * feed host is the one field that differs, and it is also the field that
+   * decides which copy is alive.
+   *
+   * The registrable domain is kept and the `www.` stripped, because
+   * `www.spreaker.com` and `spreaker.com` are the same source and listing both
+   * would suggest a distinction that does not exist. Everything else is dropped:
+   * the goal is a name a person recognises, not a host fingerprint.
+   */
+  function extFeedHost(feedUrl) {
+    const raw = safeStr(feedUrl, 800);
+    if (!raw) return null;
+    let host;
+    try {
+      host = new URL(raw).hostname;
+    } catch {
+      return null;
+    }
+    host = host.toLowerCase().replace(/^www\./, '');
+    const parts = host.split('.');
+    if (parts.length < 2) return host;
+    // `lexfridman.com/feed/podcast` -> `lexfridman.com`. Two-part suffixes such
+    // as `co.uk` are joined so a British feed does not collapse to `co.uk`.
+    const twoPart = /^(com|net|org|gov|edu|ac|co)\.[a-z]{2}$/;
+    const tail = parts.slice(-2).join('.');
+    return twoPart.test(tail) ? parts.slice(-3).join('.') || tail : tail;
   }
 
   /**
@@ -9823,10 +9898,79 @@ function seekMeasureRecordText() {
           el('div', { class: 'pick-name', text: item.name }));
         // An external row's genre can be empty, so fall back to the artist
         // rather than rendering a row with no second line at all.
-        const sub = tab === 'channels'
-          ? item.channeltype
-          : (item.description || item.artist);
+        //
+        // ---- WS66: SAY WHERE IT COMES FROM, NOT WHAT GENRE IT IS. ----
+        //
+        // OWNER, 2026-10-05: "the most important thing this told me is that we
+        // now need to enhancement the search results and show the feed name" and
+        // "can you add the sources under Teknologi for lex as an example?".
+        //
+        // The old second line was `description || artist` -- for an iTunes row
+        // `description` is `primaryGenreName`, so all three Lex Fridman rows
+        // read "Teknologi" and were INDISTINGUISHABLE. The genre is also the
+        // one thing every same-named duplicate shares, so it carried no
+        // information exactly where information was needed.
+        //
+        // Now the second line names the SOURCE, and it is deliberately
+        // different for the two providers because the owner's screenshot shows
+        // both under one heading:
+        //   iTunes row -> the feed host, e.g. "lexfridman.com", plus how many
+        //                 episodes and when the latest one arrived, because
+        //                 "503 avsnitt · 17 sep" is what tells a stale duplicate
+        //                 from a live one at a glance;
+        //   SR row     -> "Sveriges Radio", so an SR row and an iTunes row of
+        //                 the same name are no longer identical on screen.
+        let sub;
+        if (tab === 'channels') {
+          sub = item.channeltype;
+        } else if (isExt) {
+          // The provider's OWN text, unchanged. For iTunes this is
+          // `primaryGenreName` -- "Teknologi" -- which the owner explicitly wants
+          // KEPT: "if Teknology represents a real category label we should not
+          // remove it, just add a source label."
+          sub = item.description || item.artist;
+        } else {
+          // ---- CORRECTED THE SAME DAY (2026-10-05), and the correction is the
+          // point of this note. ----
+          //
+          // OWNER: "if Teknology represents a real category label we should not
+          // remove it, just add a source label."
+          //
+          // The first version of this change set `sub = 'Sveriges Radio'` for
+          // EVERY SR row, which silently DELETED SR's own one-line description.
+          // MEASURED what was lost: **371 of 371** SR podcasts have a real
+          // description -- "P4 Jämtland ger dig bevakning där du bor. Du hör
+          // lokala nyheter, väder, trafik, sport ..." -- and after the change
+          // every one of them read "Sveriges Radio" and nothing else. The
+          // browser run that should have caught it was the one that searched
+          // "lex fridman", which returns no SR rows at all; the SR rows were
+          // only checked afterwards, by which time the loss was already in.
+          //
+          // So the rule is ADD, NEVER REPLACE, and it now applies to BOTH
+          // providers -- the second version of this code got the SR half right
+          // and left the iTunes half printing the source on both lines, which is
+          // the same mistake one level down.
+          sub = item.description || 'Sveriges Radio';
+        }
         if (sub) textWrap.appendChild(el('div', { class: 'pick-sub', text: sub }));
+        // The source, as its own line for BOTH providers. On an iTunes row this
+        // is the feed host + freshness, which is what distinguishes three
+        // identically-named feeds; on an SR row it is the provider, so the two
+        // providers are never mistaken for each other.
+        if (tab !== 'channels') {
+          const src = isExt
+            ? [item.feedHost,
+              item.episodeCount ? `${item.episodeCount} avsnitt` : null,
+              item.latestEpisodeUtc ? `senast ${extDateLabel(item.latestEpisodeUtc)}` : null,
+            ].filter(Boolean).join(' · ')
+            : 'Sveriges Radio';
+          // Never print the same string twice. An SR row with no description
+          // falls back to `sub = 'Sveriges Radio'`, and without this the row
+          // would say "Sveriges Radio" on both lines -- the identical
+          // duplication this change was made to remove on the iTunes side.
+          // Latent only: MEASURED, all 371 SR podcasts have a description.
+          if (src && src !== sub) textWrap.appendChild(el('div', { class: 'pick-src', text: src }));
+        }
         btn.appendChild(textWrap);
         btn.appendChild(el('span', { class: 'pick-check', 'aria-hidden': 'true', text: '✓' }));
         listWrap.appendChild(btn);
