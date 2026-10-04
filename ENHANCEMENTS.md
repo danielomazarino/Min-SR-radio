@@ -9090,3 +9090,33 @@ whole-sheet swipe binding.
 the band's device position remains **derived, not observed**. The drag was driven
 synthetically and **a real thumb is faster than the harness**, so gesture *feel* is
 unmeasured.
+
+### DEPLOY RECORD — build `d6ad352`, artifacts `ff756b2` + `ff89582`
+
+| # | check | result |
+|---|---|---|
+| 1 | suite green, count **up** | **PASS** — 558 → **564** |
+| 2 | whole diff read | **PASS** — `app.js` (Tests page → sheet, mount, band bindings, `.diag-num`), `styles.css` (band sticky+44px, overlay deleted, tablå clearance, `.diag-num`), 3 test files, this log. `index.html`/`sw.js`/hashed bundles are artifacts, in separate commits |
+| 3 | driven in a browser, rendered DOM | **PASS** — locally **and re-driven against production** |
+| 4 | the stated defect is actually fixed | **PASS** for all four, against the owner's own words — see the per-item measurements above |
+| 5 | nothing else moved | **PASS** — transport, poll, schedule, timing, DVR untouched. `.reader` rules remain **only** for the news article reader, which was checked to still resolve every class it uses |
+| 6 | artifacts contain the change | **PASS** — served `styles.c49b3184.css`: **0** `sheet-grab-zone::after`, `position: sticky`, `height: 44px`, `--card-fixed-h` clearance ×2. Served `app.f1e754e3.js`: `diag-num` present, `btn.textContent = n ?` **0** |
+| 7 | propagation | **PASS** — all six asset paths 200, served `index.html` references `app.f1e754e3.js`, remote head confirmed at `ff89582` before the asset checks |
+
+**PRODUCTION RE-DRIVE, not assumed from the local run:**
+
+| what | production result |
+|---|---|
+| cog-wheel sheet | 7 interactive controls, **0 blocked** |
+| Info page | 1 control, **0 blocked** |
+| Tests page | 7 controls, **0 blocked** (the one "blocked" row is the copy button below the fold, `hit: null` = off-screen) |
+| Tests page chrome | `class="sheet"`, band `sticky`, **44px**, **0** `.reader` |
+| dropdown | `aria-expanded="true"`, **8 items**, first `13:00:00 Utblick Sápmi`, **1** selected |
+| tablå rows | scrolled clear of the sticky block: **41 of 41 clickable, 0 failures** |
+
+**A probe failure that was mine, not the app's:** the first production tablå/dropdown run threw `Cannot read properties of null` because the fresh headless profile had **no saved favourites**, so there was no `.stream-icon` to long-press. Seeding `minradio.favorites.v1` and re-running produced the results above. **A null element is a fact about the probe's state until proven otherwise.**
+
+**Owner: check build `d6ad352` on the phone.** Three things only you can answer:
+1. does the **close gesture** now work from anywhere on the top band, at any scroll position?
+2. are the **channel and podcast rows** in the tablå card tappable?
+3. does the **dropdown** open on "Klicka här för val av program i listan som följer"?
