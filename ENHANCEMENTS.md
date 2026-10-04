@@ -7837,7 +7837,7 @@ exists to prevent.
 | 3 | Live channel: wrong programme title in expanded player after a channel switch | **DONE — VERIFIED 2026-10-03** | **5 alternating switches P2→P1→P2→P1→P2**, driven DOM: the programme line followed every time (`Lördag med P2-familjen` on P2, `Ekot 12:30` then `Land- och sjöväder` on P1). `anyStale: false` — no step showed the other channel's programme. Mechanism: WS26's reachable re-evaluation in `updateSeekableState`, which drops `scheduleCache` and re-runs `resolveProgramTitle`. |
 | 4 | Cover art for music tracks in podcasts/episodes | **DONE — the premise was WRONG** | **The old note said the code "deliberately sets artwork to null". That is not what the code does.** WS13 Part B added `nowPlaying.episodeArtwork` and `refreshNowPlayingArtwork(song, 'episode')`, which searches iTunes for `artist + title`. **Proven on the exact song in the owner's screenshot:** `Kehlani / Folded` → iTunes returns artist `Kehlani`, track `Folded`, album cover URL. The panel prefers `episodeArtwork` and falls back to the programme image, so it degrades to the *correct* image, never to a placeholder or an unrelated cover. **Owner's iPhone screenshot of P3 Soul showing the Destiny's Child cover is the device confirmation.** |
 | 5 | PWA audio lifecycle (iPhone) | **OPEN, diagnostics deployed** | ⚠️ **Correction already recorded**: audio continuing when the lock screen opens is **expected behaviour, not a bug**. The remaining open part is the lock-screen button opening the wrong PWA — see owner item 4. |
-| 6 | Real-device validation | **PARTIAL** | Closed on iPhone: DVR seek, ±15 s, LIVE label, button placement, zoom, long-press cards, expanded player, gesture fixes. **Still open on iPhone:** lock-screen opens another PWA, P1→P2 header mismatch, P2 song/artist visibility. |
+| 6 | Real-device validation | **PARTIAL** | Closed on iPhone: DVR seek, ±15 s, LIVE label, button placement, zoom, long-press cards, expanded player, gesture fixes. **Still open on iPhone:** lock-screen opens another PWA, P1→P2 header mismatch, P2 song/artist visibility, **the 2026-10-03/04 band position and the ITEM 4 auto-fold**. |
 | 7 | Lock screen MediaSession metadata + icon | **DONE with a reservation** | Owner confirmed the SR icons appear. The reservation is the wrong-PWA button, item 4 above. |
 
 ### Owner-reported open items
@@ -7845,9 +7845,9 @@ exists to prevent.
 | # | Item | Status | Note |
 |---|---|---|---|
 | 1 | Pre-midnight programme title on a real DVR seek | **MECHANISM FIXED, BEHAVIOUR UNVERIFIED** | Schedule fetch + merge shipped (WS21); the *behaviour* on a real seek has never been observed on device. Not re-derivable from this log. |
-| 2 | Lock screen shows the programme twice when no song plays | **UNDONE, deferred at owner's request** | |
+| 2 | Lock screen shows the programme twice when no song plays | **UNDONE, deferred at owner's request** | Distinct from WS56 (stale *cover*). WS56 fixed the cover; this is the *programme line*, still open. |
 | 3 | Global podcast search beyond SR | **DONE — VERIFIED 2026-10-03** | Built (iTunes Search API, `extSearch`). **Driven DOM, real query:** `radio x` returned **20** podcasts, all international and absent from SR's 371-entry catalogue (*Le Retour de Radio X*, *The Chris Moyles Show*, *RadioX Hammarby Sjöstad*…). **Negative control** `zzqqxx` returned 0, so the probe can report a miss. SR matches name **and** description; results are additive, so an Apple outage leaves the list untouched. |
-| 4 | Lock-screen button opens the wrong PWA | **UNDONE** | Regression from 2026-09-24. **Never root-caused.** |
+| 4 | Lock-screen button opens the wrong PWA | **UNDONE** | Regression from 2026-09-24. **Never root-caused.** **Do not confuse with WS56 below, which is the stale *cover art* and IS fixed** — two different lock-screen items. |
 | 4c | Earlier played songs missing on live radio | **NOT A REGRESSION** | Investigated: the code path is intact. Do not "re-fix". |
 
 ### Context-card / tablå behaviour (this project's recent focus)
@@ -7859,7 +7859,10 @@ exists to prevent.
 | WS52 | Header stays put; day labels stack | **DONE** | |
 | WS53 | Mark **and** menu move together; Info page reachable | **DONE** | Also fixed a runtime crash (SVG as `el()` child) and a CSS syntax error I introduced. |
 | WS54 | Zero gap, always-visible mark, header drag, podcast parity | **DONE** | Podcast cards inherit via `openContextCard` — verified, not assumed. |
-| **WS55** | **Whole top band draggable** | **DONE (code + driven DOM)** | ⚠️ **Not device-verified.** 144px of 144px app-owned. |
+| **WS55** | **Whole top band draggable** | **DONE (code + driven DOM)** | ⚠️ **Not device-verified.** 144px of 144px app-owned. **Superseded on position 2026-10-04:** the bands are no longer 33px from the top — both now start at `--band-y` (y=76). See the 2026-10-04 section. |
+| **WS56** | **Stale lockscreen cover during talk radio** | **DONE — deployed `95efb40`** | Two defects fixed: the writer never cleared `playheadArtwork` on "song gone", and the reader fell back to it unconditionally. Cover is now keyed on `seekArtworkSongKey` and `null` when it does not belong. Driven test with a canary on `pickByPosition`. ⚠️ **Never device-verified** — desktop Chromium cannot load SR's DVR stream, so the lockscreen itself was never observed. |
+| **WS57** | **Both bands at the same y, covering "Kanaler"** | **DONE — deployed `95efb40`** | Measured in the production DOM: both bands y=76, "Kanaler" y=76. Two earlier answers were wrong and are recorded — equal *height* is not equal *position*. ⚠️ iPhone notch inset (`--safe-top` ≈47px) **derived, not observed**. |
+| **WS58** | **Info page must be built like the cog-wheel page** | **OPEN — NOT DONE** | The two pages *look* aligned but are **two implementations** (`.sheet` vs `.reader`). Alignment was not unification. **Next session's first task — see OPEN ITEM 1 in the 2026-10-04 section.** |
 
 ### Explicitly NOT DONE in this pass
 
@@ -8330,3 +8333,181 @@ back, M13 renumbers the SELECT. Checksums byte-identical after each.
   panel all still need the device.
 - **ITEM 4's fix has not been seen working.** The repaint is code-proven and
   driven-test-proven; it has not been observed on a real song change.
+
+---
+
+## 2026-10-04 — third and fourth passes: alignment, the button, and ONE item still open
+
+Source `95efb40`, artifacts `30a8c12`, **LIVE**. Suite **541 → 550**.
+
+Four owner items in the third pass; a fifth in the fourth. **Four are done and
+deployed. The fifth is NOT — see OPEN ITEM 1 below, which is the first thing the
+next session must read.**
+
+### What shipped (LIVE, build `95efb40`)
+
+| # | Item | Status | Evidence |
+|---|---|---|---|
+| ITEM 1 | Both bands at the same y-position, covering "Kanaler" | **DONE — deployed** | Driven DOM, **production**: cog band y=76, Info band y=76, "Kanaler" y=76 on the main screen. |
+| ITEM 2 | Button text → "Klicka här för val av program i listan som följer" | **DONE — deployed** | Renders on one line, `overflow: false`, on production. |
+| ITEM 3 | Tests page numbering (1–4) + plain-language hints | **DONE — shipped `2828b59`** | Unchanged this pass. |
+| ITEM 4 | Auto-fold of the expanded panel when song info ends | **DONE — fixed `d416178`** | The driver had **zero call sites** (§7a's exact defect). Wired into `paintNowPlaying()`. |
+| ITEM 5 | The Info page must be built like the cog-wheel page | **OPEN — NOT DONE** | See below. **Not deployed, not fixed.** |
+
+### ITEM 1 — the alignment, and the two wrong answers that came first
+
+The owner's instruction, verbatim: *"the position of both bands should be in the
+same position and move up so they cover the word Kanaler for a sleak look."*
+
+**The position is the word "Kanaler"**, measured at **y=76** on the main screen,
+derived as `--band-y: calc(var(--safe-top) + 76px)`.
+
+**Two earlier answers were wrong, and both are the same mistake:**
+
+| attempt | cog band | Info band | "Kanaler" | verdict |
+|---|---|---|---|---|
+| 1 | y=92 | y=0 | y=76 | **WRONG** — bands were both 22px tall (equal in SIZE, 92px apart in PLACE). Equal padding and equal height were treated as alignment. |
+| 2 | y=0 | y=0 | y=76 | **WRONG, and I reported it as fixed.** Made to agree with *each other* by making the sheet full-height — while disagreeing with the word the owner named. |
+| **3 (live)** | **y=76** | **y=76** | **y=76** | **correct** — all three agree. |
+
+**THE REUSABLE LESSON, since this is the third time:** both wrong answers came
+from measuring **the thing my own implementation produced** and comparing it to
+**a target I chose myself**. Such a check cannot fail. "The bands are both 22px"
+was never the requirement; "the bands cover Kanaler" was. The requirement was
+in the prompt in plain words the whole time.
+
+**Why a variable and not a literal `76px`:** the chain includes `--safe-top`,
+which is 0 in a desktop browser and ~47px on the owner's iPhone. A literal would
+align the bands on the test rig and leave them ~47px apart on the device.
+
+**The drag surface stays an absolutely positioned `::after` overlay.** Done as
+tall padding on the band itself, it pushed "Info och anpassningar" to y=488 and
+left a 384px white void — which is what the owner screenshotted in the third
+pass.
+
+**`.sheet` is shared with the tablå card**, so that card inherited the change.
+It was opened and checked: renders correctly, "Igår"/"Idag" labels in place.
+Its `max-height` moved 594px → 599px; unmeasured on device.
+
+### ITEM 2 — the button text
+
+The button was **two spans**: a fixed label plus a value span rewritten by
+`syncWs40Choice` on every render. Together they read **"Vilket program—"**, and
+the text changed silently on every tap — which is what the owner reported.
+
+The value span is **gone** (`ws40ChoiceLabel`, 0 references). The button now
+carries an instruction and can never change under the owner's thumb. The chosen
+programme is marked by `.selected` inside the **opened list**, which is where a
+choice is actually made. `syncWs40Choice` survives for one real job: clamping
+the index when the candidate list grows or shrinks.
+
+**One test restated (SUPERSEDED, sharpened not weakened).** The old guard pinned
+`'Vilket program'`, which named a THING rather than an ACTION. It now pins the
+owner's exact sentence, and a new `doesNotMatch(/ws40ChoiceLabel/)` guard fails
+if the value span ever comes back.
+
+---
+
+## ⬛ OPEN ITEM 1 — NEXT SESSION, READ FIRST: the Info page must be built like the cog-wheel page
+
+**Status: NOT DONE. Not deployed. Nothing about this is fixed.**
+
+The owner's words: *"the page when opening via the info button should be built
+exactly the same way as the page that opens with the cog wheel."*
+
+**The owner added, unprompted: *"i'm apparently lousy at explaining this."*** The
+instruction is clear and the difficulty is not the owner's — three agents have
+now read it and built three different things. Do not treat this as an ambiguous
+requirement. **It is precise: one page, one implementation.**
+
+### What exists today
+
+Two different pages, two different implementations, sharing only a class name:
+
+| | cog-wheel page (`.sheet`) | Info page (`.reader`) |
+|---|---|---|
+| element | `div.sheet` in `.sheet-overlay` | `article.reader` |
+| built by | `openSheet()` | `openUserHelp()` |
+| height | `max-height: calc(100dvh - var(--band-y))` | `height: 100dvh` |
+| band | `.sheet-grab-zone`, `position: absolute` | `.reader-grab-zone`, in normal flow |
+| corner radius | 20px, rounded | none |
+| drag binding | `enableSwipeToClose` on the sheet | `enableSwipeToClose` on band + topbar |
+| styling source | one `.sheet` block | a **separate** `.reader` block |
+
+**They LOOK similar now because the band was aligned. They are not built the
+same way, and that is the defect.** The alignment pass made two different pages
+agree on one number; it did not make them one page.
+
+### What "exactly the same way" means — do this, do not re-derive it
+
+Make the Info page **use the sheet**, not resemble it:
+
+1. **`openUserHelp()` renders through the same component as `openSheet()`** — the
+   same `.sheet` element, the same overlay, the same header/close-button
+   construction, the same `enableSwipeToClose` binding and argument.
+2. **Then there is exactly ONE band definition.** `.reader-grab-zone`,
+   `.reader-grab-zone::after`, `.reader > *:not(...)` and the `.reader` padding
+   **all become dead CSS and must be deleted** — leaving them is how two
+   surfaces drift apart again, which is exactly what happened here.
+   **Measured 2026-10-04:** `styles.css` carries **17 `.reader`-prefixed rules**
+   and **two separate `.reader { }` blocks** (lines 581 and 633). The duplicate
+   block is the same class of defect as the duplicate `.sheet` rule earlier in
+   this log — the first declaration wins and the second reads as if it applied.
+   While unifying, **collapse them** rather than carrying both forward.
+3. **The content differs, the chrome does not.** The Info page's article body is
+   its own; its container, band, drag behaviour, header and close control are
+   the cog-wheel page's, unchanged.
+4. **The tablå card (`.sheet.context-card`) is the existing precedent** for one
+   component with two bodies: it already overrides only what it must
+   (`padding-top: 0`, sticky offsets) and inherits everything else. Follow it.
+
+### Acceptance criteria — all must be driven in a browser, on the DOM
+
+- [ ] Info and cog-wheel resolve to the **same element/selector**, asserted.
+- [ ] **One** band definition in the stylesheet; the `.reader-grab-zone` rules
+      are **gone** (a `grep` that returns a hit is a FAIL, not a note).
+- [ ] Band **y** and band **height** identical on both pages, driven — not read
+      off the source.
+- [ ] Drag-down closes **both**, measured in ms.
+- [ ] The Info page's text is **unchanged** — a diff of the rendered text before
+      and after, so "it now looks the same" cannot silently mean "it lost its
+      content".
+- [ ] Suite green and **count up**; every restated test classified.
+- [ ] **Then** screenshot **both** pages side by side. Numbers agreeing is not
+      the screen looking right — see the two wrong answers above.
+
+### Still unverified on the iPhone (unchanged, do not fold into OPEN ITEM 1)
+
+The band position on the owner's phone, where `--safe-top` is ~47px. The
+derivation is sound and unobserved. Ask the owner to confirm the band still
+covers "KANALER" on the device.
+
+---
+
+## DEPLOY RECORD — 2026-10-04
+
+**Build `95efb40`** (source `95efb40`, artifacts `30a8c12`). Deploy checks, each
+reported individually:
+
+| # | check | result |
+|---|---|---|
+| 1 | suite green, count up | **PASS** — 550/550 (was 541) |
+| 2 | whole diff read | **PASS** — `app.js` (button label only), `styles.css` (band position), 1 test; `index.html`/`sw.js` are build artifacts |
+| 3 | driven in a browser | **PASS** — on the **rendered DOM**, and re-driven against production |
+| 4 | the defect is actually fixed | **PASS** for ITEM 1 + ITEM 2, against the owner's original words |
+| 5 | nothing else moved | **PASS** — tablå card opened and checked; transport/poll/schedule untouched |
+| 6 | artifacts contain the change | **PASS** — `styles.11594319.css` and `app.4d5b57ae.js` both 200 from production, both greppable |
+| 7 | propagation | **PASS after waiting** — first poll served the OLD bundle with two 404s; Pages status was `building`, so it was propagation, not a failed deploy |
+
+**A grep that returned 0 and was NOT a failure:** `grep -c "Klicka här…"` on the
+bundle returned 0 because of a `\u00e4` escape in my own shell command, not a
+missing string. Re-run with a fixed-string grep: 3. **A zero must be explained
+before it is believed in either direction.**
+
+### Process finding — deploy timing is the owner's decision, not mine
+
+The owner: *"deploy now. i can't look at it on my phone unless you deploy it. i
+thought you knew that."* I had held the deploy pending a device check that was
+impossible without one — **a hold that can never be satisfied is not a
+checkpoint, it is a stall.** Record the device check as outstanding *after* the
+deploy; do not use it to block one.
