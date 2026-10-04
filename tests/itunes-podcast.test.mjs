@@ -4113,3 +4113,72 @@ test('WS62: sticky offsets are measured, never a stale literal', () => {
     + `band's real height (${genericH || bandH}px) -- a stale fallback parks the `
     + 'header inside the band instead of flush beneath it');
 });
+
+// ---- WS63: `touch-action` IS NOT INHERITED, and the desktop harness cannot
+// see that. ----
+//
+// OWNER, 2026-10-04: "for radio channels selecting the banner and drag down
+// must close the sheet."
+//
+// Reported as NOT WORKING on the owner's iPhone, while a Chromium drag of the
+// banner PASSED. That combination is the signal: something about the real
+// device is invisible to the harness, and the first thing to check is the
+// declaration this repo already documents as the iOS make-or-break.
+//
+// THE FACT: `touch-action` applies to the element the TOUCH STARTS ON, and it
+// is NOT inherited. So `.sheet-grab-zone { touch-action: none }` covers only
+// the band's own pixels. Any touch landing on a CHILD is judged by that
+// child's own computed value -- and the default, `manipulation`, explicitly
+// permits the UA to claim the drag as a scroll.
+//
+// MEASURED in the driven DOM, sampling every 4px down the banner on the radio
+// card, reading the TOPMOST element at each y and its COMPUTED touch-action:
+//
+//     y=78..82   sheet-grab-zone    none          <- covered by the band rule
+//     y=86..90   sheet-grab         MANIPULATION  <- the visible pill, 5px
+//     y=94..118  sheet-grab-zone    none          <- covered
+//     y=126..170 card-head          MANIPULATION  <- logo + title + X, 45px
+//
+// So 50 of the ~96px the owner calls "the banner" computed to `manipulation`.
+// Desktop Chromium never arbitrates, so it approves; iOS Safari does, and the
+// sheet does not move. This is the SAME defect the WS55 note describes for the
+// header -- correct but incomplete, because it named the band and not what sits
+// on it.
+//
+// WHY THIS TEST IS WORTH WRITING: the existing WS55 guard checks that the BAND
+// SELECTORS set `none`, and it passed throughout while the device refused. A
+// guard that cannot fail on the real defect is the documented trap, so this one
+// asserts the DESCENDANT selectors exist.
+test('WS63: touch-action must cover what sits ON the bands, not only the bands', () => {
+  const css = stripComments(fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8'));
+  // Both descendant selectors must be named. Written as ONE comma-separated
+  // rule in the CSS, so the test reads the selector LIST rather than assuming a
+  // block per selector -- an earlier version of this guard assumed one rule each
+  // and failed against correct CSS, which is the mirror image of the documented
+  // "a test that proves the wrong property" trap.
+  const kidRules = ruleBodiesFor('.sheet.context-card > .sheet-grab-zone *,'
+    + ' .sheet.context-card > .sheet-header *');
+  assert.ok(kidRules.length > 0,
+    'the grab zone AND the header must carry a DESCENDANT touch-action rule. '
+    + 'MEASURED: `.sheet-grab` (the visible pill, 5px) and `.card-head` (logo + '
+    + 'title + close button, 45px) both computed to `manipulation`, and '
+    + 'touch-action does not inherit -- so the ~96px the owner calls "the '
+    + 'banner" did not reach the app on iOS while every desktop test passed');
+  for (const body of kidRules) {
+    assert.match(body, /touch-action:\s*none/,
+      'descendants of the bands must be app-owned, not merely the bands themselves');
+  }
+
+  // SCOPE. This must never reach the programme list: WS61 made scrolling the
+  // list priority 1, and `touch-action: none` there would restore the WS50/51
+  // defect where every scroll touch also ran the drag logic. Asserted directly,
+  // because "I was careful" is not a measurement.
+  assert.doesNotMatch(css, /\.card-list\s*\*\s*\{[^}]*touch-action:\s*none/,
+    'the programme list must keep its own touch-action: taking its gestures '
+    + 'would stop the list scrolling, which is WS61 priority 1');
+  assert.doesNotMatch(css, /\.sheet\s*\*\s*\{[^}]*touch-action:\s*none/,
+    'nor may the rule blanket the whole sheet subtree');
+  // The list and its rows must still be UA-scrollable.
+  assert.doesNotMatch(css, /\.card-list\s*\{[^}]*touch-action:\s*none/,
+    'the list itself is the scroller and must stay scrollable');
+});

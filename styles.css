@@ -2124,6 +2124,51 @@ body.player-gesture-lock {
   touch-action: none;
 }
 
+/* ---- WS63: `touch-action` is NOT INHERITED, and that is why the banner did
+ * not close on the owner's iPhone while every desktop test passed.
+ *
+ * OWNER, 2026-10-04: "for radio channels selecting the banner and drag down
+ * must close the sheet."
+ *
+ * The rule above sets `touch-action: none` on the grab zone and the header, and
+ * that is what the WS55 note says makes the binding reliable on iOS. It is also
+ * what made a Chromium test of the banner drag PASS -- so the desktop harness
+ * approved this twice while the device refused it.
+ *
+ * `touch-action` applies to the element the TOUCH STARTS ON, and it does NOT
+ * inherit. So the band saying `none` only covers the band's own few pixels. Any
+ * touch that lands on a CHILD is judged by that child's own value.
+ *
+ * MEASURED, in the driven DOM, sampling every 4px down the banner on the radio
+ * card -- the topmost element at each y and its COMPUTED touch-action:
+ *
+ *     y=78..82   sheet-grab-zone    none              <- covered
+ *     y=86..90   sheet-grab         MANIPULATION      <- the visible pill
+ *     y=94..118  sheet-grab-zone    none              <- covered
+ *     y=126..170 card-head          MANIPULATION      <- logo + title + X
+ *
+ * The pill is 5px tall and the title row is 45px tall: **50 of the ~96px the
+ * owner sees as "the banner" computed to `manipulation`**, which is the UA's
+ * default "I may claim this as a scroll". On desktop Chromium the UA never
+ * bothers. On iOS Safari it does, and the sheet does not move.
+ *
+ * This is the SAME defect the WS55 note describes for the header, one level
+ * deeper: the fix there was correct but incomplete, because it named the band
+ * and not what sits on it.
+ *
+ * THE FIX: cover every descendant of the bands, not the bands alone. The
+ * selector is scoped to `.context-card` and to the bands' own subtrees, so it
+ * cannot reach `.card-list` or any row -- the list stays `manipulation` and
+ * stays scrollable, which is WS61's priority-1 requirement.
+ *
+ * `pointer-events` is left alone: the close button must stay tappable, and this
+ * changes only how the BROWSER arbitrates a drag, never whether a tap lands.
+ */
+.sheet.context-card > .sheet-grab-zone *,
+.sheet.context-card > .sheet-header * {
+  touch-action: none;
+}
+
 /* WS54: the GAP under the header.
  *
  * The owner: "the igår and idag at scrolling has a gap that should not be between
