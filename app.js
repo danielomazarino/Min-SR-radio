@@ -8423,7 +8423,6 @@ function seekMeasureRecordText() {
     let ws40Choice = 0;
     let ws40List = null;
     let ws40ListOpen = false;
-    const ws40ChoiceLabel = el('span', { class: 'setting-minmax', text: '—' });
     // ---- E4, second pass (2026-10-03): labels a non-technical owner can act
     // on. "Testseek FÖRESLAGEN" named a THESIS, not an action; the owner is
     // being asked to compare two formulas for the same measurement, and the
@@ -8439,8 +8438,22 @@ function seekMeasureRecordText() {
       // popup is the mismatch that let this ship described-but-not-built.
       'aria-haspopup': 'listbox', 'aria-expanded': 'false',
     });
-    ws40Pick.append(el('span', { class: 'setting-minmax', text: 'Vilket program' }),
-      ws40ChoiceLabel);
+    // ITEM 2, FOURTH PASS. OWNER, verbatim: change the button text from
+    // "Vilket program-" to "Klicka här för val av program i listan som följer".
+    //
+    // The button is built from TWO spans: a fixed label and a VALUE span that
+    // `syncWs40Choice` overwrites with the selected programme's time and title.
+    // Read together they produced "Vilket program—" -- which is why the control
+    // looked empty and changed silently on every tap. The owner is right that
+    // it was unclear; the cause is that a value was being rendered where a
+    // label belongs.
+    //
+    // The label is now the instruction, and the VALUE span is gone from the
+    // button entirely: the chosen programme is marked inside the opened list,
+    // which is where a choice is actually made. The button therefore always
+    // reads the same, and cannot silently change under the owner's thumb.
+    ws40Pick.append(el('span', { class: 'setting-minmax ws40-pick-label',
+      text: 'Klicka här för val av program i listan som följer' }));
     const ws40Measure = el('button', {
       class: 'setting-row', type: 'button',
     }, el('span', { class: 'setting-minmax', text: 'Mät tidsförskjutning' }));
@@ -8491,17 +8504,37 @@ function seekMeasureRecordText() {
         .slice(-8)
         .reverse();
     };
+    // ITEM 2, fourth pass: the label is now INSTRUCTION, not value, so
+    // `syncWs40Choice` no longer overwrites it with the current selection --
+    // that overwrite was the original defect. It still marks WHICH entry is
+    // selected, but by adding the tick to the row in the open list, which is
+    // where the owner looks for it. The label only changes for the one case the
+    // instruction cannot describe: there is nothing to choose from.
+    // ITEM 2, FOURTH PASS -- REWRITTEN, not patched.
+    //
+    // This function used to WRITE THE BUTTON'S LABEL. It rendered the selected
+    // programme's time and title into a value span sitting next to a fixed
+    // "Vilket program" label, so the control read "Vilket program-" and changed
+    // on every tap. The owner's instruction was to replace that text with
+    // "Klicka här för val av program i listan som följer", which means the button
+    // must show an INSTRUCTION and never a value.
+    //
+    // So there is no longer a value span on the button at all, and this function
+    // has no reason to exist in its old form. What it still has to do is keep
+    // `ws40Choice` a VALID index -- the candidate list changes as the schedule
+    // grows, so an index captured minutes ago can point past the end. That is a
+    // real concern and it is all that is left here.
+    //
+    // The selection itself is shown by the row in the OPEN list, which carries
+    // `.selected` and `aria-selected`. Putting it there rather than on the
+    // button means the button's text can never change under the owner's thumb,
+    // which was the complaint.
     const syncWs40Choice = () => {
       const c = ws40Candidates();
-      if (!c.length) {
-        ws40ChoiceLabel.textContent = 'ingen (ingen spellista)';
-        return;
-      }
-      if (ws40Choice >= c.length) ws40Choice = 0;
-      const e = c[ws40Choice];
-      ws40ChoiceLabel.textContent =
-        `${new Date(e.startMs).toISOString().slice(11, 19)} `
-        + `${(e.title || '').slice(0, 22)}`;
+      // Clamp rather than reset: if the list shrank, fall back to the first
+      // entry so there is always a valid choice for the tests to measure.
+      if (!c.length) { ws40Choice = 0; return; }
+      if (ws40Choice >= c.length || ws40Choice < 0) ws40Choice = 0;
     };
     // ITEM 2, THIRD PASS. OWNER: "pressing on the button Vilket program- does
     // not open a dropdown as you say."

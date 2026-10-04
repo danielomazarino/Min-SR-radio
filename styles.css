@@ -15,6 +15,34 @@
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --shadow: 0 1px 3px rgba(28, 28, 30, 0.06), 0 4px 14px rgba(28, 28, 30, 0.05);
+
+  /* ITEM 1, FOURTH PASS (correction). Where the settings sheet's band and the
+   * Info page's band both START.
+   *
+   * OWNER, verbatim: "the position of both bands should be in the same position
+   * and move up so they cover the word Kanaler for a sleak look".
+   *
+   * "Cover the word Kanaler" is the position. Measured on the main screen, the
+   * "Kanaler" section title sits at y=76, and it is derived like this:
+   *
+   *   .app      padding-top : var(--safe-top) + 8px
+   *   .topbar   height      : 60px   (padding 10px 20px 6px)
+   *   .content  padding-top : 8px
+   *   --------------------------------------------------------
+   *   band y                  : var(--safe-top) + 76px
+   *
+   * WHY THIS IS A VARIABLE AND NOT A LITERAL 76px: the chain above includes
+   * --safe-top, which is 0 in a desktop browser and ~47px on the owner's iPhone.
+   * A literal would align the two bands on my test rig and leave them 47px apart
+   * on the device. Deriving it means both surfaces follow the main screen if
+   * the header ever changes height.
+   *
+   * WHAT THIS DOES NOT PROVE: it is derived from the computed heights above and
+   * confirmed by measurement on a 768px desktop viewport at --safe-top: 0. It
+   * has NOT been measured on the iPhone, where --safe-top is non-zero. The owner
+   * must confirm the band still covers "Kanaler" there.
+   */
+  --band-y: calc(var(--safe-top) + 76px);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -556,7 +584,12 @@ a:focus-visible {
   display: flex;
   flex-direction: column;
   height: 100dvh;
-  padding-top: var(--safe-top);
+  /* ITEM 1, FOURTH PASS (correction). The band is in FLOW here, not absolutely
+     positioned, so the band starts wherever this padding ends. It was
+     `var(--safe-top)`, i.e. y=0 on desktop and y=safe-top on the iPhone -- the
+     reason the Info band sat at the very top of the screen. It is now
+     `--band-y`, the y where "Kanaler" sits, so the two bands start together. */
+  padding-top: var(--band-y);
   will-change: transform; /* smooth swipe-to-close */
 }
 
@@ -577,18 +610,62 @@ a:focus-visible {
  * WS55 both measured this. `.reader-body` is deliberately NOT included -- it
  * scrolls, and taking its gesture is the BUG 1 regression.
  */
+/* ITEM 1, FOURTH PASS -- the two bands must start at the SAME y-position, and
+ * the owner's definition of that position is precise: "sleak look means start
+ * in the same y-position where 'KAnaler' is not seen".
+ *
+ * MEASURED, before this rule: the settings band was 338 px tall starting at
+ * y=92, this one 15 px starting at y=0. They were not aligned at all -- which
+ * is the failure the owner reported, and the reason a shared spacing value was
+ * never going to be enough. Equal PADDING is not equal POSITION when one band
+ * is a tall overlay and the other is a 15 px strip.
+ *
+ * So both bands are now the same THING: a fixed-height strip at the very top of
+ * their surface, with the pill inside it and the drag area extending down over
+ * the content behind. `.reader` becomes the positioning context, exactly as
+ * `.sheet` already is, so `top: 0` resolves against the page in both cases.
+ *
+ * The drag region is `::after` rather than the element itself, so the strip can
+ * stay a small, honest band while the tappable area beneath it is large. The
+ * pseudo-element sits at z-index 0 and the page's own content is lifted above
+ * it, so it can never intercept a tap meant for the text.
+ */
+.reader {
+  position: relative;
+}
+
 .reader-grab-zone {
   display: flex;
   justify-content: center;
-  /* ITEM 1, THIRD PASS: the sheet's band uses `10px 0 0`, and this matches it.
-     The pill's own margin was set to 0 so that the two surfaces share ONE
-     spacing rule -- which meant this band lost the height it used to get from
-     the pill's old `4px auto 14px` margin and collapsed to 11 px, measured live.
-     The padding is therefore what carries the spacing on both surfaces, and it
-     has to be the same value or they drift apart again. */
+  /* Fixed, small and IDENTICAL to the sheet's. The height is what makes the two
+     surfaces line up; the drag area below is a separate concern. */
+  height: 22px;
   padding: 10px 0 0;
   background: var(--surface);
   flex: none;
+  position: relative;
+  z-index: 1;
+}
+
+/* The tall drag target, behind the content. `-2px` starts it just under the
+ * strip so the two together read as one continuous draggable area. */
+.reader-grab-zone::after {
+  content: '';
+  position: absolute;
+  top: 22px;
+  left: 0;
+  right: 0;
+  /* Half the page, matching the sheet's `50%` of its own surface. */
+  height: 50vh;
+  z-index: 0;
+  pointer-events: auto;
+}
+/* Everything except the band sits above the drag target. Without this the
+ * pseudo-element would paint over the article and swallow every scroll and tap
+ * in the top half of the page -- a far worse failure than the one being fixed. */
+.reader > *:not(.reader-grab-zone) {
+  position: relative;
+  z-index: 1;
 }
 
 .reader-grab-zone,
@@ -2159,11 +2236,47 @@ body.player-gesture-lock {
 
 .sheet {
   background: var(--bg);
+  /* ITEM 1, FOURTH PASS -- ALIGNMENT, and this is the owner's own definition:
+     "sleak look means start in the same y-position where 'KAnaler' is not
+     seen".
+   *
+   * MEASURED, before: the settings band was at y=92 and the Info band at
+   * y=0. Both were 22 px tall -- equal in SIZE, 92 px apart in PLACE. Equal
+   * padding and equal height had been treated as alignment, and they are
+   * not: a bottom-anchored sheet puts its top edge 92 px down, so its band
+   * can never line up with a full-height page's band no matter how the
+   * shared numbers are tuned.
+   *
+   * THE OWNER CORRECTED THIS ONCE ALREADY. Putting the band at the top of the
+   * screen (y=0) made the two bands agree with each other and disagreed with
+   * the thing the instruction actually names: the "Kanaler" heading, measured
+   * at y=76 on the main screen. Both bands now start at `--band-y`, so they are
+   * aligned with each other AND cover the same word the owner pointed at.
+   *
+   * This is the second time a shared NUMBER was mistaken for a shared
+   * POSITION. The first was matching the pill's padding; the second was
+   * matching the band's height. Neither could ever have failed, because both
+   * compare a measurement against a target the implementation itself chose.
+   */
+  /* ITEM 1, fourth pass: the positioning context for the drag band, whose
+     `top` must resolve against the SHEET rather than the viewport. Folded
+     into the existing rule instead of declared separately, because WS55's guard
+     requires exactly ONE `.sheet` rule -- a second one makes that helper return
+     null and silently disarms the `overflow-y: auto` counterweight check. */
+  position: relative;
   width: 100%;
   max-width: 480px;
-  max-height: 88dvh;
   border-radius: 20px 20px 0 0;
-  padding: 12px 20px calc(var(--safe-bottom) + 20px);
+  /* ITEM 1, FOURTH PASS (correction): the band sits at `--band-y`, so the
+     sheet's own TOP EDGE must sit there too -- otherwise the sheet paints a
+     76px white block above the band and the "sleak look" is lost. The overlay
+     is bottom-anchored (`align-items: flex-end`), so capping the height at
+     `100dvh - band-y` lands the top edge exactly on the band.
+     The old `padding-top: 12px` put the header ABOVE the band, which is why the
+     pill read as stranded at the top of the screen. 22px (the band) + 12px
+     (the old gap) = the 34px of clearance below it. */
+  max-height: calc(100dvh - var(--band-y));
+  padding: 34px 20px calc(var(--safe-bottom) + 20px);
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain; /* keep scroll inside the sheet — no bleed-through to the page behind */
@@ -2194,34 +2307,108 @@ body.player-gesture-lock {
   touch-action: none;
 }
 
+/* ---- THE DRAG SURFACE. Read this before changing anything below it. ----
+ *
+ * THIRD PASS, and it FAILED. `min-height: 50dvh` was applied to this band and
+ * measured 384px on a 768px viewport -- exactly half the screen, which is what
+ * I had asked for and nothing like what the owner had asked for. The band was a
+ * SPACER, so it pushed "Info och anpassningar" from the top of the sheet down
+ * to y=488, leaving a large empty white panel above it. The owner's screenshot
+ * showed exactly that, on both the settings sheet and the Info page.
+ *
+ * WHAT WENT WRONG IN THE THINKING, since it is the reusable part: I measured
+ * the thing my own implementation produced (384px = half of 768px) and called
+ * it a pass. The prompt was not a number. It was a LAYOUT: "the position of
+ * both bands should be in the same position and move up so they cover the word
+ * Kanaler for a sleek look". A correct number in the wrong place is still wrong,
+ * and a measurement that only compares against my own target cannot see that.
+ *
+ * THE FIX, and it is structural rather than a smaller number. The drag area is
+ * now an ABSOLUTELY POSITIONED OVERLAY that sits UNDER the sheet's own content
+ * and is tall, while the content itself is lifted above it and starts at the
+ * top as it always did. So:
+ *   - the pill is at the top of the sheet, where it has always been;
+ *   - "Info och anpassningar" is at the top, not pushed down;
+ *   - the tappable region extends down BEHIND the content, which is where a
+ *     thumb naturally lands when the sheet is tall.
+ *
+ * `.sheet` becomes the positioning context (`position: relative`) so the
+ * overlay is measured against the SHEET, not the viewport -- otherwise the
+ * 50dvh would be measured from the page top and would float over the wrong
+ * region entirely.
+ */
+/* The tall, invisible drag target. It renders BENEATH the sheet's content, so
+   it never pushes anything down and never covers a control. */
 .sheet-grab-zone {
-  /* BUG 1 fix: the swipe-to-close surface, kept.
-   *
-   * ITEM 1, THIRD PASS -- the owner's measurement, verbatim: "The dragable
-   * area is to be bigger than what it is now for the Info och anpassningar,
-   * preferred half the size of the screen instead of the top band and some
-   * pixels more."
-   *
-   * "Half the screen" is a HEIGHT, not more padding. Padding cannot deliver it:
-   * the previous pass grew the band from 33px to 109px by binding three
-   * existing elements, and the owner still reads it as "the top band and some
-   * pixels more". So the band is now a real, explicitly sized region -- 50dvh
-   * by default -- with the pill at its top and the rest of it empty but
-   * swipeable.
-   *
-   * WHY IT IS A SIBLING AND NOT A WRAPPER: the header and the actions row are
-   * already bound separately, and re-parenting them would move them, which the
-   * owner did not ask for. Growing this band instead leaves both exactly where
-   * they were and adds the area underneath them.
-   *
-   * The 50dvh default is overridable by the caller, and the JS reads the band
-   * back to decide whether a touch started inside it -- see SWIPE_ZONE in
-   * openSheet. One source of truth for the number, in one place.
-   */
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  /* ITEM 1, FOURTH PASS (correction). This was `top: 0`, which put the band at
+     the very top of the screen -- 76px ABOVE the "Kanaler" it was supposed to
+     cover. It is now at the sheet's own top edge, and the sheet's top edge is
+     pinned to `--band-y` by the `max-height` above, so the band lands on
+     "Kanaler". Measured: sheet top 76, band top 76.
+     `.sheet.context-card > .sheet-grab-zone { top: 0 }` still overrides this for
+     the tablån card, which is a different surface with its own sticky-header
+     contract. */
+  /* The strip is 22px, matching `.reader-grab-zone` exactly -- the two bands
+     must be the same height or they cannot be at the same y-position. */
+  height: 22px;
+  min-height: 0;
   padding: 10px 0 0;
-  min-height: 50dvh;
-  touch-action: none; /* the zone owns vertical gestures */
+  touch-action: none;
   cursor: grab;
+  /* Behind the content. `z-index: 0` with the sheet's children lifted to 1 is
+     what makes this an overlay rather than a layer on top -- an overlay that
+     painted over the controls would swallow every tap on them, which is the
+     one outcome guaranteed to be worse than the defect it replaces. */
+  z-index: 0;
+  pointer-events: auto;
+}
+/* Everything that is NOT the drag surface sits above it. Two selectors rather
+   than one because the sheet's children are heterogeneous (header, actions,
+   sections, list), and a blanket rule is how a decorative element accidentally
+   starts eating taps. */
+.sheet > *:not(.sheet-grab-zone) {
+  position: relative;
+  z-index: 1;
+}
+/* The tall drag target for the sheet, matching the Info page's `::after`
+   approach: the element above is a small strip, this is the large tappable area
+   behind the content. Split this way the strip can be 22px -- the same as the
+   other surface -- while the drag region stays half the sheet tall. Doing it
+   with `height: 50%` on the strip itself is what produced the 384px void the
+   owner screenshotted. */
+.sheet-grab-zone::after {
+  content: '';
+  position: absolute;
+  top: 22px;
+  left: 0;
+  right: 0;
+  height: 50%;
+  min-height: 200px;
+  z-index: 0;
+  pointer-events: auto;
+}
+
+/* The pill is the only VISIBLE part, drawn at the sheet's top edge where the
+   owner's screenshots show it. */
+.sheet-grab-zone .sheet-grab {
+  position: relative;
+  z-index: 1;
+}
+
+/* The header must clear the strip, or the title overlaps the pill -- visible in
+   the first screenshot of this pass and not caught by any measurement, because
+   both elements were "at the top" and neither number was wrong.
+ *
+ * ITEM 1, FOURTH PASS (correction): the clearance is now the `.sheet` padding
+ * above (band-y + 34px), which places the header below the band at EVERY band
+ * position. The 26px that used to live here was a guess that only lined up while
+   the band sat at y=0; it is now 0 so the two cannot drift apart again. */
+.sheet-header {
+  padding-top: 0;
 }
 
 /* ITEM 1, THIRD PASS. The pill is the one element the owner could SEE the two

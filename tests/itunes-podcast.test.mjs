@@ -3449,7 +3449,18 @@ test('E4: each diagnostics button says what it DOES', () => {
   // the wording cannot quietly delete the developer detail.
   const ctx = stripComments(region('function openAbout', 'function addLongPress', APP_JS));
   for (const [needle, why] of [
-    ['Vilket program', 'picks which programme to test'],
+    // SUPERSEDED (2026-10-04, fourth pass). OWNER, verbatim: change the button
+    // text from "Vilket program-" to "Klicka här för val av program i listan
+    // som följer".
+    //
+    // The requirement did not weaken, it sharpened. "Vilket program" named a
+    // THING rather than an ACTION, and because the button ALSO rendered the
+    // current selection beside it, the control read "Vilket program-" and
+    // silently changed on every tap -- which is what the owner reported. The
+    // button now carries an instruction and no value; the chosen programme is
+    // marked inside the opened list, where the choice is actually made.
+    ['Klicka här för val av program i listan som följer',
+      'the owner\'s exact instruction text, replacing the old value-like label'],
     ['Mät tidsförskjutning', 'reads the offset without touching playback'],
     ['Testa ny tidsberäkning', 'the proposed formula, as an action'],
     ['Testa nuvarande tidsberäkning', 'the current formula, as an action'],
@@ -3458,6 +3469,13 @@ test('E4: each diagnostics button says what it DOES', () => {
   }
   assert.match(ctx, /setting-row-hint/,
     'the muted hint must survive, or the labels lose what they measure');
+  // ITEM 2, fourth pass: the VALUE span must not come back. This is the
+  // regression that caused the complaint -- a value rendered inside the button
+  // made its text change under the owner's thumb, so the control read as empty
+  // ("Vilket program-") and unexplained.
+  assert.doesNotMatch(ctx, /ws40ChoiceLabel/,
+    'ITEM 2: the button must not render the current selection -- that is what '
+    + 'made it read "Vilket program-" and change on every tap');
 });
 
 
