@@ -9220,3 +9220,116 @@ a NO-OP wearing a red suit; it was redone as a valid mutation.**
   rather than silently patched. It is why an empty podcast list is the default first-run
   state and why this verification had to seed real podcast ids.
 - The lock-screen wrong-PWA card remains blocked on the owner's re-install.
+
+---
+
+## 2026-10-04 (sixth) — WS62: the 95px black band above the first row is gone
+
+Owner, 2026-10-04, from two screenshots:
+
+> *"there is in image 1 and 3 attached proof for the black section between the pocast or channel and igår. this black space need to go away."*
+>
+> *"pasted image 2 shows that the layers that are moved with the gesture don't stick together, they need to. the further down you gesture downwards to more they drift apart. doesn't look professional and needs to be fixed now."*
+
+**One is fixed and measured. The other is NOT reproducible, and no code was changed for it.**
+
+### 1. The black band — root cause was one commit creating it and then orphaning its own fix
+
+WS60 added `.card-list { padding-top: var(--card-fixed-h) }`, and it was **correct when
+written**: back then `.sheet-grab-zone` was `position: absolute`, so the band was out of
+flow and the first rows genuinely slid underneath it (4 rows fully hidden, measured).
+
+**The same WS60 pass also made that band `position: sticky`** — and a sticky element is
+*in flow*: it reserves its own 44px, and the header its 51px. The rows already started
+below them. The padding was never removed, so **the same 95px was counted twice**.
+
+MEASURED (radio card, scrollTop 0, driven DOM):
+
+| | value |
+|---|---|
+| band | y=76, h=44 → bottom 120 |
+| header | y=120, h=51 → bottom 171 |
+| `.card-list` padding-top | **95px** — the same 95px again |
+| first row | **y=302** → **131px of black** |
+| podcast card | **101px of black** |
+
+Removing it is safe — measured, not assumed: **0** rows hidden at rest, **0** mid-scroll,
+**0 of 41** unreachable at any scroll position (radio), **0 of 10** (podcast).
+
+### 2. The regression I caused and caught in the same pass
+
+That padding was doing a **second** job. `.sheet` is bottom-anchored and **content-sized**,
+so it was also holding the card open. Delete it and a short podcast card shrank:
+
+| | sheetTop | sheetH | first row |
+|---|---|---|---|
+| with padding | **76** | 637 | 272 |
+| without padding | **152** ← slid down | 561 | 253 |
+
+The height now comes from `min-height: calc(100dvh - var(--band-y))` on the card — the same
+variable `.sheet` itself uses — instead of from padding that re-creates the hole. After:
+**sheetTop 76 on all five pages**, gap **131px → 36px** (radio) and **101px → 6px** (podcast),
+the remainder being `.card-body`'s own margin.
+
+### 3. The layer drift — NOT reproducible, so nothing was changed
+
+Driven with **real touch input** (`Input.dispatchTouchEvent`, not synthetic `TouchEvent`s`),
+at 20/60/100/150/200/250 px of travel, on the podcast card, the radio card at rest, the radio
+card scrolled to 300, and with a day label parked under the header:
+
+```
+bandVsSheet = 0    every sample, every page, every scroll position
+headVsBand  = 0    (44px = the band height) — flush, as published
+```
+
+The one case that **looks** like drift and is **not**: radio card at `scrollTop 300`, a
+downward drag moves `scrollTop` **300 → 285 → 225 → 155 → 75** while the sheet, band and
+header stay pinned at **76/76/120**, and the body travels **−123 → +102**. That is **WS61
+working as specified** — scrolling is priority 1 — not layers coming apart. The screenshot
+taken at that instant is correct, which is the check that matters.
+
+**No fix was invented for it.** Doing so is how a correct gesture gets broken. What *is*
+pinned is the invariant that would produce it: the sticky offsets must derive from the
+**measured** band height. The CSS fallback is `33px` against a real `44px`, so a fallback
+would park the header **11px inside** the band — the exact shape of the complaint.
+
+### DEPLOY RECORD — build `577d13e` + CSS `b63a05b9`, commits `cd2687f` / `27de312` / `bbc72a2`
+
+| # | check | result |
+|---|---|---|
+| 1 | suite green, count **up** | **PASS** — 567 → **568** |
+| 2 | whole diff read | **PASS** — `styles.css` + `tests/itunes-podcast.test.mjs`. **`app.js` UNCHANGED** (checksum `b4bc47e4…` before and after) — the fix is purely CSS |
+| 3 | driven in a browser, rendered DOM | **PASS** — locally **and re-driven on production** |
+| 4 | the stated defect is actually fixed | **PASS** for the black band — 131px/101px → 36px/6px. **NOT fixed: the drift, which did not reproduce** |
+| 5 | nothing else moved | **PASS** — `scroll-padding-top` deliberately **kept** (unrelated to layout; still needed for anchor scrolling). Transport, poll, schedule, DVR untouched |
+| 6 | artifacts contain the change | **PASS** — served `styles.b63a05b9.css`: `.card-body > .card-list {` **0**, `min-height: calc(100dvh - var(--band-y))` **1**, `scroll-padding-top` **3**; old `styles.c49b3184.css` now **404** |
+| 7 | propagation | **PASS, after a real wait** — first check showed the new CSS **404** with `index.html` still naming the old one. **Confirmed PROPAGATING, not failing**: remote head `bbc72a2`, the file present in `git ls-tree origin/main`, and the committed `index.html` already referencing `styles.b63a05b9.css`. 75 s later both 200 |
+
+### PRODUCTION RE-DRIVE — all five pages
+
+| page | sheetTop | blank below header | padding | blocked | scroll wins | top half closes |
+|---|---|---|---|---|---|---|
+| cog | **76** | — | — | **0** | True | True |
+| radio card | **76** | 36 | **0px** | **0** | True | True |
+| podcast card | **76** | 6 | **0px** | **0** | n/a | True |
+| Info | **76** | 42 | **0px** | **0** | True | True |
+| Tests | **76** | 53 | **0px** | **0** | True | True |
+
+### Mutations — each guard proved able to go red
+
+| # | mutation | result |
+|---|---|---|
+| 1 | restore the duplicate `.card-list` padding | red on `WS62: no duplicated clearance…` |
+| 2 | remove the `min-height` that replaced it | red on `WS62: no duplicated clearance…` |
+| 3 | hard-code `--card-grab-h` to `33px` | red on `WS62: sticky offsets are measured…` **and** the pre-existing `WS54` guard |
+
+Both files restored by checksum: `styles.css 8c2953aa…`, `app.js b4bc47e4…` (unchanged).
+
+### NOT DONE
+
+- **No iOS device run.** The drift report came from the owner's iPhone and **could not be
+  reproduced in Chromium**; if it still appears there, the next step is a measurement on the
+  device (a screenshot mid-drag), not another guess. Everything else here is
+  **fixture/browser-proven only**.
+- The podcast-catalogue `size=500` → HTTP 500 bug is still unfixed (outside scope, reported).
+- The lock-screen wrong-PWA card remains blocked on the owner's re-install.
