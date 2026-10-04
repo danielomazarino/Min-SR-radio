@@ -3936,19 +3936,51 @@ test('WS60: no full-height ::after overlay may capture touches over the content'
 // The tablå card's rows must clear the fixed band+header block. MEASURED before
 // this fix: 4 rows FULLY hidden at every scroll position, because `.card-list`
 // had no top padding and the first rows started at the top of the scroll box.
-test('WS60: the tablå list clears the fixed band+header block', () => {
+// SUPERSEDED IN ITS FIRST HALF (WS62, 2026-10-04). This test asserted
+//   .card-list { padding-top: var(--card-fixed-h) }
+// "the programme list must be pushed down by the MEASURED height of the fixed
+// bands". That was correct WHEN IT WAS WRITTEN and became wrong one commit
+// later, in the same WS60 pass.
+//
+// THE SEQUENCE, because it is the whole lesson:
+//   1. WS60 added the padding. Correct: the band was `position: absolute`, OUT
+//      OF FLOW, and 4 rows really were fully hidden behind it.
+//   2. WS60 ALSO changed that band to `position: sticky`. A sticky element is
+//      IN FLOW: it reserves its own 44px, and the header its 51px. The rows
+//      therefore already started below them.
+//   3. The padding was never removed, so the same 95px was counted TWICE.
+//      MEASURED (WS62), radio card at scrollTop 0: band 76..120, header
+//      120..171, `.card-list` padding-top 95px, first row at y=302 — a 131px
+//      black band between the header and the first row. The owner's screenshots
+//      showed it as "the black space between the podcast/channel and Igår".
+//
+// So the property to protect is NOT the padding. It is: **no row may rest
+// behind the sticky block, at any scroll position.** Measured after removing
+// it: 0 rows hidden at rest, 0 mid-scroll, 0 of 41 unreachable at any
+// position. The padding is asserted ABSENT now, because its return is the
+// defect — and a test that only pins a constant cannot notice when the
+// constant stops being needed.
+test('WS62: no duplicated clearance above the first row (the 95px black band)', () => {
   const css = stripComments(fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8'));
-  assert.match(css, /\.sheet\.context-card > \.card-body > \.card-list \{[^}]*padding-top:\s*var\(--card-fixed-h/,
-    'the programme list must be pushed down by the MEASURED height of the fixed '
-    + 'bands, or its first rows sit underneath them and cannot be tapped '
-    + '(MEASURED: 4 of 12 rows fully hidden at every scroll position)');
+  assert.doesNotMatch(css, /\.card-list\s*\{[^}]*padding-top:\s*var\(--card-fixed-h/,
+    '`.card-list` must NOT be padded by --card-fixed-h. The band and header are '
+    + '`position: sticky` and therefore already IN FLOW; padding them as well '
+    + 'counts the same 95px twice and opens a black band above the first row '
+    + '(MEASURED 131px on the radio card, 101px on the podcast card)');
+  // The clearance that IS still needed, kept, for a different reason.
   assert.match(css, /\.sheet\.context-card \{[^}]*scroll-padding-top:\s*var\(--card-fixed-h/,
-    'and anchor scrolling must clear the same block');
-  // Derived from the published variable, never a second hard-coded number: the
-  // band grew 22px -> 44px in this same pass, which is exactly how a duplicated
-  // constant would have silently desynced.
-  assert.doesNotMatch(css, /\.card-list \{[^}]*padding-top:\s*\d+px/,
-    'the clearance must come from --card-fixed-h, not a literal that can drift');
+    'anchor scrolling must still clear the fixed block — unrelated to layout, '
+    + 'and without it a row scrolled into view lands behind the bands');
+  // And the height the padding was silently holding open. `.sheet` is
+  // content-sized, so deleting the padding let SHORT cards shrink and their
+  // top edge slide down the screen (MEASURED: sheetTop 76 -> 152).
+  assert.match(css, /\.sheet\.context-card \{[^}]*min-height:\s*calc\(100dvh - var\(--band-y\)\)/,
+    'the card must keep its full height WITHOUT the padding, or a short '
+    + 'podcast list opens half-way down the screen instead of at --band-y');
+  // The height must come from the sheet's own variable, never a literal.
+  assert.doesNotMatch(css, /\.sheet\.context-card \{[^}]*min-height:\s*\d+px/,
+    'min-height must derive from --band-y, or it silently desyncs from the '
+    + 'topbar alignment the owner asked for');
 });
 
 // ---- WS61: the owner's rule, as a driven test rather than a source match. ----
@@ -4021,4 +4053,63 @@ test('WS61: the zone is measured from the top of the surface, in live pixels', (
     + 'below the line mid-gesture would be judged after the fact');
   assert.match(fn, /s\.scrollTop > 0/,
     'scroll priority must be decided from the scroll position at touchstart');
+});
+
+// ---- WS62: THE OWNER'S TWO REPORTS, 2026-10-04, from two screenshots. ----
+//
+//   1. "there is in image 1 and 3 attached proof for the black section between
+//       the pocast or channel and igår. this black space need to go away."
+//   2. "pasted image 2 shows that the layers that are moved with the gesture
+//       don't stick together, they need to. the further down you gesture
+//       downwards to more they drift apart. doesn't look professional"
+//
+// (1) IS FIXED AND MEASURED. The 95px `padding-top` is gone; the guard above
+// pins its absence and the height that was silently depending on it.
+//
+// (2) IS **NOT REPRODUCIBLE IN CHROMIUM**, and that is a finding, not an
+// excuse. Measured with REAL touch input (`Input.dispatchTouchEvent`, not
+// synthetic TouchEvents), at 20/60/100/150/200/250px of travel, on the
+// podcast card, the radio card at rest, the radio card scrolled to 300, and
+// with a day label parked under the header:
+//
+//   bandVsSheet = 0    at every sample, every page, every scroll position
+//   headVsBand  = 0    (44px, the band height) -- flush, as published
+//
+// The one case that LOOKS like drift and is not: on the radio card scrolled to
+// 300, a downward drag moves `scrollTop` 300 -> 285 -> 225 -> 155 -> 75 while
+// the sheet, band and header all stay pinned at 76/76/120. The BODY moves
+// -123 -> +102. That is WS61 working exactly as specified -- scrolling is
+// priority 1 -- not layers coming apart. The screenshot at that instant looks
+// correct, which is the check that matters.
+//
+// SO: no code change is made for (2). Inventing a fix for an unreproduced
+// symptom is how a correct gesture gets broken. What IS pinned, because it is
+// real and cheap to break, is the invariant that would produce (2) if it ever
+// appeared: the sticky offsets must be derived from the MEASURED band height,
+// so the header can never be parked at a stale offset.
+test('WS62: sticky offsets are measured, never a stale literal', () => {
+  const ctx = stripComments(region('function openContextCard', 'function openChannelCard', APP_JS));
+  // Published from offsetHeight, so a band that changes height cannot leave the
+  // header parked at yesterday's offset. The CSS fallback is 33px and the band
+  // is 44px: if this ever fell back to the literal, the header would sit 11px
+  // INTO the band -- a real gap, and the exact shape of the owner's complaint.
+  assert.match(ctx, /setProperty\('--card-grab-h', `\$\{grabH\}px`\)/,
+    '--card-grab-h must be published from the MEASURED band height');
+  assert.match(ctx, /setProperty\('--card-fixed-h', `\$\{grabH \+ headH\}px`\)/,
+    '--card-fixed-h must be band + header, measured');
+  // And it must be republished, because the band is responsive.
+  assert.match(ctx, /publishFixedHeight\(\)/,
+    'the offsets are published on open');
+  assert.match(ctx, /(resize|orientationchange)[^\n]*publishFixedHeight|publishFixedHeight[^\n]*(resize|orientationchange)/,
+    'and republished on resize/orientation, or a rotated phone keeps the old offsets');
+  // The CSS fallback must not disagree with the measured band.
+  const css = stripComments(fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8'));
+  const grabRule = css.match(/\.sheet\.context-card > \.sheet-grab-zone\s*\{([^}]*)\}/);
+  const bandH = Number((grabRule?.[1] || '').match(/height:\s*(\d+)px/)?.[1] || 0);
+  const fallback = Number((css.match(/--card-grab-h,\s*(\d+)px/) || [])[1]);
+  const genericH = Number((css.match(/\.sheet-grab-zone\s*\{([^}]*)\}/)?.[1] || '').match(/height:\s*(\d+)px/)?.[1] || 0);
+  assert.ok(bandH === 0 || fallback === bandH || fallback === genericH || genericH === 0,
+    `the --card-grab-h fallback (${fallback}px) must not disagree with the `
+    + `band's real height (${genericH || bandH}px) -- a stale fallback parks the `
+    + 'header inside the band instead of flush beneath it');
 });

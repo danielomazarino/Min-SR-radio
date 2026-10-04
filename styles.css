@@ -1969,13 +1969,67 @@ body.player-gesture-lock {
  * anchor navigation land BELOW the bands instead of behind them, so a row the
  * app scrolls to programmatically is not hidden either.
  */
-.sheet.context-card > .card-body > .card-list {
-  /* Room for the fixed band + header block, so no row can rest beneath it. */
-  padding-top: var(--card-fixed-h, 0px);
-}
+/* ---- WS62: this padding became REDUNDANT, and was causing a 95px black hole.
+ *
+ * WS60 added `padding-top: var(--card-fixed-h)` for a good reason, and the
+ * reason was real: back then `.sheet-grab-zone` was `position: absolute`, so
+ * the band was OUT OF FLOW and the first rows genuinely slid underneath it.
+ * MEASURED then: 4 rows fully hidden at every scroll position.
+ *
+ * The same WS60 pass also changed the band to `position: sticky` (see the
+ * generic `.sheet-grab-zone` rule) so the gesture stays reachable when the list
+ * is scrolled. A sticky element is IN FLOW: it reserves its own 44px and the
+ * header its 51px. So the rows already start below them.
+ *
+ * The padding was never removed. It therefore counted the same 95px TWICE:
+ *
+ *   MEASURED (WS62), radio card, scrollTop 0:
+ *     band    y=76  h=44   -> bottom 120
+ *     header  y=120 h=51   -> bottom 171
+ *     padding-top on .card-list = 95px   <-- the SAME 95px, again
+ *     first row  y=302               <-- 131px of black below the header
+ *
+ * With the padding removed the same measurement gives first row y=207, i.e. 36px
+ * below the header -- which is `.card-body`'s own margin, not a hole.
+ *
+ * REMOVING IT IS SAFE, and that was measured rather than assumed:
+ *   rows fully hidden behind the bands at rest .... 0
+ *   rows fully hidden mid-scroll .................. 0
+ *   rows unreachable at ANY scroll position ...... 0 of 41 (radio), 0 of 10
+ *
+ * So the property WS60's guard was protecting still holds without the constant.
+ * The guard is restated to that property in tests/itunes-podcast.test.mjs.
+ *
+ * `scroll-padding-top` STAYS: it is unrelated to layout (it only affects
+ * `scrollIntoView` and anchor jumps) and it is still needed for the same
+ * reason -- a row scrolled to programmatically must land below the bands.
+ */
 .sheet.context-card {
-  /* Anchor scrolling must clear the same block. */
+  /* Anchor scrolling must clear the fixed block. */
   scroll-padding-top: var(--card-fixed-h, 0px);
+  /* ---- WS62, part 2: THE SHORT-LIST REGRESSION, and its honest cause. ----
+   *
+   * Deleting the list padding removed a 95px BLACK BAND from every card (see
+   * the note above), but it also removed 95px of SHEET HEIGHT, and that turned
+   * out to matter: `.sheet` is bottom-anchored and CONTENT-SIZED
+   * (`max-height`, no `height`), so a card with few rows got shorter and its top
+   * edge -- band, header and all -- slid DOWN the screen.
+   *
+   * MEASURED, podcast card, before vs after:
+   *                    sheetTop   sheetH   firstRow
+   *   with padding        76        637       272      <- the black hole
+   *   without padding    152        561       253      <- no hole, but FLOATING
+   *
+   * So the padding was doing two jobs at once, one of them (clearing the bands)
+   * obsolete and the other (holding the card open) still real. Removing it
+   * outright fixed the first and broke the second.
+   *
+   * The fix gives the height back where it belongs -- on the SHEET, as a floor
+   * sized from the same published variable -- rather than as padding that
+   * re-creates the hole. A podcast with 3 episodes and one with 60 now both open
+   * at the same height, and the row still starts immediately under the header.
+   */
+  min-height: calc(100dvh - var(--band-y));
 }
 
 /* ---- WS58: the Info page IS the settings sheet. There is deliberately NO
