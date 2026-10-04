@@ -7943,6 +7943,23 @@ function seekMeasureRecordText() {
     // for both uses below, so they can never disagree about what "the list" is.
     // WS55 kept this `within` filter; WS61 replaced its only caller.
     const isEl = (n) => !!n && n.nodeType === 1;
+    // ---- WS64: THE FIXED CHROME -- the parts that are NOT part of any list. ----
+    //
+    // These are the `position: sticky` bands the card is built from: the grab
+    // zone (the banner and its pill) and the header (logo, title, close). They
+    // are pinned, they do not scroll with the content, and a drag on them can
+    // only ever mean "close" -- there is nothing behind them to scroll.
+    //
+    // Scoped to the classes rather than to a position test on purpose: the
+    // earlier version compared `scrollTop > 0`, which is a property of the LIST
+    // and therefore said nothing about where the finger landed. The owner's own
+    // measurement is per-surface -- "if the tableu is scrolled anywhere else the
+    // banner doesn't accept gesture down" -- so the test has to be too.
+    //
+    // `.card-day-label` is deliberately NOT here. Those DO scroll with the list:
+    // they are `position: sticky` INSIDE `.card-list`, so a drag on one is
+    // genuinely ambiguous with scrolling, and WS61 gave the list priority there.
+    const chromeSelector = '.sheet-grab-zone, .sheet-header';
     const scroller = () => {
       let n = panel;
       while (isEl(n)) {
@@ -8016,8 +8033,42 @@ function seekMeasureRecordText() {
       scrollOwnsIt = false;
       if (axis === 'y') {
         const s = scroller();
-        // PRIORITY 1: room to scroll => the drag is the list's, not ours.
-        if (s && s.scrollTop > 0) scrollOwnsIt = true;
+        // ---- WS64: THE BANNER IS NOT PART OF ANY LIST, SO IT IS NOT "PRIORITY 1". ----
+        //
+        // OWNER, 2026-10-04, and this is a correction of WS61 rather than of the
+        // CSS:
+        //
+        //   "not working on the phone the tableu unless the tableu is scrolled all
+        //    the way up to igår 00:00. if so one can put a finger on the banner
+        //    and gesture down. if the tableu is scrolled anywhere else the banner
+        //    doesn't accept gesture down. only the cross."
+        //
+        // REPRODUCED EXACTLY, on the radio card, dragging the banner:
+        //
+        //     scrollTop    0  -> banner closes       (owner: works)
+        //     scrollTop  300  -> banner does NOT close
+        //     scrollTop  700  -> banner does NOT close
+        //     scrollTop 1348  -> banner does NOT close
+        //
+        // The cause is WS61's own rule. It reads `scrollTop > 0` on the SHEET,
+        // which is the scroll container for the whole card, so a banner drag was
+        // judged by whether the PROGRAMME LIST had been scrolled. The banner is
+        // `position: sticky` chrome; it is not part of the list, it does not
+        // scroll with it, and there is nothing there to scroll. On the podcast
+        // card it appeared to work only because that list is shorter than one
+        // screen and so never leaves scrollTop 0.
+        //
+        // "SCROLLING IS PRIORITY 1" was the owner's instruction about the LIST.
+        // Applying it to the fixed chrome contradicted the instruction they gave
+        // in the same breath three messages earlier: "the top band has ALWAYS
+        // worked" -- so the banner must keep working at EVERY scroll position,
+        // which is what made it the reliable way out of a long list.
+        //
+        // So: a drag that starts on the chrome is the CLOSE gesture, always. A
+        // drag that starts on the scrolling content is the LIST's. The scroller
+        // is asked only about the part that actually scrolls.
+        const onChrome = isEl(e.target) && !!e.target.closest(chromeSelector);
+        if (s && s.scrollTop > 0 && !onChrome) scrollOwnsIt = true;
         // At scroll-top (or nothing to scroll) the top half closes the card.
         else if (startY > closeZoneBottom()) scrollOwnsIt = true;
       }

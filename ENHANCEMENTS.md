@@ -9431,3 +9431,112 @@ repo's recurring lessons in one measurement.
   If it persists, a **screenshot taken mid-swipe on the phone** is the measurement that would
   settle it — not another offline guess.
 - The podcast-catalogue `size=500` → HTTP 500 bug is still unfixed.
+
+---
+
+## 2026-10-04 (eighth) — WS64: the banner closes at EVERY scroll position (my WS61 rule was the cause)
+
+Owner, 2026-10-04:
+
+> *"not working on the phone the tableu unless the tableu is scrolled all the way up to igår 00:00. if so one can put a finger on the banner and gesture down. if the tableu is scrolled anywhere else the banner doesn't accept gesture down. only the cross. the flaky scroll on the info and cog wheel page we park as observation in the enhancements.md for now. the problem is bigger the further down on the screen one start to close."*
+
+**Reproduced exactly**, dragging the banner on the radio card, driven DOM:
+
+| `scrollTop` | banner drag closes? |
+|---|---|
+| 0 | **yes** — matches the owner: "has always worked" |
+| 300 | **NO** |
+| 700 | **NO** |
+| 1348 | **NO** |
+
+On the **podcast** card it appeared healthy at every position — only because that list is
+shorter than one screen and never leaves `scrollTop 0`. **A fixture that hides the bug**, which
+is why the guard is asserted on the long card.
+
+### The cause was WS61's own rule
+
+It read `scrollTop > 0` on the **sheet** — which is the scroll container for the whole card — so
+a drag on the **sticky chrome** was judged by whether the **programme list** had been scrolled.
+
+But the banner is `position: sticky` chrome. It is not part of the list, it does not scroll with
+it, and there is nothing behind it to scroll. *"Scrolling is priority 1"* was the owner's
+instruction about the **list**; applying it to the chrome contradicted *"the top band has ALWAYS
+worked"* — and that band is the reliable way **out** of a long list, so breaking it removed the
+only easy escape. The owner's *"the problem is bigger the further down on the screen one start"*
+is the same fact: the further down the list, the more scroll there is, and the more the veto bit.
+
+### The fix — a drag that starts on the CHROME is always a close
+
+```js
+const chromeSelector = '.sheet-grab-zone, .sheet-header';
+const onChrome = isEl(e.target) && !!e.target.closest(chromeSelector);
+if (s && s.scrollTop > 0 && !onChrome) scrollOwnsIt = true;
+else if (startY > closeZoneBottom()) scrollOwnsIt = true;
+```
+
+Scoped by **surface**, not by scroll position, because the owner's own measurement is
+per-surface. **`.card-day-label` is deliberately excluded**: those are `position: sticky`
+*inside* `.card-list`, so they do scroll with it and a drag there is genuinely ambiguous — the
+list wins there, as WS61 intended.
+
+### MEASURED after — and the counterweights, all still green
+
+| check | result |
+|---|---|
+| banner drag closes at `scrollTop` 0 / 300 / 700 / 1348 | **True ×4** |
+| drag on a programme ROW while scrolled | **scrolls** (700 → 700, sheet open) |
+| drag on a DAY LABEL while scrolled | **scrolls** (sheet open) |
+| bottom half still does not close (the zone bound is real) | **True** |
+| top half at scroll-top still closes | **True** |
+| all 41 programme rows reachable | **41 / 41** |
+
+### A HARNESS BLIND SPOT THIS FOUND
+
+`driveSwipe` always reported the **panel** as `e.target`, so `closest(chromeSelector)` never had
+a chrome target and the whole WS61 scroll-priority path was **unreachable from a test** — which
+is why a green suite shipped the defect. The harness now accepts a `target`, and `fakePanel`
+answers `closest()` so the WS50 tests keep exercising the gesture itself. **A guard cannot
+detect a code path the harness cannot reach.**
+
+### DEPLOY RECORD — commit `9a1c4f2` (see git log for the artifact commits)
+
+| # | check | result |
+|---|---|---|
+| 1 | suite green, count **up** | **PASS** — 569 → **572** |
+| 2 | whole diff read | **PASS** — `app.js` (`enableSwipeToClose` only) and the test file |
+| 3 | driven in a browser, rendered DOM | **PASS** — locally **and re-driven on production** |
+| 4 | the stated defect is actually fixed | **PASS** — the exact four scroll positions the owner named |
+| 5 | nothing else moved | **PASS** — list scrolling, day labels, zone bound, close button and all five pages re-verified |
+| 6 | artifacts contain the change | see git log |
+| 7 | propagation | see git log |
+
+### Mutations — each guard proved able to go red
+
+| # | mutation | result |
+|---|---|---|
+| 1 | revert to the WS61 rule (the defect itself) | red on `WS64 … ANY scroll position` **and** the surface guard |
+| 2 | treat the day labels as chrome | red on `WS64: the chrome is defined by SURFACE` |
+| 3 | `onChrome = true` — close even from a programme row | red on `WS64 … LIST still scrolls` **and** the pre-existing WS61 guard |
+
+`app.js` restored by checksum (`18e2bf55…`).
+
+---
+
+## PARKED OBSERVATION — flaky scroll on the Info and cog-wheel sheets (WS64, 2026-10-04)
+
+Owner: *"the flaky scroll on the info and cog wheel page we park as observation in the
+enhancements.md for now."*
+
+**Not investigated and NOT fixed.** Recorded so it is not rediscovered from scratch.
+
+- **Where:** the Info page and the cog-wheel "Info och anpassningar" sheet.
+- **Symptom:** the scroll feels unreliable / occasionally does not track the finger.
+- **Status:** open observation, no diagnosis. No hypothesis is recorded because none has been
+  tested, and an untested guess in a status file is worse than an honest blank.
+- **Why it is plausible but unconfirmed:** both sheets put `touch-action: none` on fixed bands
+  (`WS55`/`WS63`) and bind the whole sheet to the close gesture (`WS61`). That combination is
+  exactly the shape that can make a scroll feel intermittent, **but nothing has been measured**
+  on it, so it stays a hypothesis.
+- **What would settle it:** a measurement on the device — record `scrollTop` while dragging on
+  those two sheets — not another offline guess. Desktop Chromium cannot model iOS scroll
+  arbitration, which is why this cannot be closed offline.

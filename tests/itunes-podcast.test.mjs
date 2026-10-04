@@ -2454,7 +2454,7 @@ const swipe = makeFn('enableSwipeToClose');
  * Date.now is NOT stubbed. Real elapsed time is exactly what separates a flick
  * from a drag, so stubbing it would let these tests pass for the wrong reason.
  */
-async function driveSwipe(panel, pts, { axis = 'y', W = 400, H = 800, stepMs = 0 } = {}) {
+async function driveSwipe(panel, pts, { axis = 'y', W = 400, H = 800, stepMs = 0, target = null } = {}) {
   let closed = false;
   VIEWPORT.innerWidth = W;
   VIEWPORT.innerHeight = H;
@@ -2467,7 +2467,19 @@ async function driveSwipe(panel, pts, { axis = 'y', W = 400, H = 800, stepMs = 0
   const ev = (type, [x, y]) => {
     const t = { clientX: x, clientY: y };
     const empty = type === 'touchend' || type === 'touchcancel';
-    return { touches: empty ? [] : [t], targetTouches: empty ? [] : [t], changedTouches: [t] };
+    // ---- WS64: the event's TARGET, not just the coordinates. ----
+    // `enableSwipeToClose` asks `e.target.closest(chromeSelector)` to decide
+    // whether a drag belongs to the sheet or to the list. Without this the
+    // harness always reported the panel as the target, so EVERY gesture looked
+    // like it started on the chrome and the WS61 scroll-priority path was
+    // unreachable from a test -- which is precisely why the defect survived a
+    // green suite.
+    return {
+      touches: empty ? [] : [t],
+      targetTouches: empty ? [] : [t],
+      changedTouches: [t],
+      target: target || panel,
+    };
   };
   panel.dispatch(ev('touchstart', pts[0]), 'touchstart');
   for (let i = 1; i < pts.length; i += 1) {
@@ -2506,6 +2518,13 @@ function fakePanel() {
     // tests keep exercising the gesture itself; pass `{ scrollable: true }` to
     // exercise the WS61 scroll-priority path.
     nodeType: 1,
+    // WS64: the gesture asks `e.target.closest(chromeSelector)`. The stand-in IS
+    // the panel and therefore a legitimate touch target, but it has no `closest`,
+    // so every WS50 test failed with "e.target.closest is not a function" when
+    // the harness began passing a target. Returning null says "the panel is not
+    // itself the banner or the header", which is true -- the panel is their
+    // parent -- and keeps the WS50 tests exercising the gesture itself.
+    closest: () => null,
     parentElement: null,
     scrollTop: 0,
     scrollHeight: 0,
@@ -4181,4 +4200,81 @@ test('WS63: touch-action must cover what sits ON the bands, not only the bands',
   // The list and its rows must still be UA-scrollable.
   assert.doesNotMatch(css, /\.card-list\s*\{[^}]*touch-action:\s*none/,
     'the list itself is the scroller and must stay scrollable');
+});
+
+// ---- WS64: THE BANNER MUST CLOSE AT EVERY SCROLL POSITION. ----
+//
+// OWNER, 2026-10-04, and this is the most precise defect report in the log
+// because it names the exact condition:
+//
+//   "not working on the phone the tableu unless the tableu is scrolled all the
+//    way up to igår 00:00. if so one can put a finger on the banner and gesture
+//    down. if the tableu is scrolled anywhere else the banner doesn't accept
+//    gesture down. only the cross."
+//
+// REPRODUCED EXACTLY, dragging the banner on the radio card:
+//
+//     scrollTop    0  -> closes       (matches the owner: "has always worked")
+//     scrollTop  300  -> does NOT close
+//     scrollTop  700  -> does NOT close
+//     scrollTop 1348  -> does NOT close
+//
+// On the podcast card it appeared healthy at every position ONLY because that
+// list is shorter than one screen and never leaves scrollTop 0 -- a fixture that
+// hides the bug, which is why it must be asserted on the long card.
+//
+// THE CAUSE WAS WS61's OWN RULE, and this test exists so it cannot come back.
+// It read `scrollTop > 0` on the SHEET, which is the scroll container for the
+// whole card, so a drag on the STICKY CHROME was judged by whether the
+// PROGRAMME LIST had been scrolled. The banner is not part of the list, does not
+// scroll with it, and has nothing behind it to scroll. "Scrolling is priority 1"
+// was the owner's instruction about the LIST; applying it to the chrome
+// contradicted "the top band has ALWAYS worked" -- and that band is the reliable
+// way out of a long list, so breaking it removed the only easy escape.
+test('WS64: a drag on the fixed chrome closes the card at ANY scroll position', async () => {
+  const p = fakePanel();
+  // Scrolled deep -- the state in which the owner reports the banner is dead.
+  p.scrollHeight = 3000; p.clientHeight = 800; p.scrollTop = 700;
+  p.getBoundingClientRect = () => ({ top: 0, left: 0, width: 400, height: 800, bottom: 800, right: 400 });
+  // Simulate the touch landing ON THE BANNER: the target must be a descendant of
+  // `.sheet-grab-zone`, which is what `closest(chromeSelector)` is asked about.
+  const chrome = { nodeType: 1, closest: (sel) => (sel.includes('sheet-grab-zone') ? {} : null) };
+  const r = await driveSwipe(p, [[200, 200], [200, 240], [200, 320], [200, 430]],
+    { axis: 'y', H: 800, stepMs: 40, target: chrome });
+  assert.equal(r.closed, true,
+    'a drag that STARTS on the banner must close the card even when the list is '
+    + 'scrolled 700px down. MEASURED before the fix: 0 -> closes, 300/700/1348 -> '
+    + 'does not. The scroller must not veto a gesture that began on the chrome');
+});
+
+test('WS64: a drag on the LIST still scrolls, at every scroll position', async () => {
+  const p = fakePanel();
+  p.scrollHeight = 3000; p.clientHeight = 800; p.scrollTop = 700;
+  p.getBoundingClientRect = () => ({ top: 0, left: 0, width: 400, height: 800, bottom: 800, right: 400 });
+  // The target is a programme row: NOT inside `.sheet-grab-zone`/`.sheet-header`.
+  const row = { nodeType: 1, closest: () => null };
+  const r = await driveSwipe(p, [[200, 200], [200, 240], [200, 320], [200, 430]],
+    { axis: 'y', H: 800, stepMs: 40, target: row });
+  assert.equal(r.closed, false,
+    'scrolling is priority 1 ON THE LIST: a drag on a programme row must scroll, '
+    + 'not close. WS61 required this and WS64 must not have broken it');
+});
+
+test('WS64: the chrome is defined by SURFACE, not by scroll position', () => {
+  const fn = stripComments(grab('enableSwipeToClose'));
+  assert.match(fn, /chromeSelector/,
+    'the fixed chrome must be named, so the rule can be read without re-deriving '
+    + 'it');
+  assert.match(fn, /sheet-grab-zone, \.sheet-header/,
+    'the chrome is the grab zone and the header: both are `position: sticky` and '
+    + 'neither scrolls with the list');
+  // The day labels are sticky INSIDE `.card-list`, so they DO scroll with it.
+  // Claiming them would hand the list's drag back to the close gesture, which is
+  // the WS61 defect all over again from the other direction.
+  assert.doesNotMatch(fn, /chromeSelector\s*=\s*[^;]*card-day-label/,
+    '.card-day-label must NOT be chrome: it lives inside `.card-list` and scrolls '
+    + 'with it, so a drag there is genuinely ambiguous and the list wins');
+  // And the veto must be conditional on NOT being on the chrome.
+  assert.match(fn, /scrollTop > 0 && !onChrome/,
+    'the scroll priority must be skipped for a touch that began on the chrome');
 });
