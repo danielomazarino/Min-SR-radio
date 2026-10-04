@@ -8511,3 +8511,228 @@ thought you knew that."* I had held the deploy pending a device check that was
 impossible without one — **a hold that can never be satisfied is not a
 checkpoint, it is a stall.** Record the device check as outstanding *after* the
 deploy; do not use it to block one.
+
+---
+
+## 2026-10-04 (later) — WS58 + WS59: the Info page unified, and the wrong-PWA theory DISCARDED
+
+Source `6832d10`, artifacts `d041ed3` + `8d58cbd`, **LIVE**. Suite **550 → 558**.
+Both items were dispatched together. **Neither has been device-verified, and for
+WS59 that is the whole point — see what the fix is.**
+
+### The owner's clue refuted four workstreams of theory
+
+**Verbatim, 2026-10-04:**
+
+> *"the wrong pwa comes from click on the lock screen player area except the
+> buttons. click on play pauses the program as it should."*
+
+This log carried **"registration order"** as the explanation since 2026-09-24:
+whichever installed PWA registered MediaSession last owns the lock screen. The
+owner's sentence **refutes it**, and the reasoning is short enough that it should
+have been reached four workstreams ago:
+
+> **A session cannot own its card and not its own buttons. They are one object.**
+
+`pause` reached *this app's* handler and paused *this app's* audio — and no other
+installed app's handler could do that. So the session **is ours**. The split the
+owner describes is therefore **not** between two apps' sessions; it is between the
+**controls** (which have no artwork dependency) and the **card** (which the OS
+builds from `mediaSession.metadata`). Every hypothesis built on registration
+order has to be **discarded**, not refined — which is what §6 requires when
+evidence contradicts the current theory.
+
+This is the third time in this log that the owner's device report overturned an
+agent's mechanism (§1, twice before). It is also the clearest case yet of a
+report that was **read past** rather than read: four sessions treated "opens the
+wrong PWA" as "another app won", when the sentence contains the disproof.
+
+### WS59 — what was actually wrong, and it is provable
+
+`mediaSession.metadata` declared **`type: 'image/png'` for every source.**
+
+**MEASURED, 2026-10-04:** SR serves its images as **JPEG**. Fetched a channel's
+own `image` field:
+
+```
+https://static-cdn.sr.se/images/2562/19ccfced-f682-4cd4-a94f-60400ac8891e.jpg?preset=api-default-square
+```
+
+So for essentially **every real programme, podcast and episode cover**, this app
+declared a MIME type that **contradicted the bytes**. A declared type is
+*believed* by the UA; when it is absent the UA sniffs. And the lock-screen card is
+built from that artwork. The **buttons do not depend on artwork at all** — which
+is precisely the split the owner reported.
+
+The type is now **derived from the URL**, and **omitted** when the extension is
+unknown, so the UA sniffs rather than believes a claim. Two details that are the
+same defect one layer down:
+
+- the **query string must be stripped first** (`?preset=api-default-square`), or
+  `endsWith('.jpg')` misses every real SR image and silently returns "unknown";
+- our own `icons/icon-512.png` was also mis-declared as `image/png` only by
+  accident of being right — but the icon fallback path is now typed by derivation
+  too, so a future `.webp` icon cannot regress it.
+
+**Verified in the browser** against the real URL: SR JPEG → `image/jpeg`, our
+icon → `image/png`, unknown → **omitted**. **This does not prove the card now
+opens the right app.** It proves we stopped lying about the artwork. Whether iOS
+attributes the card correctly is a **device question**, and the instrumentation
+below exists so that question gets a reading instead of another theory.
+
+### WS59 — the reading the owner can now take on the phone
+
+`srMetaDiag()` exposes a new `lockScreen` block:
+
+| field | what it settles |
+|---|---|
+| `apiMetadataPresent` | read from the **live** `navigator.mediaSession`, not our own bookkeeping. **`false` while audio plays ⇒ the card cannot be ours.** Settles it with no device. |
+| `apiPlaybackState` | what the OS was last told |
+| `last.artworkSrc` / `last.artworkType` | what we handed the OS, and what we claimed it was |
+| `clearedAt` | **the last moment we published `metadata = null`.** Our card vanishes at that instant and the OS falls back to another installed PWA. A timestamp here while audio is playing is the smoking gun. |
+
+`clearedAt` is written by the `!cur` branch, which runs on `pagehide`
+(persisted=false), on `freeze`, and on every stop — so it is stamped in exactly
+the places that can make our card disappear.
+
+### One test SUPERSEDED, and strengthened rather than weakened
+
+`WS11 Part C: MediaSession carries the position-aware programme and song`
+asserted **`type: 'image/png'` was present**. That assertion was **pinning the
+defect** — the §7b case, in its purest form: a green suite that would have failed
+the correct fix.
+
+Restated to require **more**, not less: the type is **derived**; every real
+format (`.jpg/.jpeg/.webp/.gif/.png`) is recognised; the **query is stripped**;
+**no hard-coded type literal may reappear anywhere** in the session builder; and
+the derived value **reaches the `MediaMetadata` constructor** — a declaration in a
+function nobody calls is the WS26 defect, guarded rather than assumed.
+
+I also wrote one assertion **wrong** on the first attempt (`'jpg'` as a bare
+string literal; the code tests `.jpg` inside `endsWith`). It failed, and the
+fix was to the **test** — a guard that asserts a spelling the implementation
+never had is a guard that cannot fail.
+
+### WS58 — one page, one implementation, and a 34px divergence I created myself
+
+`openUserHelp()` now builds **`div.sheet-overlay > div.sheet`**, with the same
+`.sheet-grab-zone` + `.sheet-header` + close control, mounted through the same
+`$sheetRoot`, bound with the same `enableSwipeToClose` calls on the same two
+bands. The second band definition is **deleted**: `.reader-grab-zone`, its
+`::after` drag target, `.reader > *:not(...)`, and the duplicate `.reader` block.
+
+**`.reader` survives deliberately** for `openAbout()` (the Tests panel) and the
+news article reader. Neither was part of the complaint, and deleting their rules
+would have broken two working surfaces — so a grep for `reader-grab-zone` returns
+0 while `^\.reader` still returns 11. **"Delete all 17 reader rules" was the
+brief's simplification and following it literally would have been a regression.**
+
+**The wrong answer I made in this same pass, recorded because it is the fourth
+instance of one mistake.** I first gave `.sheet.info-sheet` a `padding-top: 0`
+override, copied from `.sheet.context-card`, and wrote a test **approving** it.
+Driven in the browser at 390px:
+
+| | band | pill | header |
+|---|---|---|---|
+| Info **with** the override | `[76, 22]` | `[86, 5]` | **`[76, 32]`** |
+| cog-wheel page | `[76, 22]` | `[86, 5]` | **`[110, 32]`** |
+
+Every number matched **except the one a reader actually looks at**, off by 34px.
+The tablå card needs that override because it has a **sticky-header contract of
+its own**; the Info page has none. So the override is **gone** and the class
+carries **zero declarations** — and the test now asserts **zero**, because "no
+override" is the property and "one correct override" was a divergence wearing a
+guard's clothes.
+
+### MEASURED — both pages, one driven run, at 390×844
+
+| | Info page | cog-wheel page |
+|---|---|---|
+| element | `div.sheet.sheet.info-sheet` | `div.sheet` |
+| sheet y / height | 76 / 637 | 76 / 637 |
+| border radius | 20px | 20px |
+| max-height | 637px | 637px |
+| band `[y,h]` | `[76, 22]` | `[76, 22]` |
+| pill `[y,h]` | `[86, 5]` | `[86, 5]` |
+| header `[y,h]` | `[110, 32]` | `[110, 32]` |
+| close `aria-label` | `Stäng` | `Stäng` |
+| touch-action band / header | `none` / `none` | `none` / `none` |
+
+**Every value identical.** Drag-down closes both pages, from the band **and** from
+the header — 3 of 3. `.reader` elements inside the Info page: **0**.
+
+**Content preserved, by rendered-text diff** (not by reading the source): the
+pre-change build and this one, both served with a real stylesheet, render
+**2416 vs 2407 characters** and the **only** differing line is the build id. A
+first attempt at this diff appeared to show large changes — uppercase headings and
+reflowed lines — and the cause was **my harness**: the old copy's HTML referenced
+a hashed stylesheet I had not copied, so it rendered **unstyled**. The diff was
+measuring my setup, not the change. **A surprising diff is a reason to check the
+harness before believing the result.**
+
+### Tests: 550 → 558, and 10 mutations, all red, 0 no-ops
+
+| # | mutation | caught by |
+|---|---|---|
+| M1 | revert the Info page to `.reader` chrome | WS58 one-page guard |
+| M2 | remove the Info page's band | WS58 band guard |
+| M3 | bind the **whole sheet** as the swipe surface | WS58 drag guard (BUG 1's mechanism) |
+| M4 | restore the dead `.reader-grab-zone` rule | WS58 one-band guard |
+| M5 | give `.info-sheet` a second declaration | WS58 zero-override guard |
+| M6 | restore the hard-coded `image/png` lie | WS11 Part C (restated) + WS59 |
+| M7 | stop stamping `clearedAt` | WS59 clearedAt guard |
+| M8 | stamp `clearedAt` **after** the clear | WS59 order guard |
+| M9 | drop the query-string strip | WS59 (fails 2 guards) |
+| M10 | never populate `lockScreen` | WS59 writer guard |
+
+**One harness defect of mine, recorded:** the restore path used a backup name
+that did not match the file being mutated, so M6's restore silently reported
+failure and left a mutated `app.js` on disk. It was caught by comparing the
+checksum against the value recorded **before** the mutation — which is the reason
+§7 requires one — and recovered from the correct backup. **A restore that reports
+failure is benign; a restore that reports success and restores the wrong file is
+not.** The checksum comparison is what made this loud instead of silent.
+
+### A comment mentioned a pattern an assertion was proving absent — the FIFTH time
+
+The WS58 one-band guard asserts `reader-grab-zone` is absent from
+`styles.css`. It went **red** on a correct fix, because the comments explaining
+the deletion **name the class they deleted** (this log's §2 trap, forms 1–4
+already recorded; the count is now 5). The guard now asserts on
+**comment-stripped** source. **A test that fails the right fix and passes the
+wrong one is worse than no test**, and this one did exactly that until it was
+corrected.
+
+### Deploy record — build `6832d10`, artifacts `d041ed3` + `8d58cbd`
+
+| # | check | result |
+|---|---|---|
+| 1 | suite green, count **up** | **PASS** — 550 → **558** |
+| 2 | whole diff read | **PASS** — `app.js` (WS58 chrome + WS59 artwork/type/diag), `styles.css` (band deletion + no override), 2 test files. `index.html`/`sw.js`/hashed bundles are build artifacts, in separate commits |
+| 3 | driven in a browser, rendered DOM | **PASS** — and re-driven **against production** |
+| 4 | the stated defect is actually fixed | **PASS for WS58**, against the owner's original words. **WS59 is code-proven only** — see below |
+| 5 | nothing else moved | **PASS with one named exception** — `.reader` rules were removed, which is **in scope** by the brief, but the news reader and Tests panel were checked to still resolve their classes (11 `.reader` rules remain). Transport, poll, schedule, timing untouched |
+| 6 | artifacts contain the change | **PASS** — `app.31a57d4a.js` and `styles.0a89402d.css` both 200 from production; served CSS has **0** `reader-grab-zone` and served JS contains `image/jpeg` |
+| 7 | propagation | **PASS** — all six asset paths 200, `index.html` references the new bundle, remote head confirmed at `8d58cbd` before the asset checks |
+
+**A grep that returned 1 and was NOT a failure:** `type: 'image/png'` in the
+served bundle. The three occurrences are one explanatory comment and the
+legitimate `.png` **branch** of the new derivation. **A non-zero count is not a
+finding until every hit has been read.**
+
+### NOT PROVEN — stated plainly
+
+- **WS59 has NOT fixed the wrong-PWA card on the device, and this entry does not
+  claim it has.** What is proven: we no longer declare a MIME type that
+  contradicts the bytes. What is **not** proven: that iOS attributes the card to
+  this app afterwards. If `lockScreen.apiMetadataPresent` reads `true` while audio
+  plays and the card still opens SR's app, the artwork type was **not** the
+  cause, and `clearedAt` is the next reading — not a new theory.
+- **The audio-boundary behaviour of the lock screen cannot be observed here at
+  all.** No desktop browser can render an iOS lock screen.
+- **The band position on the iPhone is still derived, not observed**
+  (`--safe-top` ≈ 47px there, 0 in the rig). Unchanged from the previous pass.
+- **`README.md` documents `…/min-radio/` as the install URL, and that path
+  404s** (verified; the live path is `…/Min-SR-radio/`, and the manifest `id`
+  correctly matches it). Not fixed here — out of scope, and recorded so the next
+  session does not read the 404 as a deploy failure.
