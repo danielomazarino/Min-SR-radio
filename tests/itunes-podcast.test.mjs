@@ -266,8 +266,17 @@ test('extGuardKey namespaces providers so an SR id can never match a collectionI
 // 4. Search-row mapping.
 // ---------------------------------------------------------------------------
 
+// WS66: `mapExtSearchRow` gained a second sibling dependency, `extFeedHost`. The
+// extractor deliberately pulls out ONE function, so a new sibling is out of scope
+// and the harness throws `extFeedHost is not defined` -- a harness error that
+// reads exactly like a missing export in app.js. Same class as the WS51 arrow
+// trap: the harness half-worked. The dependency is INJECTED, which keeps
+// `mapExtSearchRow` under test as the single unit and weakens no assertion.
+const extFeedHost = makeFn('extFeedHost', { safeStr });
+const mapDeps = { safeStr, extArtwork: makeFn('extArtwork', { safeStr }), extFeedHost };
+
 test('mapExtSearchRow produces the same row shape the SR catalogue uses', () => {
-  const map = makeFn('mapExtSearchRow', { safeStr, extArtwork: makeFn('extArtwork', { safeStr }) });
+  const map = makeFn('mapExtSearchRow', mapDeps);
   const row = map({
     collectionId: 251955878,
     collectionName: 'P3 Om Vi',
@@ -288,7 +297,7 @@ test('mapExtSearchRow produces the same row shape the SR catalogue uses', () => 
 });
 
 test('mapExtSearchRow returns null on a malformed record instead of throwing', () => {
-  const map = makeFn('mapExtSearchRow', { safeStr, extArtwork: makeFn('extArtwork', { safeStr }) });
+  const map = makeFn('mapExtSearchRow', mapDeps);
   // One bad record must not lose the other nineteen results.
   for (const bad of [null, undefined, {}, 42, 'x', { collectionId: 0 }, { collectionId: -1 },
     { collectionId: 1.5 }, { collectionId: 'abc' }, { collectionId: 123, collectionName: '' }]) {
@@ -4277,4 +4286,185 @@ test('WS64: the chrome is defined by SURFACE, not by scroll position', () => {
   // And the veto must be conditional on NOT being on the chrome.
   assert.match(fn, /scrollTop > 0 && !onChrome/,
     'the scroll priority must be skipped for a touch that began on the chrome');
+});
+
+// ---------------------------------------------------------------------------
+// WS66: THE OWNER'S CORRECTION. ADD, NEVER REPLACE.
+//
+// "the most important thing this told me is that we now need to enhancement the
+//  search results and show the feed name. i was not aware that the api have
+//  duplicates and triplets, plus sveriges radio."
+// "if Teknology represents a real category label we should not remove it, just
+//  add a source label."
+//
+// The second sentence is a correction of MY OWN first attempt, which set the
+// second line to the source string for every row. That silently deleted two
+// things at once: SR's description (371 of 371 podcasts have one) and iTunes'
+// genre ("Teknologi"). Both are category labels the owner wants KEPT.
+// ---------------------------------------------------------------------------
+
+test('WS66: extFeedHost identifies the feed by registrable domain', () => {
+  const host = makeFn('extFeedHost', { safeStr });
+  assert.equal(host('https://lexfridman.com/feed/podcast'), 'lexfridman.com');
+  assert.equal(host('https://feeds.spreaker.com/user/xyz/show'), 'spreaker.com');
+  // The whole point: the five "Lex Fridman Podcast" collections differ ONLY by
+  // feed, so this function is what tells them apart on screen.
+  const five = [
+    'https://lexfridman.com/feed/podcast',
+    'https://feeds.acast.com/public/shows/lex',
+    'https://feeds.spreaker.com/user/1/show',
+    'https://lexfridman.fireside.fm/feed',
+    'https://lexfridman.substack.com/feed',
+  ];
+  const hosts = five.map(host);
+  assert.equal(new Set(hosts).size, 5,
+    `all five "Lex Fridman Podcast" feeds must be distinguishable, got ${hosts.join(', ')}`);
+  // www is not part of a feed's identity -- `www.` is stripped, not shown.
+  assert.equal(host('https://www.lexfridman.com/feed'), 'lexfridman.com');
+  // A two-part suffix must not swallow the registrable label.
+  assert.equal(host('https://feeds.bbc.co.uk/rss'), 'bbc.co.uk');
+  // A malformed URL must not throw and must not produce a bare `null`-in-HTML.
+  for (const bad of ['', null, undefined, 'not a url', 42]) {
+    assert.equal(host(bad), null, `expected null for ${JSON.stringify(bad)}`);
+  }
+});
+
+test('WS66: extDateLabel omits the year only for the CURRENT year', () => {
+  const label = makeFn('extDateLabel');
+  const months = ['jan', 'feb', 'mar', 'apr', 'maj', 'jun',
+    'jul', 'aug', 'sep', 'okt', 'nov', 'dec'];
+  // CANARY: the probe can produce a different answer. A "same year" row and an
+  // "older year" row must NOT collapse into one string, or the year-omission
+  // rule is unmeasurable (AGENTS.md: a metric that cannot fail is not a metric).
+  const now = new Date();
+  const thisYearMs = new Date(now.getFullYear(), now.getMonth(), 17).getTime();
+  const olderMs = new Date(now.getFullYear() - 4, now.getMonth(), 17).getTime();
+  const a = label(thisYearMs);
+  const b = label(olderMs);
+  assert.equal(a, `17 ${months[now.getMonth()]}`, 'this year must have no year suffix');
+  assert.equal(b, `17 ${months[now.getMonth()]} ${now.getFullYear() - 4}`,
+    'an older episode MUST carry its year, or "senast 28 jul" hides which of two feeds is alive');
+  assert.notEqual(a, b);
+  // CANARY 2: `Date.parse` failures reach this function, because
+  // `mapExtSearchRow` computes `latestEpisodeUtc` with `|| null` and a renderer
+  // could still be handed NaN.
+  assert.equal(label(NaN), null);
+});
+
+test('WS66: an iTunes search row carries the feed identity it fetched', () => {
+  const map = makeFn('mapExtSearchRow', mapDeps);
+  const row = map({
+    collectionId: 1434243584,
+    collectionName: 'Lex Fridman Podcast',
+    artistName: 'Lex Fridman',
+    primaryGenreName: 'Teknologi',
+    feedUrl: 'https://lexfridman.com/feed/podcast',
+    trackCount: 503,
+    releaseDate: '2026-09-17T08:00:00Z',
+  });
+  // The four fields the owner's request needs. Without them the source line
+  // cannot be built at all.
+  assert.equal(row.feedHost, 'lexfridman.com');
+  assert.equal(row.episodeCount, 503);
+  assert.ok(row.latestEpisodeUtc > 0, 'releaseDate must be parsed to a timestamp');
+  // ADD, NOT REPLACE: the genre the owner named must survive the mapping.
+  assert.equal(row.description, 'Teknologi');
+});
+
+// The three fields below are asserted on SOURCE TEXT, not driven, and that is a
+// deliberate limitation rather than an accident. `renderList` closes over the
+// whole application -- sheet state, the player, the favourites store, the poll
+// timer -- so it cannot be extracted and executed the way `extFeedHost` is.
+// AGENTS.md: a test that proves the wrong property is worse than no test, so
+// what is asserted here is exactly the property that can be read, and the
+// comment states what it does not cover.
+test('WS66: the row shows the provider text AND the source, for BOTH providers', () => {
+  const body = stripComments(APP_JS).slice(stripComments(APP_JS).indexOf('function renderList('));
+  // iTunes: the second line is the provider's own text -- the genre, or the
+  // artist if iTunes gave no genre. NOT the feed host. The owner asked for the
+  // source to be ADDED, and putting it on the second line would displace the
+  // very label they named.
+  assert.match(body, /else if \(isExt\) \{\s*\n\s*sub = item\.description \|\| item\.artist;/,
+    'the iTunes second line must stay the provider\'s own genre/artist, not the feed host');
+  // Sveriges Radio: the description survives, and the source is only a fallback
+  // when there is none. This is the exact line that once read
+  // `sub = 'Sveriges Radio'` unconditionally and deleted 371 descriptions.
+  assert.match(body, /} else \{\s*\n\s*sub = item\.description \|\| 'Sveriges Radio';/,
+    'the SR second line must keep the description; the source is a fallback, not a replacement');
+  // The source line exists for podcasts, and never for radio CHANNELS -- a
+  // channel's `channeltype` is its only subtitle and there is no feed to name.
+  assert.match(body, /if \(tab !== 'channels'\) \{/,
+    'the source line must be suppressed for radio channels');
+  assert.match(body, /pick-src/, 'the source line must be rendered with .pick-src');
+  // The source line is ADDED, so the three iTunes bits must be assembled there
+  // rather than on the second line.
+  assert.match(body, /\$\{item\.episodeCount\} avsnitt/, 'the episode count must be shown');
+  assert.match(body, /senast \$\{extDateLabel\(item\.latestEpisodeUtc\)\}/, 'the newest-episode date must be shown');
+  assert.match(body, /'Sveriges Radio'/, 'an SR row must name Sveriges Radio as its source');
+  // THE REGRESSION THIS COMMENT EXISTS FOR. If someone "tidies" the two branches
+  // into one, this is the assertion that has to go red, and the failure message
+  // names the 371 descriptions rather than saying "expected a match".
+  assert.ok(!/sub = bits\.join\(' · '\)/.test(body),
+    'the feed identity must not be assigned to `sub` -- that printed the source on BOTH lines and lost "Teknologi"');
+});
+
+// M5 was a NO-OP: renaming `.pick-src` in the stylesheet left the suite green.
+// A guard that cannot fail is not a guard (AGENTS.md: "a metric that cannot
+// fail is not a metric"). Without this the class would render as unstyled body
+// text at the same size as the description above it -- the two lines the owner
+// asked to be visually distinct would be indistinguishable.
+test('WS66: the source line is styled distinctly from the description above it', () => {
+  const css = stripComments(fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8'));
+  const rule = css.match(/\.pick-src\s*\{([^}]*)\}/);
+  assert.ok(rule, '.pick-src must exist in styles.css');
+  const body = rule[1];
+  // Small AND dimmer: the source is metadata, the description is content. If
+  // either is lost the two lines read as one paragraph and the owner cannot see
+  // which text came from the provider and which came from the feed.
+  const size = Number((body.match(/font-size:\s*([\d.]+)px/) || [])[1]);
+  assert.ok(size > 0, '.pick-src needs a px font-size');
+  assert.ok(size < 12.5, `.pick-src (${size}px) must be smaller than the description line`);
+  const sub = css.match(/\.pick-sub\s*\{([^}]*)\}/);
+  if (sub) {
+    const subSize = Number((sub[1].match(/font-size:\s*([\d.]+)px/) || [])[1] || 0);
+    assert.ok(subSize === 0 || subSize > size,
+      `.pick-src (${size}px) must be smaller than .pick-sub (${subSize || 'unset'}px)`);
+  }
+  assert.match(body, /color:\s*var\(--text-secondary\)/,
+    '.pick-src must use the secondary text colour so it reads as metadata');
+  // A feed host is one long unbreakable token ("lexfridman.com"); without this
+  // it sets the row's minimum width and the row overflows the sheet.
+  assert.match(body, /overflow-wrap:\s*anywhere/,
+    '.pick-src must wrap a long feed host instead of widening the row');
+  // The dead rule from the first attempt. It was created alongside .pick-src and
+  // orphaned inside the same change; leaving it costs nothing but misleads the
+  // next reader into thinking two labels are rendered.
+  assert.ok(!/\.pick-meta\s*\{/.test(css), '.pick-meta is dead CSS and must not return');
+});
+
+// The duplicate-line guard, proved by driving the same decision the renderer
+// makes. `renderList` cannot be extracted (it closes over the whole app), so the
+// `src !== sub` comparison is asserted as text AND exercised here as the plain
+// string comparison it is -- which is the only thing that can go wrong.
+test('WS66: the source line is suppressed when it would repeat the second line', () => {
+  const body = stripComments(APP_JS).slice(stripComments(APP_JS).indexOf('function renderList('));
+  assert.match(body, /if \(src && src !== sub\)/,
+    'a row whose second line already says "Sveriges Radio" must not repeat it');
+  // The comparison itself, driven over the cases that actually occur. The third
+  // column is RENDERED, i.e. the value of `Boolean(src && src !== sub)` -- the
+  // expression the renderer uses, not its negation.
+  const cases = [
+    ['P4 Jämtland ger dig bevakning där du bor.', 'Sveriges Radio', true],
+    ['Sveriges Radio', 'Sveriges Radio', false],            // SR row, no description
+    ['Teknologi', 'lexfridman.com · 503 avsnitt', true],
+    ['acast.com · 200 avsnitt', 'acast.com · 200 avsnitt', false], // iTunes, no genre
+  ];
+  for (const [sub, src, rendered] of cases) {
+    assert.equal(Boolean(src && src !== sub), rendered,
+      `sub=${JSON.stringify(sub)} src=${JSON.stringify(src)}`);
+  }
+  // CANARY: the expression must come out BOTH ways across these cases, or it is
+  // not discriminating and a one-sided guard would pass unnoticed.
+  assert.ok(cases.some(([, , r]) => r) && cases.some(([, , r]) => !r),
+    'the duplicate guard must render some rows and suppress others');
 });

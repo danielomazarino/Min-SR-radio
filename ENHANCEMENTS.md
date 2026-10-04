@@ -9556,3 +9556,97 @@ still does **not** close; top half at scroll-top still **closes**.
 
 All five pages on production: `sheetTop` **76**, blocked controls **0**, scroll-wins **True**,
 top-half-closes **True** — cog, radio card, podcast card, Info, Tests.
+
+## WS66 — 2026-10-05 — search-result rows show WHICH FEED a podcast comes from
+
+**Owner, verbatim:**
+> "the most important thing this told me is that we now need to enhancement the
+> search results and show the feed name. i was not aware that the api have
+> duplicates and triplets, plus sveriges radio. can you add the sources under
+> Teknologi for lex as an example?"
+
+**And the correction, which is the load-bearing part of this entry:**
+> "if Teknology represents a real category label we should not remove it, just
+> add a source label."
+
+### The defect
+
+iTunes returns **FIVE** collections named "Lex Fridman Podcast" for one search.
+They differ ONLY in `feedUrl`, `trackCount` and `releaseDate` — name, artwork and
+genre are identical — so every row rendered **identically**. The owner had no way
+to tell them apart, and neither did the app: it had saved collectionId `6797394108`
+(acast.com, dead at #499) instead of `1434243584` (lexfridman.com, at #502).
+
+All three fields were **already in the API response** and already being parsed
+one line above `feedUrl`. The information was on the page and not shown. This is a
+display fix, not a new request.
+
+### The regression I introduced and caught, in the same hour
+
+My first version set the row's second line to the source string for every row.
+That was REPLACE, not ADD, and it destroyed two things:
+
+| what was lost | measured |
+|---|---|
+| SR podcast descriptions | **371 of 371** rows — *"P4 Jämtland ger dig bevakning där du bor. Du hör lokala nyheter, väder, trafik, sport ..."* became the two words `Sveriges Radio` |
+| iTunes genre | **every** iTunes row lost `Teknologi` — the exact label the owner named |
+
+It survived a browser run because that run searched **"lex fridman"**, which
+returns no SR rows at all. The SR rows were only inspected afterwards, when the
+loss was already in the tree. This is the third time in this repo that a probe
+looked at one population and a conclusion was drawn about another.
+
+**The rule now, in code:** `sub` is the **provider's own text** for both
+providers. The source is a **separate** line (`.pick-src`). Add, never replace.
+
+### What changed
+
+- `extFeedHost(feedUrl)` — registrable domain, `www.` stripped, two-part suffixes
+  joined (`feeds.bbc.co.uk` → `bbc.co.uk`). A feed host is one long unbreakable
+  token, hence `overflow-wrap: anywhere`.
+- `extDateLabel(ms)` — Swedish short date, year shown **only** when it differs
+  from the current one. `senast 28 jul` vs `senast 28 jul 2021` is the difference
+  between "this feed is alive" and "this feed is abandoned".
+- `mapExtSearchRow` now also returns `feedHost`, `episodeCount`, `latestEpisodeUtc`.
+- `.pick-src` — 11.5px, `--text-secondary`, opacity 0.7. Smaller **and** dimmer
+  than the description, because the description is content and the source is
+  metadata.
+- `.pick-meta` — **deleted**. Created and orphaned inside this same change.
+
+### MEASURED (browser, rendered DOM, local build)
+
+```
+lex fridman ->  iTunes rows
+  sub = Teknologi                                        src = lexfridman.com · 503 avsnitt · senast 17 sep
+  sub = Teknologi                                        src = acast.com · 200 avsnitt · senast 28 jul
+  sub = Teknologi                                        src = spreaker.com · 503 avsnitt · senast 17 sep
+  sub = Teknologi                                        src = spreaker.com · 18 avsnitt · senast 13 jul 2021
+nyheter -> SR rows
+  sub = P4 Jämtland ger dig bevakning där du bor. Du …   src = Sveriges Radio
+  sub = P4 Kalmar ger dig nyheter, väder, trafik, vä…    src = Sveriges Radio
+```
+
+The third Lex row is now visibly *alive* and the second visibly *stale* — which
+is exactly the choice the owner could not previously make.
+
+**What this does NOT prove:** the iOS list is device-unverified for this change.
+Desktop Chromium cannot load SR's DVR stream, and the row layout was read at
+390px in a headless window, not on the owner's phone.
+
+### Test count
+
+577 (was 572) — **+5**. Suite green before any deploy.
+Mutation-verified. M1–M4 bit immediately. **M5 was a NO-OP**: renaming
+`.pick-src` in the stylesheet left the suite green, because nothing covered the
+CSS. A guard added, then three further CSS mutations (rename, equal font-size,
+dropped `overflow-wrap`) each confirmed red. Checksums restored and re-verified.
+
+### NOT DONE — named, not silent
+
+- **The feed-disambiguation decision is still the owner's.** Showing five feeds
+  does not stop the app saving the dead one. Options: **A** auto-pick the freshest
+  feed on first save, **B** warn when a saved feed is stale, **C** a switcher in
+  the episode list. Recommended **A + B**. **Not implemented.**
+- Rows now carry three lines; the list height at 100% zoom on a small iPhone is
+  **unmeasured**.
+- Not touched, and not asked for: episode list, favourites, player, transport.
