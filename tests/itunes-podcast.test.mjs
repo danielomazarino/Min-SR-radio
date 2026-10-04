@@ -2777,6 +2777,137 @@ test('WS53: an Info button exists on the home screen, not only in settings', () 
   assert.match(APP_JS, /function openUserHelp\(\)/, 'openUserHelp must exist');
 });
 
+// ---------------------------------------------------------------------------
+// WS58 / OPEN ITEM 1 — "the page when opening via the info button should be
+// built exactly the same way as the page that opens with the cog wheel."
+//
+// OWNER, unprompted: "i'm apparently lousy at explaining this." The instruction
+// is NOT ambiguous — it is one page, one implementation. Three agents read it
+// and built three things; the third made the two pages agree on a NUMBER (the
+// band's y-position) so they LOOKED alike while remaining two code paths.
+//
+// WHY THESE GUARDS ARE SHAPE ASSERTIONS AND ANYWAY. AGENTS.md §2 says the suite
+// checks shape, not behaviour, and warns that a test proving the wrong property
+// is worse than none. So the question for each guard below is: what is the
+// USER-VISIBLE failure if this regresses? Stated per guard, not assumed.
+//
+// The failure WS58 was opened for is DRIFT — two bands, two headers, two close
+// controls that agree today and diverge tomorrow. Every guard below is written
+// against a divergence, not against the current text: a future session that
+// unifies the pages further still passes; one that re-splits them fails.
+
+// The one-page rule, asserted on the element each function builds.
+test('WS58: the Info page is built from the same element as the cog-wheel page', () => {
+  const help = stripComments(region('function openUserHelp(', 'function openAbout(', APP_JS));
+  const sheet = stripComments(region('function openSheet(', 'const closeWithDone', APP_JS));
+  // Both must build the SAME element inside the SAME overlay. Asserted as the
+  // element, not as "it looks the same" — the previous pass satisfied that and
+  // the owner still had to ask again.
+  assert.match(help, /class: 'sheet-overlay'/, 'the Info page uses the sheet overlay');
+  assert.match(help, /class: 'sheet info-sheet'/,
+    'the Info page IS a .sheet — that is the whole requirement');
+  assert.match(sheet, /class: 'sheet'/, 'the cog-wheel page is a .sheet');
+  // And it must NOT be a second reader implementation. `.reader` legitimately
+  // belongs to the news article reader and the Tests panel — but never to this
+  // function, which is what made it "two implementations sharing a class name".
+  assert.doesNotMatch(help, /class: 'reader'|reader-overlay|reader-grab-zone/,
+    'the Info page must not build a .reader — that is the drift being closed');
+});
+
+// One band definition. A grep that returns a hit is a FAIL, not a note.
+test('WS58: the reader grab-zone rules are gone — one band definition remains', () => {
+  const raw = fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8');
+  // COMMENTS STRIPPED, and this is the fifth instance of the documented trap: a
+  // comment that mentions a pattern an assertion is proving ABSENT. The rules
+  // were deleted correctly; the only remaining hits were the comments
+  // explaining the deletion. Asserting on raw source would have failed the
+  // correct fix and taught the next session to keep the dead rules.
+  const css = stripComments(raw);
+  assert.doesNotMatch(css, /\.reader-grab-zone/,
+    'the second band definition must be DELETED, not left behind — leaving it is '
+    + 'how the two surfaces drifted apart in the first place');
+  // And the band the Info page uses must be the sheet's, with the sheet's pill.
+  const help = stripComments(region('function openUserHelp(', 'function openAbout(', APP_JS));
+  assert.match(help, /class: 'sheet-grab-zone'/, 'it must use .sheet-grab-zone');
+  assert.match(help, /class: 'sheet-grab'/, 'and the sheet\'s own pill inside it');
+});
+
+// The drag binding must be the settings sheet's, on the sheet's two bands.
+// Binding the whole article is BUG 1's mechanism: every vertical touch inside
+// the scrolling text ran the drag logic and fought iOS scrolling.
+test('WS58: the Info page binds the drag to the bands, exactly as the sheet does', () => {
+  const help = stripComments(region('function openUserHelp(', 'function openAbout(', APP_JS));
+  assert.match(help, /enableSwipeToClose\(overlay, article\.querySelector\('\.sheet-grab-zone'\), close, \{ axis: 'y', move: article \}\)/,
+    'the band must move the SHEET, as the cog-wheel page does');
+  assert.match(help, /enableSwipeToClose\(overlay, article\.querySelector\('\.sheet-header'\), close, \{ axis: 'y', move: article \}\)/,
+    'the header must be bound too');
+  // The scrolling body must never become a swipe surface. This is the guard that
+  // would catch a well-meaning "just bind the whole thing" simplification.
+  assert.doesNotMatch(help, /enableSwipeToClose\(overlay, article,\s*close/,
+    'the whole sheet must not be the swipe surface — that is BUG 1');
+  assert.doesNotMatch(help, /card-body'\)\s*,\s*close/,
+    'the scrolling body must never be a swipe surface');
+});
+
+// The chrome is inherited, not redeclared. This is the STRONGER form of the
+// previous guard, and it is stronger because of a measurement.
+//
+// The previous version asserted that `.sheet.info-sheet` declared exactly one
+// property (`padding-top: 0`) — copied from `.sheet.context-card`. DRIVEN IN THE
+// BROWSER AT 390px, that produced band y=76 on both pages but HEADER y=76 on
+// Info against y=110 on the cog-wheel page: a 34px disagreement in the one row
+// a reader actually looks at. Every other number matched. So "one override,
+// the tablå card's" was itself a divergence, and the guard was approving it.
+//
+// The tablå card needs that override because it has a sticky-header contract of
+// its own. The Info page has none, so it must now carry NO declarations at all.
+test('WS58: the Info page declares no CSS of its own — zero overrides', () => {
+  const css = fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8');
+  // The class stays on the element (it is the hook the other guards pin, and it
+  // names the surface in the DOM), but it must resolve to no declarations.
+  const rule = css.match(/\.sheet\.info-sheet\s*\{([^}]*)\}/);
+  if (rule) {
+    const decls = rule[1].split(';').map((s) => s.trim()).filter(Boolean);
+    assert.equal(decls.length, 0,
+      `.sheet.info-sheet must declare nothing — every property is the sheet's. `
+      + `Found ${decls.length}: ${decls.join('; ')}. Any override here is a `
+      + `divergence between the two pages; justify it by measuring THIS page, `
+      + `never by copying the tablå card's.`);
+  }
+  // Belt and braces: the Info page must not re-declare the chrome it inherits.
+  // Each of these is a property the settings sheet defines once; a second
+  // declaration anywhere in the file is the drift returning.
+  for (const sel of ['.sheet.info-sheet .sheet-header', '.sheet.info-sheet .sheet-grab-zone']) {
+    assert.doesNotMatch(css, new RegExp(sel.replace('.', '\\.') + '\\s*\\{'),
+      `${sel} must not be redeclared — the sheet's own rule covers it`);
+  }
+});
+
+// The user's actual complaint, restated: the page must not LOSE its content.
+// A unification that quietly dropped the body text would pass every guard above.
+test('WS58: the Info page keeps its content, and its diagnostics stay in Tests', () => {
+  const help = stripComments(region('function openUserHelp(', 'function openAbout(', APP_JS));
+  // The body still exists and is still mounted into the sheet.
+  assert.match(help, /const body = el\('div', \{ class: 'card-body' \}\)/,
+    'the body must be built and mounted');
+  assert.match(help, /article\.appendChild\(body\)/, 'into the sheet');
+  // Content spot-checks across the whole page — top, middle and bottom — so a
+  // truncated body cannot pass. These are the three sections most likely to be
+  // lost in a rewrite, chosen because they are the ones a previous rewrite DID
+  // silently change.
+  assert.match(help, /Om Min Radio/, 'the title');
+  assert.match(help, /håll inne/i, 'the long-press gesture — the least discoverable feature');
+  assert.match(help, /Tekniskt/, 'the technical section');
+  assert.match(help, /Sveriges Radio/, 'the data sources and terms');
+  // And the split must hold: the help page must NOT acquire the diagnostics,
+  // which belong to the Tests panel. One assertion that cannot fail is worse
+  // than none; this pair pins opposite facts so neither can rot.
+  assert.doesNotMatch(help, /Visa tidsdiagnostik/,
+    'instrumentation must not leak into the user-facing help page');
+  const about = region('function openAbout(', 'about.appendChild(body)', APP_JS);
+  assert.match(about, /Visa tidsdiagnostik/, 'the diagnostics switch must remain in Tests');
+});
+
 // --- 3. The official brand marks, not letters. -----------------------------
 test('WS53: the song links carry the official brand marks as inline SVG', () => {
   const fn = stripComments(region('const renderSongLinks', "return el('div', { class: 'song-links' }", APP_JS));

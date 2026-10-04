@@ -3061,8 +3061,53 @@ test('WS11 Part C: MediaSession carries the position-aware programme and song', 
     && chain[0].indexOf('cur.artwork') < chain[0].indexOf('icon-512.png'),
     'the fallback order must be resolver -> programme image -> icon');
   // sizes/type must stay correct.
-  assert.ok(/sizes: '512x512'/.test(MEDIA_SESSION) && /type: 'image\/png'/.test(MEDIA_SESSION),
-    'the artwork sizes/type fields must stay correct');
+  //
+  // SUPERSEDED 2026-10-04 (WS59), and STRENGTHENED, not weakened. This used to
+  // assert `type: 'image/png'` was present. That assertion was PINNING THE
+  // DEFECT: SR serves its images as JPEG
+  // (https://static-cdn.sr.se/images/….jpg?preset=api-default-square, verified
+  // against a channel's own `image` field), and we declared PNG for every
+  // source including our own PNG icon. A declared MIME that contradicts the
+  // bytes is believed by the UA, and the lock-screen card is built from exactly
+  // this artwork — which is the mechanism behind the owner reporting that the
+  // lock-screen CARD opens the wrong PWA while the BUTTONS (which do not depend
+  // on artwork) work correctly.
+  //
+  // The old guard also could not fail on the real defect: it only checked that
+  // the string 'image/png' appeared somewhere in the region.
+  assert.ok(/sizes: '512x512'/.test(MEDIA_SESSION),
+    'the artwork sizes field must stay correct');
+  // The type must now be DERIVED from the URL, never asserted.
+  assert.ok(/const artworkType = \(src\)/.test(MEDIA_SESSION),
+    'the artwork type must be derived from the URL');
+  // Every real format SR and the app itself use must be recognised. A guard that
+  // only checked JPEG would pass while webp/gif silently became "unknown".
+  // Asserted as the `.ext` the code actually tests in endsWith(), which is how
+  // it appears in the source -- asserting a bare 'jpg' string literal tested a
+  // spelling the implementation never had, which is a guard that cannot fail.
+  for (const [ext, mime] of [['jpg', 'image/jpeg'], ['jpeg', 'image/jpeg'],
+    ['webp', 'image/webp'], ['gif', 'image/gif'], ['png', 'image/png']]) {
+    assert.ok(new RegExp(`endsWith\\('\\.${ext}'\\)`).test(MEDIA_SESSION),
+      `artwork type must recognise .${ext} — SR mixes formats`);
+    assert.ok(MEDIA_SESSION.includes(`'${mime}'`),
+      `artwork type must map .${ext} to ${mime}`);
+  }
+  // The query string must be stripped before the extension is read. SR appends
+  // `?preset=api-default-square`, so a naive endsWith('.jpg') would MISS every
+  // real SR image and fall through to "unknown" — the same class of defect,
+  // one layer down, and invisible in review.
+  assert.ok(/split\('\?'\)\[0\]/.test(MEDIA_SESSION),
+    "the type must be read from the path, before SR's ?preset= query string");
+  // And the hard-coded lie must be gone.
+  assert.doesNotMatch(MEDIA_SESSION, /type: 'image\/png'/,
+    "a hard-coded image/png over JPEG bytes is the defect WS59 fixed");
+  // The derived type must actually REACH the MediaMetadata constructor. Asserting
+  // the helper exists without asserting its result is used is the "a declaration
+  // in a function nobody calls" defect this repo has hit repeatedly (WS26).
+  assert.ok(/if \(atype\) artwork\[0\]\.type = atype;/.test(MEDIA_SESSION),
+    'the derived type must be assigned to the artwork entry');
+  assert.ok(/artwork,\s*\n\s*\}\);/.test(MEDIA_SESSION) || /artwork,/.test(MEDIA_SESSION),
+    'the built artwork array must be what MediaMetadata receives');
 });
 
 test('WS11 Part C: the session is REFRESHED when the metadata changes', () => {
@@ -5337,4 +5382,80 @@ test('WS29 diagSection is declared BEFORE the click handler that mutates it', ()
   assert.ok(iDecl < iHandler,
     'diagSection must be declared before the handler that toggles its class, or '
     + 'the first click throws a temporal-dead-zone ReferenceError');
+});
+
+// ---------------------------------------------------------------------------
+// WS59 — the lock-screen CARD opens the wrong PWA while the BUTTONS work.
+//
+// OWNER, 2026-10-04, verbatim: "the wrong pwa comes from click on the lock
+// screen player area except the buttons. click on play pauses the program as it
+// should."
+//
+// WHY THAT REPORT IS WORTH FOUR WORKSTREAMS OF THEORY. This log carried
+// "registration order" since 2026-09-24: whichever app registered MediaSession
+// last owns the lock screen. The owner's sentence REFUTES it. A session does not
+// own its card and not its own buttons — they are one object. If SR's app had
+// won the session, `pause` would not have reached our handler and paused our
+// audio. It did. So the session IS ours, and the split is between the CONTROLS
+// (which do not depend on artwork) and the CARD (which the OS builds from
+// mediaSession.metadata).
+//
+// These guards pin the two properties that follow from that reading, plus the
+// instrumentation that lets the next device pass answer with a reading instead
+// of a theory.
+
+// The artwork type must never again be asserted rather than derived.
+test('WS59: the artwork type is derived, never hard-coded to one format', () => {
+  // Covers the whole helper, not just the JPEG branch: a guard that only
+  // checked "no image/png" would pass while webp came back 'unknown'.
+  const helper = /const artworkType = \(src\) => \{[\s\S]*?\n {6}\};/.exec(MEDIA_SESSION);
+  assert.ok(helper, 'the artworkType helper must exist inside updateMediaSession');
+  assert.ok(/split\('\?'\)\[0\]/.test(helper[0]),
+    "SR appends ?preset=api-default-square, so the PATH must be read — a naive "
+    + "endsWith('.jpg') would miss every real SR image");
+  assert.ok(/return '';/.test(helper[0]),
+    'an unknown extension must return empty so the key is OMITTED; the UA then '
+    + 'sniffs. A wrong claim is worse than no claim.');
+  // No literal type may reappear anywhere in the session builder.
+  const literals = MEDIA_SESSION.match(/type:\s*'image\/[a-z]+'/g) || [];
+  assert.equal(literals.length, 0,
+    `no hard-coded artwork type may return: ${literals.join(', ')}`);
+});
+
+// The clearing branch is where our card DISAPPEARS. If it runs while audio is
+// ours, the OS has nothing to attribute and shows another installed PWA.
+test('WS59: clearing our session is recorded, so a vanished card is provable', () => {
+  const clear = /if \(!cur\) \{[\s\S]*?return;\n {4}\}/.exec(MEDIA_SESSION);
+  assert.ok(clear, 'the no-track branch must exist');
+  assert.ok(/META_DIAG\.clearedAt = new Date\(\)\.toISOString\(\)/.test(clear[0]),
+    'the exact moment we published metadata=null must be written down — this is '
+    + 'the smoking gun for a card that belongs to somebody else');
+  // And it must be written BEFORE the metadata is actually cleared, or the
+  // timestamp records an intention rather than an event.
+  assert.ok(clear[0].indexOf('clearedAt') < clear[0].indexOf('mediaSession.metadata = null'),
+    'clearedAt must be stamped BEFORE metadata is set to null');
+  // The field must exist in the declared shape, not be created on first write.
+  assert.ok(/clearedAt: null,/.test(APP_CODE),
+    'clearedAt must be declared in META_DIAG so the snapshot shape is fixed');
+});
+
+// The reading the owner takes on the phone. Without this the next pass is
+// another theory; with it, one number settles it.
+test('WS59: the lock-screen card state is in the snapshot the phone can show', () => {
+  const snap = region('function metaDiagBuildSnapshot(', 'tool:', APP_CODE)
+    || region('return {', '};', APP_CODE);
+  const withLock = /lockScreen: \{[\s\S]*?\}/.exec(APP_CODE);
+  assert.ok(withLock, 'the snapshot must expose lockScreen');
+  // The independent reading matters most: our own bookkeeping can be wrong, but
+  // `navigator.mediaSession.metadata` is what the OS itself sees.
+  assert.ok(/apiMetadataPresent: mediaSession \? !!mediaSession\.metadata : null/.test(APP_CODE),
+    'the snapshot must read the LIVE metadata presence, not only our record of it');
+  assert.ok(/apiPlaybackState: mediaSession \? mediaSession\.playbackState : null/.test(APP_CODE),
+    'and the live playbackState');
+  assert.ok(/clearedAt: META_DIAG\.clearedAt \|\| null/.test(APP_CODE),
+    'plus the moment we cleared it');
+  // The writer must exist, or the fields are permanently null and the panel is
+  // decoration. This is the "declared but never called" defect, guarded.
+  assert.ok(/META_DIAG\.lockScreen = \{/.test(MEDIA_SESSION),
+    'updateMediaSession must actually populate lockScreen');
 });

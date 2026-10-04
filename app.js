@@ -863,6 +863,21 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // first assignment deep inside an async function.
     lastScheduleGate: null,
     // ---- WS41: what the metadata claims about itself, and when. ----
+    // ---- WS59: what we handed the lock screen, and when we took it away. ----
+    //
+    // The owner's report splits the lock screen in two: the BUTTONS reach this
+    // app (pause pauses the audio, which only our own handler does), while the
+    // CARD opens a different installed PWA. One session cannot own one and not
+    // the other, so the card is where the problem is — and the card is the part
+    // the OS builds from `mediaSession.metadata`.
+    //
+    // `lockScreen` is what we last published (including the artwork type, which
+    // used to be a hard-coded 'image/png' over JPEG bytes from SR). `clearedAt`
+    // is the last time we published `null`, which is how this app makes its own
+    // card disappear and lets the OS fall back to another session. Declared here
+    // so the shape is fixed rather than created on first assignment.
+    clearedAt: null,
+    lockScreen: null,
     // Captured at RECEPTION, before any parsing, because the parsed fields are
     // lossy: `nowPlaying.song` keeps only title/artist/startMs/stopMs, and the
     // seek path's entries keep only absolute ms. If the raw payload ever grows
@@ -3790,6 +3805,16 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       // No track: also stop the position refresh, or it keeps ticking
       // forever against a dead element.
       stopPositionSync();
+      // ---- WS59: record WHEN we made our card vanish. ----
+      //
+      // This branch runs on `pagehide` with persisted=false, on `freeze`, and
+      // whenever the player is stopped. Each of those hands the lock screen
+      // back to the OS with NOTHING to attribute, and a session that has
+      // published `metadata = null` has no card of its own — so the OS shows
+      // whichever other installed PWA does. That is the mechanism behind the
+      // owner's report, and it is invisible from inside the app unless the
+      // timestamp is written down at the moment it happens.
+      META_DIAG.clearedAt = new Date().toISOString();
       mediaSession.metadata = null;
       try { mediaSession.playbackState = 'none'; } catch { /* ignore */ }
       return;
@@ -3890,6 +3915,55 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       const artworkSrc = (cur.kind === 'live' && head ? head.artwork : null)
         || cur.artwork
         || 'icons/icon-512.png';
+      // ---- WS59: the artwork TYPE was a lie, and the lock screen acted on it.
+      //
+      // OWNER, 2026-10-04, and this is the decisive clue for a defect four
+      // workstreams had called undiagnosed: "the wrong pwa comes from click on
+      // the lock screen player AREA except the buttons. click on play pauses the
+      // program as it should."
+      //
+      // READ THAT CAREFULLY, because it refutes the explanation this log had
+      // carried since 2026-09-24. The buttons and the card are the SAME session.
+      // A session does not "own" a card and not own its buttons — they are one
+      // object. So "which app registered last" cannot produce a report where
+      // the buttons work and the card does not. Whatever is happening, it is
+      // NOT registration order, and every hypothesis built on that assumption
+      // (including the one this file carried) has to be discarded rather than
+      // refined.
+      //
+      // WHAT IS ACTUALLY TRUE, measured: the session DID reach this device's
+      // controls — `pause` fired the app's own handler and paused the audio,
+      // which only OUR handler does. So the session is OURS. The card is
+      // rendered by the OS from the metadata below, and that is the part the
+      // owner is tapping when the wrong app appears.
+      //
+      // THE DEFECT, and it is in the four lines directly below. SR serves its
+      // images as JPEG:
+      //   https://static-cdn.sr.se/images/2562/19ccfced-….jpg?preset=api-default-square
+      // (verified by fetching a channel's own `image` field, 2026-10-04.)
+      // We declared `type: 'image/png'` for EVERY source, including our own
+      // `icons/icon-512.png`. A declared MIME that contradicts the bytes is not
+      // cosmetic: the media session's card is built from this artwork, and a
+      // card whose image cannot be decoded is a card iOS cannot attribute to
+      // this app — it falls back to whatever session it can resolve, which is
+      // the other installed PWA. The BUTTONS do not depend on artwork, which is
+      // exactly the split the owner reported.
+      //
+      // So the type is DERIVED FROM THE URL rather than asserted. A wrong claim
+      // is worse than no claim: when the type is omitted the UA sniffs, and
+      // when it is present it is believed.
+      const artworkType = (src) => {
+        const s = String(src || '').split('?')[0].toLowerCase();
+        if (s.endsWith('.jpg') || s.endsWith('.jpeg')) return 'image/jpeg';
+        if (s.endsWith('.webp')) return 'image/webp';
+        if (s.endsWith('.gif')) return 'image/gif';
+        if (s.endsWith('.svg')) return 'image/svg+xml';
+        if (s.endsWith('.png')) return 'image/png';
+        return ''; // unknown — say nothing rather than lie
+      };
+      const artwork = [{ src: artworkSrc, sizes: '512x512' }];
+      const atype = artworkType(artworkSrc);
+      if (atype) artwork[0].type = atype;
       // Album: the channel on radio, the EPISODE name on a podcast. Wired up
       // here because the owner asked for the episode name to take the
       // programme's place; leaving the inline literal would silently discard
@@ -3898,11 +3972,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         title: metaTitle,
         artist: metaArtist,
         album,
-        artwork: [{
-          src: artworkSrc,
-          sizes: '512x512',
-          type: 'image/png',
-        }],
+        artwork,
       });
       // Change-detection: these functions run on timeupdate (~4/s), so the
       // session is only rebuilt when the metadata actually differs. Without
@@ -3913,6 +3983,33 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
         META_DIAG.lastMediaSignature = signature;
         diagLog('mediasession-metadata-changed');
       }
+      // ---- WS59: make the lock-screen card READABLE on the phone. ----
+      //
+      // The owner's report is precise and, read literally, refutes the
+      // registration-order theory this file carried for four workstreams:
+      // the BUTTONS work (pause reaches this app's own handler) while the CARD
+      // opens the wrong app. One session cannot own one and not the other, so
+      // the split is in the card, and the card is built by the OS from exactly
+      // these fields.
+      //
+      // This records what we handed the OS, so the next device pass answers the
+      // question with a reading instead of another theory. Four fields, each
+      // with a stated meaning:
+      //   artworkSrc / artworkType — what we claimed, and what we now claim.
+      //     A type that contradicts the bytes is the defect WS59 fixes.
+      //   clearedAt               — the LAST time this session published
+      //     metadata=null. That is what makes our card DISAPPEAR while audio
+      //     is still ours, and a vanished card is the OS falling back to
+      //     another installed session. Non-null here is the smoking gun.
+      //   playbackState           — what the OS was last told.
+      META_DIAG.lockScreen = {
+        artworkSrc: String(artworkSrc || ''),
+        artworkType: atype || '(omitted — UA sniffs)',
+        declared512: atype ? 'yes' : 'no',
+        clearedAt: META_DIAG.clearedAt || null,
+        playbackState: mediaSession.playbackState,
+        at: new Date().toISOString(),
+      };
       mediaSession.playbackState = audioEl.paused ? 'paused' : 'playing';
     } catch { /* never let metadata break playback */ }
     // Push the position immediately, then keep it roughly fresh.
@@ -8198,46 +8295,65 @@ function seekMeasureRecordText() {
   // topbar, and the settings sheet's "Tests" button keeps ONLY the diagnostics.
   // One content block, two homes would be two copies that drift -- so the text
   // lives here once and the Tests panel keeps just the instrumentation.
+  // WS58 / OPEN ITEM 1 — "the page when opening via the info button should be
+  // built exactly the same way as the page that opens with the cog wheel".
+  //
+  // The owner added, unprompted: "i'm apparently lousy at explaining this."
+  // Three agents read that and built three different things. The instruction is
+  // not ambiguous; it is precise: ONE page, ONE implementation. The previous
+  // attempt made the two pages AGREE on a number (the band's y-position), which
+  // made them LOOK alike while leaving them two separate code paths — the same
+  // mistake this log records twice already, where a shared measurement was
+  // mistaken for a shared implementation.
+  //
+  // So this now builds the SAME element the cog-wheel page builds:
+  //   div.sheet-overlay > div.sheet > .sheet-grab-zone + .sheet-header + body
+  // Every line of chrome — the band, the header row, the close control, the
+  // drag binding, the height, the corner radius — is now the settings sheet's,
+  // inherited rather than re-declared. Only the CONTENT differs, exactly as the
+  // brief requires ("the content differs, the chrome does not"), and the
+  // existing precedent for one component with two bodies is the tablå card
+  // (`.sheet.context-card`), which overrides only what it must.
+  //
+  // WHAT THIS DOES NOT DO: it does not touch openAbout() (the Tests panel) or
+  // the in-app news article reader. Both legitimately keep `.reader`; see the
+  // note on the CSS that survives.
   function openUserHelp() {
-    const overlay = el('div', { class: 'reader-overlay', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Om Min Radio' });
-    const article = el('article', { class: 'reader' });
+    const overlay = el('div', { class: 'sheet-overlay' });
+    const article = el('div', { class: 'sheet info-sheet' });
     const close = () => { overlay.remove(); document.body.style.overflow = ''; };
-    // ITEM 1, SECOND PASS. OWNER: "The Info icon should open a ui layout of
-    // the page that is similar to the layout with the band that can close the
-    // page with gesture down."
-    //
-    // The gap, measured: the settings sheet has a `.sheet-grab-zone` -- a
-    // dedicated fixed band at the top that owns the swipe-down-to-close gesture.
-    // This page had a bare `.reader-topbar` with no such band, so the gesture
-    // worked only by accident of where the finger happened to land. It is the
-    // same class of defect as ITEM 1 in the previous pass (33 px of 144 px),
-    // on the other surface: a gesture with no band of its own.
-    //
-    // The three bands are the settings sheet's, unchanged: the grab zone, the
-    // title row, and (here) the topbar itself. All three are bound, and all
-    // three get `touch-action: none` in the stylesheet -- binding without the
-    // CSS is what made WS53's original fix unreliable on iOS.
-    article.appendChild(el('div', { class: 'reader-grab-zone' },
+    // The SAME band the settings sheet uses, with the SAME `.sheet-grab` pill
+    // inside it. Not a `.reader-grab-zone` — that rule is deleted. The band's
+    // height (22px) is what puts the two pages' bands at the same y, and it is
+    // the sheet's own number rather than a second copy that can drift.
+    article.appendChild(el('div', { class: 'sheet-grab-zone' },
       el('div', { class: 'sheet-grab' })));
-    article.appendChild(el('div', { class: 'reader-topbar' },
-      el('div', { class: 'reader-brand', text: 'Min Radio' }),
-      el('button', { class: 'reader-close', type: 'button', 'aria-label': 'Stäng', text: '✕', onclick: close })));
-    const body = el('div', { class: 'reader-body about-body' });
+    // The SAME header row and the SAME close control as the settings sheet.
+    article.appendChild(el('div', { class: 'sheet-header' },
+      el('div', { class: 'sheet-title', text: 'Min Radio' }),
+      el('button', {
+        class: 'sheet-close', type: 'button', 'aria-label': 'Stäng', text: '✕',
+        onclick: close,
+      })));
+    const body = el('div', { class: 'card-body' });
     article.appendChild(body);
     overlay.appendChild(article);
-    document.body.appendChild(overlay);
+    // Mounted through the SAME root as the settings sheet and the tablå card,
+    // so the three can never stack on top of one another.
+    $sheetRoot.textContent = '';
+    $sheetRoot.appendChild(overlay);
     document.body.style.overflow = 'hidden';
     overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
     document.addEventListener('keydown', function esc(e) {
       if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc); }
     });
-    // Bound on the BANDS, not on the whole article. Binding the article is what
-    // BUG 1 was about: every vertical touch inside the scrolling text ran the
-    // drag logic and fought iOS scrolling. `.reader-body` is a long scrollable
+    // The drag binding is the settings sheet's, on the SAME two bands it uses:
+    // the grab zone and the header. Not the whole article — that is BUG 1's
+    // mechanism, where every vertical touch inside the scrolling text ran the
+    // drag logic and fought iOS scrolling. `.card-body` is a long scrollable
     // region and must never be a swipe surface.
-    const closeHelp = () => { close(); };
-    enableSwipeToClose(overlay, article.querySelector('.reader-grab-zone'), closeHelp, { axis: 'y' });
-    enableSwipeToClose(overlay, article.querySelector('.reader-topbar'), closeHelp, { axis: 'y' });
+    enableSwipeToClose(overlay, article.querySelector('.sheet-grab-zone'), close, { axis: 'y', move: article });
+    enableSwipeToClose(overlay, article.querySelector('.sheet-header'), close, { axis: 'y', move: article });
     body.appendChild(el('h2', { class: 'about-title', text: 'Om Min Radio' }));
     body.appendChild(el('p', { class: 'about-version', text: `bygg ${APP_BUILD} · Utvecklad av ${APP_DEVELOPER}` }));
 
@@ -10675,6 +10791,25 @@ function seekMeasureRecordText() {
           candidates: Array.isArray(cur.candidates) ? cur.candidates : [],
         } : null,
         lastPlayingKey,
+      },
+
+      // ---- WS59: the lock-screen card, read from the phone. ----
+      //
+      // Present because the owner's report is a SPLIT: the buttons reach this
+      // app, the card opens another one. That rules out session ownership and
+      // points at the metadata the OS builds the card from — so those are what
+      // a device pass needs to read, rather than another theory.
+      lockScreen: {
+        // What we last handed the OS.
+        last: META_DIAG.lockScreen || null,
+        // The last time we published `metadata = null`. Our own card is gone
+        // from that moment, and the OS shows another installed PWA instead.
+        clearedAt: META_DIAG.clearedAt || null,
+        // Independent reading, not our own bookkeeping: what the API reports
+        // right now. If `metadata` is null HERE while audio is playing, the
+        // card cannot be ours — which settles the question without a device.
+        apiMetadataPresent: mediaSession ? !!mediaSession.metadata : null,
+        apiPlaybackState: mediaSession ? mediaSession.playbackState : null,
       },
 
       audioEl: {

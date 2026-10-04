@@ -568,7 +568,30 @@ a:focus-visible {
   margin-top: 4px;
 }
 
-/* ---------- in-app article reader ---------- */
+/* ---------- in-app article reader ----------
+ *
+ * WS58: the Info page NO LONGER USES ANY OF THIS. It is built from the
+ * settings sheet's own element (`.sheet` + `.sheet-grab-zone` +
+ * `.sheet-header`), so there is now ONE band definition, ONE header, and ONE
+ * close control in this stylesheet instead of two that merely agreed on a
+ * number. Everything below survives ONLY for two surfaces that were never part
+ * of the complaint and legitimately keep a full-height, non-sheet reader:
+ *
+ *   - the in-app NEWS article reader (openArticle)
+ *   - the Tests / diagnostics panel (openAbout)
+ *
+ * The reader band rules, its `::after` drag target, the `> *:not(...)` lift and
+ * the duplicate `.reader { position: relative }` block are GONE. They existed
+ * only for the Info page, and leaving a second band's rules behind is how the
+ * two surfaces drifted apart in the first place — which is the defect WS58 was
+ * opened to close. A grep for the class, on comment-stripped source, must
+ * return nothing.
+ *
+ * The duplicate `.reader { }` block that used to sit further down was also the
+ * same class of defect as the duplicate `.sheet` rule fixed earlier in this
+ * log: the first declaration wins and the second reads as if it applied. It is
+ * collapsed into the single declaration below.
+ */
 .reader-overlay {
   position: fixed;
   inset: 0;
@@ -584,95 +607,7 @@ a:focus-visible {
   display: flex;
   flex-direction: column;
   height: 100dvh;
-  /* ITEM 1, FOURTH PASS (correction). The band is in FLOW here, not absolutely
-     positioned, so the band starts wherever this padding ends. It was
-     `var(--safe-top)`, i.e. y=0 on desktop and y=safe-top on the iPhone -- the
-     reason the Info band sat at the very top of the screen. It is now
-     `--band-y`, the y where "Kanaler" sits, so the two bands start together. */
-  padding-top: var(--band-y);
   will-change: transform; /* smooth swipe-to-close */
-}
-
-/* ---- ITEM 1, SECOND PASS: the Info page gets the settings sheet's band. ----
- *
- * OWNER: "The Info icon should open a ui layout of the page that is similar to
- * the layout with the band that can close the page with gesture down."
- *
- * `.reader-grab-zone` is the SAME band the settings sheet uses, reused rather
- * than reinvented: same height, same `.sheet-grab` pill inside it, same
- * `touch-action`. Reusing it is the point -- a second band with its own
- * dimensions is a second thing to keep in step, and this repo has already lost
- * the stylesheet to a stale restore twice.
- *
- * `touch-action: none` on BOTH bands, and that is load-bearing rather than
- * decorative: on iOS the UA claims a drag as a scroll unless the surface says
- * otherwise, so binding the gesture in JS alone leaves it unreliable. WS53 and
- * WS55 both measured this. `.reader-body` is deliberately NOT included -- it
- * scrolls, and taking its gesture is the BUG 1 regression.
- */
-/* ITEM 1, FOURTH PASS -- the two bands must start at the SAME y-position, and
- * the owner's definition of that position is precise: "sleak look means start
- * in the same y-position where 'KAnaler' is not seen".
- *
- * MEASURED, before this rule: the settings band was 338 px tall starting at
- * y=92, this one 15 px starting at y=0. They were not aligned at all -- which
- * is the failure the owner reported, and the reason a shared spacing value was
- * never going to be enough. Equal PADDING is not equal POSITION when one band
- * is a tall overlay and the other is a 15 px strip.
- *
- * So both bands are now the same THING: a fixed-height strip at the very top of
- * their surface, with the pill inside it and the drag area extending down over
- * the content behind. `.reader` becomes the positioning context, exactly as
- * `.sheet` already is, so `top: 0` resolves against the page in both cases.
- *
- * The drag region is `::after` rather than the element itself, so the strip can
- * stay a small, honest band while the tappable area beneath it is large. The
- * pseudo-element sits at z-index 0 and the page's own content is lifted above
- * it, so it can never intercept a tap meant for the text.
- */
-.reader {
-  position: relative;
-}
-
-.reader-grab-zone {
-  display: flex;
-  justify-content: center;
-  /* Fixed, small and IDENTICAL to the sheet's. The height is what makes the two
-     surfaces line up; the drag area below is a separate concern. */
-  height: 22px;
-  padding: 10px 0 0;
-  background: var(--surface);
-  flex: none;
-  position: relative;
-  z-index: 1;
-}
-
-/* The tall drag target, behind the content. `-2px` starts it just under the
- * strip so the two together read as one continuous draggable area. */
-.reader-grab-zone::after {
-  content: '';
-  position: absolute;
-  top: 22px;
-  left: 0;
-  right: 0;
-  /* Half the page, matching the sheet's `50%` of its own surface. */
-  height: 50vh;
-  z-index: 0;
-  pointer-events: auto;
-}
-/* Everything except the band sits above the drag target. Without this the
- * pseudo-element would paint over the article and swallow every scroll and tap
- * in the top half of the page -- a far worse failure than the one being fixed. */
-.reader > *:not(.reader-grab-zone) {
-  position: relative;
-  z-index: 1;
-}
-
-.reader-grab-zone,
-.reader-topbar {
-  /* ITEM 1, second pass: see the note above. Without this the UA may claim the
-     drag as a scroll and the gesture is unreliable on iOS. */
-  touch-action: none;
 }
 
 .reader-topbar {
@@ -682,6 +617,10 @@ a:focus-visible {
   padding: 10px 20px;
   border-bottom: 1px solid var(--border);
   flex: none;
+  /* ITEM 1, second pass, retained for the two surfaces that still live here:
+     without it the UA may claim the drag as a scroll and their swipe-to-close
+     is unreliable on iOS. */
+  touch-action: none;
 }
 
 .reader-brand {
@@ -1973,6 +1912,30 @@ body.player-gesture-lock {
   --card-fixed-h: 0px;
   padding-top: 0;
 }
+
+/* ---- WS58: the Info page IS the settings sheet. There is deliberately NO
+ * `.sheet.info-sheet` override.
+ *
+ * MEASURED, and this is why the override that used to be here was deleted. With
+ * `padding-top: 0` — copied from `.sheet.context-card`, which was the wrong
+ * precedent — the Info page's header rendered at y=76 while the cog-wheel
+ * page's rendered at y=110. Same band (y=76, 22px), same pill, same radius,
+ * same everything else, and a 34px difference in the one row a reader actually
+ * looks at. Two pages that agree on every number except the one that matters
+ * is the same defect as "equal height mistaken for equal position", which this
+ * log records twice already.
+ *
+ * `.sheet.context-card` needs its own padding because the tablå card has a
+ * STICKY-HEADER contract of its own (--card-grab-h / --card-fixed-h, measured
+ * on open). The Info page has no sticky anything: one band, one header, one
+ * scrolling body, all of which it now shares with the settings sheet verbatim.
+ *
+ * So the class name stays on the element — it is the hook that says "this is
+ * the Info page" and it is what the test guards — but it carries NO
+ * declarations. If a future session needs one, that is the signal the two
+ * pages have started diverging again, and the override must be justified by a
+ * measurement on this page rather than copied from the tablå card.
+ */
 .sheet.context-card > .sheet-grab-zone,
 .sheet.context-card > .sheet-header,
 .sheet.context-card > .card-body > .card-list > .card-day-label {
@@ -2352,8 +2315,8 @@ body.player-gesture-lock {
      `.sheet.context-card > .sheet-grab-zone { top: 0 }` still overrides this for
      the tablån card, which is a different surface with its own sticky-header
      contract. */
-  /* The strip is 22px, matching `.reader-grab-zone` exactly -- the two bands
-     must be the same height or they cannot be at the same y-position. */
+  /* The strip is 22px -- WS58 removed the second band definition entirely, so
+     this is now the ONLY band height in the stylesheet. */
   height: 22px;
   min-height: 0;
   padding: 10px 0 0;
