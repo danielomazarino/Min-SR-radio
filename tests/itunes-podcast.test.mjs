@@ -3768,3 +3768,105 @@ test('ITEM 2: a tap inside the control must not dismiss the dropdown', () => {
   assert.match(dismiss, /closeWs40List\(\);\s*\};/,
     'anything outside must close it, or the list would stay open over the page');
 });
+
+// ---------------------------------------------------------------------------
+// WS60 — the gesture area must NEVER block a button, and the band must stay
+// reachable. Both properties are CSS-only, so both guards are on the stylesheet
+// and both name the failure they prevent.
+//
+// OWNER, 2026-10-04:
+//   "the gesture down on the cards shown after long press has an implemented
+//    problem in the same area ... we need to fix so that they are clickable even
+//    if gesture down is still in the same place"
+//   "gestures areas should never stop the card button press functions from
+//    working" — "the now non clickable radio shows and podcasts as well as Info
+//    and Save buttons"
+//   "on both cards the gesture down to close the card should be further down on
+//    the screen than now"
+
+// A selector for the band rule. It must EXCLUDE the comma-grouped rules —
+// `.sheet-grab-zone, .sheet-header, .sheet-actions { touch-action: none }` is a
+// different rule that happens to start with the same class name, and matching it
+// reads `top: 0` out of a block that declares only touch-action. That mistake
+// made this guard red against correct code.
+//
+// The `g` flag is REQUIRED: these guards use `matchAll`, which throws on a
+// non-global regex. Its absence was why both guards stayed red after the
+// selector was fixed — a reminder that a guard can fail for a reason that has
+// nothing to do with the code it is guarding.
+const BAND_RULE = /(?:^|[,{]\s*)\.sheet-grab-zone\s*\{([^}]*)\}/gm;
+
+// The band must be STICKY. Measured: as `position: absolute` inside the scroll
+// container it scrolled to y=-524 on the Info page, putting the close gesture
+// off-screen entirely (unscrolled flick closed 1/1, scrolled 0/1).
+test('WS60: the drag band is sticky, so scrolling cannot take the gesture away', () => {
+  // COMMENTS STRIPPED — the rationale above `position: sticky` names
+  // `position: absolute` and `y=-524` while explaining why they were removed.
+  // Asserting on raw source would let the comment satisfy the guard, which is the
+  // documented comment trap (a comment satisfying a positive match for a deleted
+  // rule) and would make this guard unable to fail for the right reason.
+  const css = stripComments(fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8'));
+  const all = [...css.matchAll(BAND_RULE)];
+  assert.ok(all.length >= 1, '.sheet-grab-zone must exist');
+  // The rule that owns `position` — not the touch-action group.
+  const owner = all.map((m) => m[1]).find((b) => /position\s*:/.test(b));
+  assert.ok(owner, 'one .sheet-grab-zone rule must declare `position`');
+  assert.match(owner, /position:\s*sticky/,
+    'the band must be sticky — as `absolute` inside the scroll container it '
+    + 'scrolls off-screen (MEASURED y=-524) and the card cannot be closed');
+  assert.match(owner, /top:\s*0/,
+    'and pinned to the top of the scroll box, which is what makes sticky work');
+});
+
+// The band must be big enough to be a reliable target. 22px was below the 44px
+// iOS guidance this log already records; the owner asked for it to be larger.
+test('WS60: the drag band is at least 44px', () => {
+  const css = stripComments(fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8'));
+  const all = [...css.matchAll(BAND_RULE)];
+  const owner = all.map((m) => m[1]).find((b) => /height\s*:/.test(b));
+  assert.ok(owner, 'one .sheet-grab-zone rule must declare `height`');
+  const h = /height:\s*(\d+)px/.exec(owner);
+  assert.ok(h, 'the band height must be a pixel value');
+  assert.ok(Number(h[1]) >= 44,
+    `the band is ${h[1]}px; 44px is the iOS minimum target and the owner asked `
+    + 'for a larger, easier gesture area');
+});
+
+// THE CRITICAL GUARD. An overlay tall enough to be "half the screen" can only
+// stay out of the way of the controls if it is BEHIND them, and can only capture
+// the gesture if it is ON TOP. The owner resolved that conflict — "gestures
+// areas should never stop the card button press functions from working" — so the
+// capturing overlay must not come back.
+test('WS60: no full-height ::after overlay may capture touches over the content', () => {
+  const css = stripComments(fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8'));
+  assert.doesNotMatch(css, /\.sheet-grab-zone::after\s*\{/,
+    'the tall drag overlay is deleted. MEASURED: it computed to 200px (the '
+    + '`height: 50%` resolved against the 22px band and was floored by '
+    + 'min-height), it painted OVER the controls it was meant to sit behind, and '
+    + '`touch-action` is not inherited so the one layer doing the drag was the '
+    + 'one layer not covered by the iOS no-scroll rule. An overlay cannot both '
+    + 'swallow half the screen and let every button through — the owner chose '
+    + 'the buttons. The 44px sticky band is the gesture area instead.');
+  // Nothing anywhere may reintroduce a fixed-height capture layer over a sheet.
+  const overlays = css.match(/\.sheet[^{]*::after\s*\{[^}]*pointer-events:\s*auto[^}]*\}/g) || [];
+  assert.equal(overlays.length, 0,
+    `a sheet overlay that captures pointer events must not exist: ${overlays.join(' | ')}`);
+});
+
+// The tablå card's rows must clear the fixed band+header block. MEASURED before
+// this fix: 4 rows FULLY hidden at every scroll position, because `.card-list`
+// had no top padding and the first rows started at the top of the scroll box.
+test('WS60: the tablå list clears the fixed band+header block', () => {
+  const css = stripComments(fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8'));
+  assert.match(css, /\.sheet\.context-card > \.card-body > \.card-list \{[^}]*padding-top:\s*var\(--card-fixed-h/,
+    'the programme list must be pushed down by the MEASURED height of the fixed '
+    + 'bands, or its first rows sit underneath them and cannot be tapped '
+    + '(MEASURED: 4 of 12 rows fully hidden at every scroll position)');
+  assert.match(css, /\.sheet\.context-card \{[^}]*scroll-padding-top:\s*var\(--card-fixed-h/,
+    'and anchor scrolling must clear the same block');
+  // Derived from the published variable, never a second hard-coded number: the
+  // band grew 22px -> 44px in this same pass, which is exactly how a duplicated
+  // constant would have silently desynced.
+  assert.doesNotMatch(css, /\.card-list \{[^}]*padding-top:\s*\d+px/,
+    'the clearance must come from --card-fixed-h, not a literal that can drift');
+});

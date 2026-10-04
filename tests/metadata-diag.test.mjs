@@ -5308,8 +5308,14 @@ test('WS29 the readout timer is cleared when the sheet closes, and never polls w
   // occurs in an earlier, unrelated function. Anchor on openAbout's own body so
   // this cannot silently read someone else's close handler -- the drifted-anchor
   // trap that has produced three wrong conclusions in this repo.
+  // WS60 RE-ANCHOR (2026-10-04). The marker was `aria-label': 'Om appen'`, which
+  // was on the overlay construction openAbout used as a `.reader`. WS60 made the
+  // Tests page a `.sheet`, so that attribute is gone. ONLY the start marker
+  // moved; the assertion below — that close() clears the interval — is unchanged
+  // and is the property that matters. Re-anchored on a marker that still exists
+  // INSIDE openAbout and cannot match another function.
   const closeRegion = region(
-    "aria-label': 'Om appen'", 'document.body.style.overflow', APP_CODE);
+    'function openAbout(', 'document.body.style.overflow', APP_CODE);
   assert.ok(/clearInterval\(readoutTimer\)/.test(closeRegion),
     'close() must clear the interval — otherwise it outlives the sheet');
   // The one declaration only. A second `let readoutTimer` further down would
@@ -5458,4 +5464,77 @@ test('WS59: the lock-screen card state is in the snapshot the phone can show', (
   // decoration. This is the "declared but never called" defect, guarded.
   assert.ok(/META_DIAG\.lockScreen = \{/.test(MEDIA_SESSION),
     'updateMediaSession must actually populate lockScreen');
+});
+
+// ---------------------------------------------------------------------------
+// WS60 — the Tests page is a sheet, the dropdown works, and no card's buttons
+// are blocked by the gesture area.
+//
+// OWNER, 2026-10-04, three reports in one pass:
+//   1. "we should also implement the card design for the Tests page"
+//   2. the dropdown on "Klicka här för val av program i listan som följer"
+//      "has stopped to show"
+//   3. "gestures areas should never stop the card button press functions from
+//      working" — "the now non clickable radio shows and podcasts as well as
+//      Info and Save buttons"
+//
+// The dropdown is the one with a real root cause, and it is a defect class this
+// log has hit repeatedly: code that is correct in isolation and destroyed by a
+// later change to a DIFFERENT line.
+
+// The dropdown bug. `btn.textContent = ...` REPLACES THE BUTTON'S CHILDREN, and
+// `ws40Pick`'s label is a child <span>. The text survived; the element did not.
+test('WS60: the action number is a NODE, never a textContent overwrite', () => {
+  const open = region('function openAbout(', 'about.appendChild(body)', APP_CODE);
+  // The label element must be a real child span.
+  assert.ok(/ws40Pick\.append\(el\('span', \{ class: 'setting-minmax ws40-pick-label'/.test(open),
+    'the picker label must be a child span, or numbering it as text destroys it');
+  // The numbering must NOT assign textContent on a button — that is the defect.
+  assert.doesNotMatch(open, /btn\.textContent\s*=/,
+    'assigning btn.textContent destroys the label span — WS60 measured the span '
+    + 'gone from the DOM while its text remained, which is why the dropdown '
+    + 'stopped opening');
+  // It must insert a node instead, and only for a numbered action.
+  assert.ok(/if \(n\) btn\.insertBefore\(el\('span', \{ class: 'diag-num'/.test(open),
+    'the number must be inserted as a node so the label span survives');
+  // And the selector must still be exempt from numbering, which is what makes
+  // its text read as an instruction rather than "1. Klicka här…".
+  assert.ok(/\[ws40Pick,[\s\S]*?null\]/.test(open),
+    'the selector stays out of the numbered sequence — it is a select, not an action');
+});
+
+// The Tests page is the same component as every other sheet (WS58's rule applied
+// to the third and last `.reader` surface).
+test('WS60: the Tests page is a .sheet, mounted in the shared root', () => {
+  // WS60 REGION BOUNDARY. The end marker was `about.appendChild(body)`, which
+  // sits BEFORE the mount — so the assertion about $sheetRoot was reading a
+  // region that ended before the line it checks. The marker only moved; every
+  // assertion is unchanged. Brace-matched so it survives future edits.
+  const start = APP_CODE.indexOf('function openAbout(');
+  assert.notEqual(start, -1, 'openAbout must exist');
+  let depth = 0;
+  let end = -1;
+  for (let i = APP_CODE.indexOf('{', start); i < APP_CODE.length; i += 1) {
+    if (APP_CODE[i] === '{') depth += 1;
+    else if (APP_CODE[i] === '}') {
+      depth -= 1;
+      if (depth === 0) { end = i + 1; break; }
+    }
+  }
+  const open = APP_CODE.slice(start, end);
+  assert.ok(/class: 'sheet-overlay'/.test(open),
+    'the Tests page must use the shared sheet overlay');
+  assert.ok(/class: 'sheet'/.test(open), 'and be a .sheet — one component, one definition');
+  assert.doesNotMatch(open, /class: 'reader'|reader-overlay/,
+    'it must not build a second .reader implementation — that is the drift WS58 closed');
+  // Mounted through $sheetRoot so two modals cannot stack. Appending to
+  // document.body is what let six stale copies accumulate in one session.
+  assert.ok(/\$sheetRoot\.appendChild\(overlay\)/.test(open),
+    'must mount through $sheetRoot — document.body let overlays accumulate');
+  // Bound on the BANDS, never the whole sheet: BUG 1's mechanism.
+  assert.ok(/enableSwipeToClose\(overlay, about\.querySelector\('\.sheet-grab-zone'\)/.test(open)
+    && /enableSwipeToClose\(overlay, about\.querySelector\('\.sheet-header'\)/.test(open),
+    'the drag must bind the two bands');
+  assert.doesNotMatch(open, /enableSwipeToClose\(overlay, about,\s*close\)/,
+    'the whole sheet must never be the swipe surface — that is BUG 1');
 });

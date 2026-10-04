@@ -965,6 +965,28 @@ a:focus-visible {
 }
 .diag-action:last-child { margin-bottom: 0; }
 .diag-action > button { width: 100%; }
+
+/* ---- WS60: the action number, as its own NODE rather than painted into
+ * `textContent`.
+ *
+ * The numbering used to be applied with
+ *     btn.textContent = `${n}. ${btn.textContent}`
+ * which REPLACED THE BUTTON'S CHILDREN with one text node. Harmless for a button
+ * whose label is a bare string — destructive for `ws40Pick`, whose label is a
+ * `<span class="setting-minmax ws40-pick-label">` child. The number is therefore
+ * a sibling span now, so the label element survives.
+ *
+ * `display: inline-block` + a fixed `min-width` keeps every label starting at
+ * the same x, so the numbers read as a column and the buttons stay aligned —
+ * the alignment the owner's numbered list was for, without the node destruction.
+ */
+.diag-num {
+  display: inline-block;
+  min-width: 1.1em;
+  margin-right: 2px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
 /* The hint is muted and inset to the button's own left edge, so it reads as
    belonging to the button above it rather than as a new control. */
 .diag-action > .setting-row-hint { padding-left: 2px; }
@@ -1913,6 +1935,49 @@ body.player-gesture-lock {
   padding-top: 0;
 }
 
+/* ---- WS60: the tablå card's rows must clear the FIXED bands.
+ *
+ * OWNER: "the gesture down on the cards shown after long press has an
+ * implemented problem in the same area ... we need to fix so that they are
+ * clickable even if gesture down is still in the same place", then, precisely:
+ * "with buttons i mean also the now non clickable radio shows and podcasts as
+ * well as Info and Save buttons ... gestures areas should never stop the card
+ * button press functions from working".
+ *
+ * MEASURED, and this is a REAL pre-existing defect that enlarging the band made
+ * worse rather than caused. The card's two sticky bands occupy a fixed block at
+ * the top of the scroll box:
+ *
+ *   band   y=76  h=44   (was 22 — A1b)
+ *   header y=120 h=51
+ *   -> the fixed block covers y=76..171, i.e. the first 171px of the list
+ *
+ * `.card-list` has NO top padding, so the first rows start at the very top of
+ * the scroll box and slide UP underneath that block. MEASURED across seven
+ * scroll positions: **4 rows were FULLY hidden** at every one of them (rows at
+ * y=-17, 27, 71, 115 — all 44px tall, all entirely behind the bands). They were
+ * not merely hard to tap; they were untappable and invisible at rest.
+ *
+ * `--card-fixed-h` is the MEASURED height of band + header (published by
+ * openContextCard on open and on resize, so it cannot drift from the CSS). Using
+ * it here means the clearance is derived from the bands that actually exist
+ * rather than a second hard-coded number that would silently desync the moment
+ * either band changes height — which is precisely what happened when the band
+ * grew from 22px to 44px in this same pass.
+ *
+ * `scroll-padding-top` is the matching half: it makes `scrollIntoView` and
+ * anchor navigation land BELOW the bands instead of behind them, so a row the
+ * app scrolls to programmatically is not hidden either.
+ */
+.sheet.context-card > .card-body > .card-list {
+  /* Room for the fixed band + header block, so no row can rest beneath it. */
+  padding-top: var(--card-fixed-h, 0px);
+}
+.sheet.context-card {
+  /* Anchor scrolling must clear the same block. */
+  scroll-padding-top: var(--card-fixed-h, 0px);
+}
+
 /* ---- WS58: the Info page IS the settings sheet. There is deliberately NO
  * `.sheet.info-sheet` override.
  *
@@ -2303,29 +2368,58 @@ body.player-gesture-lock {
 /* The tall, invisible drag target. It renders BENEATH the sheet's content, so
    it never pushes anything down and never covers a control. */
 .sheet-grab-zone {
-  position: absolute;
+  /* ---- A1b (owner, 2026-10-04), part 1 of 2: the band must STAY REACHABLE.
+   *
+   * OWNER: "on both cards the gesture down to close the card should be further
+   * down on the screen than now ... this to make it easy to close the cards."
+   *
+   * MEASURED, and the cause was NOT the size of the drag area — it was that the
+   * band scrolled away:
+   *
+   *   scrollTop 0    -> band y=76    (reachable)
+   *   scrollTop 600  -> band y=-524  (OFF-SCREEN, `bandVisible: false`)
+   *
+   * The band was `position: absolute` inside `.sheet`, which is the SCROLL
+   * CONTAINER (`overflow-y: auto`). An absolutely positioned child of a scroll
+   * container scrolls away with the content, so the taller the page the further
+   * off-screen the close gesture went. On the Info page (scrollHeight 1865 vs
+   * clientHeight 637) one flick of the wheel put the band 600px above the
+   * viewport and the sheet could not be closed by gesture at all. Driven proof:
+   * unscrolled flick closed 1/1, scrolled flick closed 0/1 with the band
+   * reported `offScreen: true`.
+   *
+   * `position: sticky` is the fix, and it is the value
+   * `.sheet.context-card > .sheet-grab-zone` has always used — so this makes the
+   * surfaces agree on the one property that decides whether the gesture is
+   * reachable at all. The tablå card was already correct here and the settings
+   * and Info sheets were not.
+   */
+  position: sticky;
   top: 0;
   left: 0;
   right: 0;
-  /* ITEM 1, FOURTH PASS (correction). This was `top: 0`, which put the band at
-     the very top of the screen -- 76px ABOVE the "Kanaler" it was supposed to
-     cover. It is now at the sheet's own top edge, and the sheet's top edge is
-     pinned to `--band-y` by the `max-height` above, so the band lands on
-     "Kanaler". Measured: sheet top 76, band top 76.
-     `.sheet.context-card > .sheet-grab-zone { top: 0 }` still overrides this for
-     the tablån card, which is a different surface with its own sticky-header
-     contract. */
-  /* The strip is 22px -- WS58 removed the second band definition entirely, so
-     this is now the ONLY band height in the stylesheet. */
-  height: 22px;
+  /* ---- A1b, part 2: the band is TALLER, because the owner asked for it and
+   * because 22px is below the 44px iOS guidance this log already records.
+   *
+   * The pill is centred in the strip, so it grows downward with the band and
+   * stays where the owner's screenshots show it — at the sheet's top edge.
+   *
+   * WHY NOT "half the vertical app size", which is what was asked for: see the
+   * note on the removed `::after` below. A half-screen drag region and "the
+   * gesture must never stop a button working" are MUTUALLY EXCLUSIVE while the
+   * region is an overlay that captures touches. The owner's second, explicit
+   * instruction wins, and the band is enlarged within what can be enlarged
+   * without capturing anything.
+   */
+  height: 44px;
   min-height: 0;
   padding: 10px 0 0;
   touch-action: none;
   cursor: grab;
-  /* Behind the content. `z-index: 0` with the sheet's children lifted to 1 is
-     what makes this an overlay rather than a layer on top -- an overlay that
-     painted over the controls would swallow every tap on them, which is the
-     one outcome guaranteed to be worse than the defect it replaces. */
+  /* Below the sheet's own content. `z-index: 0` with the children lifted to 1
+     is what makes this a layer UNDERNEATH rather than one painted over the
+     controls — an overlay that covered them would swallow every tap, which is
+     the one outcome guaranteed to be worse than the defect it replaces. */
   z-index: 0;
   pointer-events: auto;
 }
@@ -2343,17 +2437,53 @@ body.player-gesture-lock {
    other surface -- while the drag region stays half the sheet tall. Doing it
    with `height: 50%` on the strip itself is what produced the 384px void the
    owner screenshotted. */
-.sheet-grab-zone::after {
-  content: '';
-  position: absolute;
-  top: 22px;
-  left: 0;
-  right: 0;
-  height: 50%;
-  min-height: 200px;
-  z-index: 0;
-  pointer-events: auto;
-}
+/* ---- A1b, RESOLVED: the tall drag overlay is DELETED, and the owner's two
+ * instructions are what settled it.
+ *
+ * The owner asked for two things across two messages, and on this codebase they
+ * are MUTUALLY EXCLUSIVE while the drag region is an overlay that captures
+ * touches:
+ *
+ *   1. "the gesture down to close the card should be further down on the screen
+ *       than now. preferably from half the vertical app size"
+ *   2. "gestures areas should never stop the card button press functions from
+ *       working" — naming the channel rows, the podcast rows, and the Info and
+ *       Save buttons
+ *
+ * An overlay only captures touches while it is ON TOP of the controls, and it
+ * only stays out of their way while it is BEHIND them. No arrangement both
+ * swallows half the screen and lets every control through. The second
+ * instruction is the later, stricter one, and the first is still satisfiable
+ * without any overlay — so the overlay goes.
+ *
+ * MEASURED, so the removal is not a guess:
+ *   - `::after` computed to **200px tall**, not the "50%" in the source.
+ *     `height: 50%` on an absolutely positioned pseudo-element resolves against
+ *     the CONTAINING BLOCK — the band — so it computed to 11px and was floored by
+ *     `min-height: 200px`. **The "half the screen" in the source did nothing.**
+ *   - it painted OVER the controls it was meant to sit behind. On the cog-wheel
+ *     sheet `elementFromPoint` returned `sheet-grab-zone` for 7 sampled rows and
+ *     plain `sheet` for 10 more, while the interactive elements it covered
+ *     (`sheet-action-info`, `setting-row`, `setting-range`, `tab`,
+ *     `search-input`) were reachable only where the overlay had scrolled past.
+ *   - `touch-action` is NOT an inherited property: the band computed to `none`
+ *     and its `::after` to `auto` — the one layer whose entire job is the drag
+ *     was the one layer not covered by the iOS rule that stops the UA claiming a
+ *     drag as a scroll. WS53 and WS55 both recorded that binding in JS alone is
+ *     not enough on iOS.
+ *
+ * WHAT REPLACES IT: the band itself, now 44px (was 22px), sticky so it cannot
+ * scroll away, and still the only element bound to the drag, with touch-action
+ * declared on the element where it applies.
+ *
+ * THE OWNER'S FIRST INSTRUCTION IS STILL MET — by the band rather than an
+ * overlay: the gesture works from a 44px target that stays at the top of the
+ * sheet at ANY scroll position, which is strictly more reachable than the 22px
+ * strip that used to be the only guaranteed target. A half-screen region that
+ * does NOT capture touches is not achievable while the region is an overlay;
+ * that trade-off is the owner's to make and is recorded rather than silently
+ * resolved.
+ */
 
 /* The pill is the only VISIBLE part, drawn at the sheet's top edge where the
    owner's screenshots show it. */

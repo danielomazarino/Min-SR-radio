@@ -525,8 +525,28 @@ test('WS30 both timers are cleared on close, so nothing outlives the Info sheet'
   // the bug. A second `let sampleTimer` declared further down would shadow and
   // the close handler would clear nothing.
   const src = APP_JS;
-  const open = src.slice(src.indexOf('function openAbout('),
-    src.indexOf('function openAbout(') + 1400);
+  // WS60 RE-ANCHOR (2026-10-04): the window was a hard-coded 1400 characters from
+  // `function openAbout(`. That is a slice of a COMMENT-SHAPED region, so adding
+  // any explanatory comment above the declarations pushes them past the cut and
+  // the test reports a missing declaration that is present in the file — exactly
+  // the false failure this test already records once above.
+  //
+  // Now bounded by the function's own close, brace-matched, so it survives any
+  // comment or code inserted inside openAbout. The three assertions are
+  // UNCHANGED.
+  const openStart = src.indexOf('function openAbout(');
+  assert.notEqual(openStart, -1, 'openAbout must exist');
+  let depth = 0;
+  let openEnd = -1;
+  for (let i = src.indexOf('{', openStart); i < src.length; i += 1) {
+    if (src[i] === '{') depth += 1;
+    else if (src[i] === '}') {
+      depth -= 1;
+      if (depth === 0) { openEnd = i + 1; break; }
+    }
+  }
+  assert.notEqual(openEnd, -1, 'openAbout body must be brace-matchable');
+  const open = src.slice(openStart, openEnd);
   assert.ok(/let readoutTimer = null;/.test(open), 'readoutTimer declared at the top');
   assert.ok(/let sampleTimer = null;/.test(open),
     'sampleTimer must be declared beside readoutTimer so close() can see it');
@@ -539,7 +559,17 @@ test('WS30 both timers are cleared on close, so nothing outlives the Info sheet'
   // one earlier. Anchored on a marker unique to the Info sheet instead.
   const closeStart = src.indexOf('const close = () => {', src.indexOf('function openAbout('));
   assert.notEqual(closeStart, -1, 'close() must exist inside openAbout');
-  const close = src.slice(closeStart, src.indexOf('const closeBtn', closeStart));
+  // WS60 RE-ANCHOR (2026-10-04). The end marker was `const closeBtn`, which
+  // used to sit BELOW the close() definition. WS60 moved the close button up to
+  // build the sheet's header row, so `indexOf` now finds nothing after
+  // closeStart and the slice ran to the end of the file — reading a 6000-line
+  // region and reporting `readoutTimer declared at the top` as missing.
+  //
+  // Re-anchored on the first statement INSIDE close(), which is what the two
+  // assertions actually care about. Both assertions are unchanged.
+  const closeEnd = src.indexOf('};', closeStart);
+  assert.ok(closeEnd > closeStart, 'close() body must be findable');
+  const close = src.slice(closeStart, closeEnd + 2);
   assert.ok(close.includes('clearInterval(readoutTimer)'),
     'close() must clear the paint timer');
   assert.ok(close.includes('clearInterval(sampleTimer)'),

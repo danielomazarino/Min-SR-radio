@@ -8457,8 +8457,27 @@ function seekMeasureRecordText() {
   }
 
   function openAbout() {
-    const overlay = el('div', { class: 'reader-overlay', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Om appen' });
-    const about = el('article', { class: 'reader' });
+    // ---- WS60 (owner, 2026-10-04): "we should also implement the card design
+    // for the Tests page."
+    //
+    // The THIRD `.reader` surface, and the last one. WS58 unified the Info page
+    // with the cog-wheel sheet; this does the same for the Tests panel, so every
+    // modal in the app is now ONE component:
+    //
+    //   div.sheet-overlay > div.sheet > .sheet-grab-zone + .sheet-header + body
+    //
+    // `.reader` then has NO remaining user in the app: the news article reader
+    // is the only one left, and unifying it is a separate piece of work because
+    // it is a full-height article rather than a sheet. Its rules therefore
+    // REMAIN — deleting them would break a working surface, which is exactly the
+    // mistake WS58's brief invited and this log recorded avoiding.
+    //
+    // What this buys, concretely: the Tests page gets the same 44px sticky drag
+    // band as everything else, so it can no longer be scrolled into a state
+    // where the close gesture is off-screen (the A1b defect), and the same
+    // rounded, bottom-anchored sheet the owner already approved twice.
+    const overlay = el('div', { class: 'sheet-overlay' });
+    const about = el('div', { class: 'sheet' });
     // WS29: the readout's interval is declared here so `close` can clear it.
     // Declared before `close` is defined because `close` closes over it.
     let readoutTimer = null;
@@ -8476,12 +8495,22 @@ function seekMeasureRecordText() {
       document.body.style.overflow = '';
     };
     const closeBtn = el('button', {
-      class: 'reader-close', type: 'button', 'aria-label': 'Stäng', text: '✕', onclick: close,
+      class: 'sheet-close', type: 'button', 'aria-label': 'Stäng', text: '✕', onclick: close,
     });
-    about.appendChild(el('div', { class: 'reader-topbar' },
-      el('div', { class: 'reader-brand', text: 'Min Radio' }), closeBtn));
+    // WS60: the same band and header the cog-wheel sheet uses. `.sheet-header`
+    // is the header row; the title is the panel's own name rather than the brand,
+    // because this page is a tool, not an article.
+    about.appendChild(el('div', { class: 'sheet-grab-zone' },
+      el('div', { class: 'sheet-grab' })));
+    about.appendChild(el('div', { class: 'sheet-header' },
+      el('div', { class: 'sheet-title', text: 'Test och felsökning' }), closeBtn));
 
-    const body = el('div', { class: 'reader-body about-body' });
+    // WS60: `.card-body`, the same body the tablå card and the Info page use. NOT
+    // `.reader-body`, which is `flex: 1` inside a `height: 100dvh` column —
+    // inside a bottom-anchored sheet that stretches the panel to the full
+    // viewport height and leaves the content floating, instead of scrolling
+    // inside the sheet the way the other two surfaces do.
+    const body = el('div', { class: 'card-body' });
 
     // ---- WS29: the visible timing readout. ----
     // Owner decision 2026-09-30: the switch is the deliberate action, so the
@@ -8843,10 +8872,43 @@ function seekMeasureRecordText() {
     // every action down by one -- so "tryck 3" would have silently changed
     // meaning between two builds. `null` means "not a numbered action".
     DIAG_ACTIONS.forEach(([btn, hint, n]) => {
-      // Prefixed, not replaced. The original label is kept intact after the
-      // number so a bug report that quotes the button still matches the app.
-      const original = btn.textContent;
-      btn.textContent = n ? `${n}. ${original}` : original;
+      // ---- WS60: the dropdown bug. THIS LINE BROKE IT. ----
+      //
+      // OWNER, 2026-10-04: clicking "Klicka här för val av program i listan som
+      // följer" "has stopped to show" the list.
+      //
+      // The cause is this assignment, and it is invisible in review because the
+      // line looks harmless. `btn.textContent = ...` REPLACES THE ENTIRE CHILD
+      // LIST of the button with a single text node. That is fine for a button
+      // whose label is a bare string, but `ws40Pick` was given a CHILD element:
+      //
+      //   ws40Pick.append(el('span', { class: 'setting-minmax ws40-pick-label',
+      //     text: 'Klicka här för val av program i listan som följer' }));
+      //
+      // MEASURED in the browser after the assignment: the button's text was
+      // correct ("Klicka här för val av program i listan som följer" was present
+      // in the DOM) while `document.querySelector('.ws40-pick-label')` returned
+      // **null** and the HTML contained **0** occurrences of the class. The
+      // element had been destroyed — the TEXT survived, the NODE did not.
+      //
+      // Why that breaks the dropdown: `ws40Pick.parentNode.insertBefore(ws40List,
+      // ws40Pick.nextSibling)` and the `.closest('.setting-row')` dismissal check
+      // both still work, so the list is built and inserted… but nothing ever
+      // re-renders it into view, because the control the owner is tapping is no
+      // longer the control the code wired. A text label that lies about a
+      // working control is the exact failure mode AGENTS.md §2 warns about.
+      //
+      // THE FIX: prefix a number by inserting a node, never by assigning
+      // `textContent`. The label span is left completely alone, and the number
+      // becomes a sibling that `closest('.setting-row')` still sees.
+      //
+      // WHY IT ONLY BROKE NOW, and this matters: the label span was introduced
+      // in the FOURTH pass (ITEM 2, replacing a value span), and this loop was
+      // written in the SECOND pass. So the two changes were individually fine
+      // and only their combination destroyed the control — a regression that
+      // could not be found by reading either change alone, and that no
+      // source-text test caught, because the LABEL TEXT was still correct.
+      if (n) btn.insertBefore(el('span', { class: 'diag-num', text: `${n}.` }), btn.firstChild);
       // The hint is a sibling, NOT a child of the button: a <span> inside a
       // <button> is inside the tap target, so a long explanation would grow the
       // button and make the mis-tap the owner reported MORE likely, not less.
@@ -8987,13 +9049,25 @@ function seekMeasureRecordText() {
 
     about.appendChild(body);
     overlay.appendChild(about);
-    document.body.appendChild(overlay);
+    // WS60: mounted through the SAME root as every other sheet, so two modals
+    // can never stack. The Tests page used to append straight to document.body,
+    // which is how six stale copies could accumulate in one probe session.
+    $sheetRoot.textContent = '';
+    $sheetRoot.appendChild(overlay);
     document.body.style.overflow = 'hidden';
     overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
     document.addEventListener('keydown', function esc(e) {
       if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc); }
     });
-    enableSwipeToClose(overlay, about, close);
+    // WS60: bound on the BANDS, exactly as the cog-wheel sheet and the Info page
+    // now are — NOT on the whole sheet. Binding the whole panel is BUG 1's
+    // mechanism, where every vertical touch inside the scrolling text ran the
+    // drag logic and fought iOS scrolling. This page is a long scrollable body
+    // and must never be a swipe surface.
+    enableSwipeToClose(overlay, about.querySelector('.sheet-grab-zone'), close,
+      { axis: 'y', move: about });
+    enableSwipeToClose(overlay, about.querySelector('.sheet-header'), close,
+      { axis: 'y', move: about });
   }
 
   // ---------------- Fas 5: context cards (long-press) ----------------

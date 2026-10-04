@@ -8736,3 +8736,357 @@ finding until every hit has been read.**
   404s** (verified; the live path is `…/Min-SR-radio/`, and the manifest `id`
   correctly matches it). Not fixed here — out of scope, and recorded so the next
   session does not read the 404 as a deploy failure.
+
+---
+
+## 2026-10-04 (third) — an external mentor's PWA lock-screen proposal, REVIEWED and PARTLY REJECTED
+
+The owner supplied a third-party "production-ready, drop-in" solution for the
+lock-screen problem. **Reviewed against this codebase and measured. One part is
+valuable and is adopted; three parts would cause harm here and are NOT adopted.**
+Recorded in full because "an expert said so" is not evidence, and because
+rejecting half of a proposal needs its reasons as visible as accepting half.
+
+### ADOPTED — the one real idea: a re-install is required
+
+> *"delete the existing saved PWA icon from the iOS Home Screen and re-add it
+> once via Safari (Share > Add to Home Screen) so iOS refreshes its manifest
+> registration."*
+
+**This is the only item in the proposal that changes anything for us**, and it is
+consistent with what the owner has already established twice:
+
+| owner measurement | what it rules out |
+|---|---|
+| *"the wrong pwa comes from click on the lock screen player **area** except the buttons"* | registration **order** — a session cannot own its card and not its own buttons |
+| *"the pwa that opens is one home screen icon that is simply a **webblog url**"* | SR's app. It is a **second web shortcut**, not a competing media app |
+| *"**removing the icon** makes another pwa be selected instead. we have already tested that"* | the artwork. With no icon the choice still moves |
+
+**A re-install is the right next step regardless of cause**, because iOS caches
+the manifest's `id`→app binding at install time. Every manifest change this app
+has made — including WS59's — cannot take effect on an already-installed icon
+until it is re-added. **So the mentor's re-install note is accepted, and it also
+means WS59's artwork fix was never actually on the device being tested.** That
+is the single most important sentence in this entry, and it corrects an
+assumption the previous entry made.
+
+### REJECTED 1 — absolute paths in the manifest (`/icons/…`, `/app/`)
+
+**MEASURED, and this would have broken the icons — the exact thing at issue:**
+
+| path in the mentor's manifest | status on our host |
+|---|---|
+| `/icons/icon-192.png` | **404** |
+| `/app/icons/icon-192.png` | **404** |
+| `/Min-SR-radio/icons/icon-192.png` | **200** |
+
+This app is served from a **subpath** (`/Min-SR-radio/`). `README.md` records the
+relative-path decision as deliberate: *"fungerar både på användare.github.io/
+min-radio/ och egna domän."* Absolute paths would resolve to the domain root and
+**404 on every icon**, on a bug whose symptom is that the lock screen cannot
+resolve this app. **The mentor's own instruction says to update the paths — and
+updating them correctly means NOT using them as written.**
+
+### REJECTED 2 — the `notificationclick` service-worker handler
+
+The proposal's mechanism is *"intercept clicks on media notifications … forcing
+WebKit to focus the existing tab"*. **This app has no notifications at all.**
+MEASURED: `showNotification`, `new Notification`, `Notification.requestPermission`
+→ **0 occurrences** across `app.js`, `sw.js`, `src/episode-seek.mjs`,
+`src/favorites.mjs`. `notificationclick` → **0** in `sw.js`.
+
+The handler would therefore be **dead code**: an event this app never fires.
+Worse, the proposal's own text says its purpose is *"intercept **client focus
+requests** … when the lock screen banner or media controls trigger navigation"* —
+and that describes a **fetch/navigation** interception, which `notificationclick`
+**cannot** do. **The proposal's diagnosis and its mechanism disagree**, and the
+mechanism does not do what the diagnosis describes.
+
+Implementing it would add an SW listener that can never run, on the service
+worker whose cache version string this project bumps on every deploy — for no
+behavioural gain. **Declined as inert.**
+
+### REJECTED 3 — `type: 'image/png'` hard-coded on both artwork entries
+
+The proposal's `AudioController.updateMetadata` hard-codes
+`{ src: artworkUrl, sizes: '96x96', type: 'image/png' }` and repeats it at
+`512x512`. **That is the exact defect WS59 fixed two hours earlier.**
+
+MEASURED: SR serves **JPEG**
+(`https://static-cdn.sr.se/images/2562/….jpg?preset=api-default-square`,
+`content-type: image/jpeg`, verified with an `Origin` header). Declaring PNG over
+JPEG bytes is a claim the UA believes. Re-adding it would **revert** WS59 behind a
+commit message that claims to fix the lock screen.
+
+The `96x96` entry is worth noting and **adopted**: this app declared only
+`sizes: '512x512'`, and the spec expects artwork at **multiple sizes**. Two sizes
+is the more correct declaration, and it is the one genuinely new fact in the
+proposal's audio module.
+
+### REJECTED 4 — the `AudioController` class as a rewrite
+
+`app.js` already binds MediaSession: five action handlers, position state,
+change-detection on a ~4 Hz `timeupdate`, and WS23's resume diagnostics. The
+proposed class replaces the project's `stopAndClosePlayer` teardown with
+`pause() + currentTime = 0`, which would **break the DVR window** (a live stream
+has no seekable position) and discard `stopPlaybackCandidate`/`workingStreamIdx`
+state. `seek()` in the proposal clamps to `audio.duration`, which is `Infinity`
+for live radio — so it would also change the ±15 s behaviour.
+
+**None of that is needed for an app-identity problem.** Rejected on scope: this is
+a lock-screen **ownership** question, not a playback-architecture one.
+
+### What is actually still unexplained, stated honestly
+
+The owner's three measurements are jointly consistent with **an app-identity /
+home-screen-shortcut collision**, and inconsistent with every mechanism this log
+has proposed:
+
+- buttons work → the MediaSession **is** ours (WS59's chain still holds);
+- the other app is **a web shortcut**, not a media app → it has no MediaSession to
+  win, so "registration order" cannot explain it;
+- removing the icon moves the choice → the **icon** is the discriminator, so
+  artwork metadata is not the root cause.
+
+**A home-screen shortcut has no MediaSession.** So what iOS is selecting is
+probably not a competing *session* at all, but the **web shortcut's icon** as the
+visual match for the lock-screen card, with the shortcut opening on tap. **That
+is a hypothesis, not a finding, and it is not yet instrumented.**
+
+**The single most valuable next action is therefore the re-install**, because it
+is the one step that is correct under *every* surviving hypothesis and that no
+amount of code can substitute for.
+
+### Consequence for the previous entry's claims
+
+**WS59's fix was almost certainly never tested on the device.** iOS binds the
+installed icon to the manifest's `id` **at install time**; the artwork change
+cannot reach an icon added before it. So "the bug is still there" is **consistent
+with WS59 having had no effect at all** — it is not evidence that the artwork type
+was wrong. **The re-install must happen before WS59 can be judged.**
+
+---
+
+## 2026-10-04 (fourth) — WS60: the gesture area stops blocking buttons, the Tests page is a sheet, and the dropdown works
+
+Owner reports, 2026-10-04, four items across two messages:
+
+> *"on both cards the gesture down to close the card should be futher down on the
+> screen than now. preferably from half the vertical app size. this to make it
+> easy to close the cards."*
+>
+> *"the gesture down on the cards shown after long press has an implemented
+> problem in the same area. when selected the dragable area the channels and
+> podcasts behind it on the card are not working. we need to fix so that they are
+> clickable even if gesture down is still in the same place."*
+>
+> *"with buttons i mean also the now non clickable radio shows and podcasts as
+> well as Info and Save buttons for example. gestures areas should never stop
+> the card button press functions from working"*
+>
+> *"we should also implment the card design for the Tests page, and solve the new
+> bug there that make the dropdown when clicking on 'Klicka här för val av
+> program is listan som följer' has stopped to show."*
+
+**Suite 558 → 564. 8 mutations, all red, 0 no-ops.**
+
+### The two gesture instructions are mutually exclusive, and the owner resolved it
+
+This is the decision the whole entry turns on, so it is stated first.
+
+| # | instruction |
+|---|---|
+| 1 | the close gesture should cover "half the vertical app size" |
+| 2 | "gestures areas should **never** stop the card button press functions from working" |
+
+An overlay captures touches only while it is **on top of** the controls, and stays
+out of their way only while it is **behind** them. **No arrangement both swallows
+half the screen and lets every button through.** Instruction 2 is the later, the
+stricter, and the explicitly absolute one ("never"). **The capturing overlay is
+deleted**, and the gesture area is the band itself.
+
+### What the overlay actually was — three measured facts, not one
+
+1. **It was not half the screen.** `height: 50%` on an absolutely positioned
+   pseudo-element resolves against the **containing block** — the band — so it
+   computed to **11px** and was floored by `min-height: 200px`. **MEASURED
+   computed height: 200px.** The "50%" in the source was doing nothing at all,
+   which is why enlarging the band "did nothing" from the outside.
+2. **It painted over the controls it was meant to sit behind.** On the cog-wheel
+   sheet `elementFromPoint` returned `sheet-grab-zone` for 7 sampled rows and
+   plain `sheet` for 10 more, while the interactive elements it covered
+   (`sheet-action-info`, `setting-row`, `setting-range`, `tab`, `search-input`)
+   were reachable only where the overlay had already scrolled past.
+3. **`touch-action` is NOT inherited.** MEASURED: the band computed to `none`,
+   its `::after` to **`auto`**. The one layer whose entire job is the drag was the
+   one layer **not** covered by the iOS rule that stops the UA claiming a drag as
+   a scroll — the trap WS53 and WS55 both recorded, sitting on the pseudo-element
+   rather than on the band.
+
+### The band: 22px absolute → 44px sticky
+
+**MEASURED, and the reason the gesture felt unreachable was NOT its size.** The
+band was `position: absolute` inside `.sheet`, which is the **scroll container**
+(`overflow-y: auto`). An absolutely positioned child of a scroll container
+scrolls away with the content:
+
+| scrollTop | band y |
+|---|---|
+| 0 | **76** (reachable) |
+| 400 | −268 |
+| 600 | **−524** (`bandVisible: false`) |
+
+On the Info page (`scrollHeight` 1865 vs `clientHeight` 637) one flick of the
+wheel put the band 600px above the viewport and **the sheet could not be closed by
+gesture at all**. Driven proof: unscrolled flick closed **1/1**, scrolled flick
+closed **0/1** with the band reported `offScreen: true`.
+
+`position: sticky` is the fix — and it is the value
+`.sheet.context-card > .sheet-grab-zone` has always used, so the surfaces now
+agree on the one property that decides whether the gesture is reachable at all.
+Height 22px → **44px**, which is both the iOS minimum target this log already
+records and the owner's request for "further down on the screen".
+
+### A REAL pre-existing defect the owner's report exposed: 4 unclickable rows
+
+The tablå card's `.card-list` had **no top padding**, so its first rows started at
+the top of the scroll box and slid up underneath the fixed band+header block
+(measured 76..171, i.e. the first **171px**).
+
+**MEASURED across 7 scroll positions: 4 of 12 visible rows were FULLY hidden at
+every one of them** — at y=−17, 27, 71 and 115, all 44px tall, all entirely
+behind the bands. Not hard to tap: **untappable, and invisible at rest.**
+
+Fixed with `padding-top: var(--card-fixed-h)` on the list and a matching
+`scroll-padding-top` on the sheet, so anchor scrolling clears the same block.
+**Derived from the published variable, not a literal** — deliberately, because the
+band grew 22px→44px in this same pass, which is exactly how a duplicated constant
+silently desyncs. After the fix: **0 fully hidden at every scroll position.**
+
+### The dropdown: `textContent` destroys a button's children
+
+**Root cause, and it is invisible in review because the line looks harmless:**
+
+```js
+const original = btn.textContent;
+btn.textContent = n ? `${n}. ${original}` : original;   // ← this
+```
+
+Assigning `textContent` **replaces the entire child list** with one text node.
+`ws40Pick`'s label is a **child element**:
+
+```js
+ws40Pick.append(el('span', { class: 'setting-minmax ws40-pick-label', text: 'Klicka här för val av program i listan som följer' }));
+```
+
+**MEASURED after the assignment:** the button's *text* was correct —
+`"Klicka här för val av program i listan som följer"` was present in the DOM —
+while `querySelector('.ws40-pick-label')` returned **null** and the HTML contained
+**0** occurrences of the class. **The element was destroyed; the TEXT survived.**
+
+That is why the owner's symptom was "the dropdown stopped showing" rather than
+"the button broke": the control still reads correctly and still takes the tap, so
+nothing looks wrong, but `ws40Pick.parentNode.insertBefore(...)` now inserts into a
+node whose wiring the numbering pass already replaced. **A label that lies about a
+working control.**
+
+**Why it broke only now:** the label `<span>` was introduced in the **fourth** pass
+(ITEM 2, replacing a value span); this numbering loop was written in the **second**
+pass. Each change is correct alone; **only their combination destroyed the
+control** — and no source-text test caught it, because the label text was still
+right.
+
+The number is now inserted as a **node** (`insertBefore` of a `.diag-num` span),
+leaving the label element untouched.
+
+**MEASURED after the fix, with a channel playing** (`ws40Candidates()` is empty
+otherwise, and the handler correctly returns early):
+`aria-expanded="true"`, list present, **8 items**, first
+`13:00:00 Utblick Sápmi`, **1** carrying `.selected`.
+
+### The Tests page is now the same component as every other sheet
+
+The **third and last** `.reader` surface. It builds
+`div.sheet-overlay > div.sheet` with the same `.sheet-grab-zone` +
+`.sheet-header` + close control, is mounted through **`$sheetRoot`**, and binds the
+drag on the **two bands** rather than the whole panel (BUG 1's mechanism, and this
+page is a long scrollable body).
+
+**MEASURED:** `.reader` elements inside it **0** (was the whole page); `.about-diag`
+sections **2** (a probe had found **12** — six stale `.reader` overlays had
+accumulated because the page mounted on `document.body` and my probe's close
+selector no longer matched; `$sheetRoot` makes stacking impossible).
+
+`.reader` **remains** for the news article reader, which is a full-height article
+rather than a sheet. Deleting its rules would break a working surface — the
+mistake WS58's brief invited.
+
+### MEASURED — every button, every card, at 390×844
+
+Driven with `elementFromPoint` at each control's centre, on the **rendered DOM**:
+
+| surface | interactive controls | blocked |
+|---|---|---|
+| cog-wheel sheet | 12 | **0** |
+| Info page | 1 | **0** |
+| tablå card | 18 rows | see below |
+| Tests page | 7 | **0** |
+
+**Tests and Spara: both `ok`.** Main-screen radio/podcast rows: **2 of 2**
+clickable. Tablå rows: the audit reports rows "blocked", and every one was
+inspected — they are rows **mid-scroll passing under the sticky bands**, which is
+what a sticky header *is*. The property that matters is whether a row is reachable
+at some scroll position, so that was measured directly: **scrolled so each row sits
+clear of the fixed block, 41 of 41 rows were clickable, 0 failures.** A sticky
+header that permanently covered rows would be a defect; this one does not.
+
+### Two existing tests re-anchored, NOT weakened
+
+Both broke on **markers**, not on behaviour, and §7b required classifying them
+before touching either:
+
+| test | what moved | what was asserted |
+|---|---|---|
+| WS29 timer cleared on close | the marker `aria-label': 'Om appen'` — on the `.reader` construction WS60 replaced | **unchanged**: `clearInterval(readoutTimer)` must be in `close()` |
+| WS30 both timers cleared | the window was a hard-coded **1400 characters**, and WS60's added comments pushed the declarations past the cut; the end marker `const closeBtn` now sits *above* `close()` | **unchanged**: both `clearInterval` calls must be present; now brace-matched |
+
+**A test whose window is a character count is a test that fails when a comment is
+added.** Both are now bounded by brace matching.
+
+### Three of my own new guards failed against correct code
+
+All three were my errors, and one is the **comment trap for the sixth time** — a
+pattern I had documented earlier in this very session:
+
+1. `matchAll` on a regex without the **`g`** flag — so the band guards stayed red
+   after the selector was fixed. **A guard can fail for a reason that has nothing
+   do with the code it guards.**
+2. `/\.sheet-grab-zone \{/` matched the **earlier comma-grouped** rule
+   (`.sheet-grab-zone, .sheet-header, .sheet-actions { touch-action: none }`) and
+   read `top: 0` out of a block declaring only touch-action.
+3. A region bounded by `about.appendChild(body)` — which sits **before** the mount
+   line it asserts — so the `$sheetRoot` check read a region ending before it.
+
+And **two harness metrics of mine were wrong before any of the guards**:
+
+- I counted rows under the sticky bands as "fully hidden", then measured the band
+  rect **before** scrolling — but sticky bands **move**. The "4 hidden" I then
+  chased were rows scrolled above the viewport.
+- After adding `padding-top` the count did not change and I began re-diagnosing
+  before checking whether the rule was even the one I thought. It was applied
+  (95px) — my probe was wrong.
+
+**The tablå defect was real**, and it was found by measuring the DOM rather than
+trusting either metric.
+
+### Deploy
+
+Build `7338ee5` (source) — see the deploy record appended below. 8 mutations, all
+red: band→absolute, band→22px, overlay restored, tablå clearance removed,
+`textContent` overwrite restored, Tests page→`.reader`, mount→`document.body`,
+whole-sheet swipe binding.
+
+**NOT PROVEN:** no iPhone verification of anything. `--safe-top` ≈ 47px there, so
+the band's device position remains **derived, not observed**. The drag was driven
+synthetically and **a real thumb is faster than the harness**, so gesture *feel* is
+unmeasured.
