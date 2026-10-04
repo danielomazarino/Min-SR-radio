@@ -9650,3 +9650,48 @@ dropped `overflow-wrap`) each confirmed red. Checksums restored and re-verified.
 - Rows now carry three lines; the list height at 100% zoom on a small iPhone is
   **unmeasured**.
 - Not touched, and not asked for: episode list, favourites, player, transport.
+
+### WS66 deploy record — 2026-10-05
+
+Commits: `888d085` (source + tests, 578/578 green before the commit) →
+`4bcc90a` (artifacts). Pushed `7947b0f..4bcc90a`.
+Live bundle **`app.d7f86fac.js`**, stylesheet **`styles.0da0b5e9.css`**,
+SW cache `minradio-0b8cd45a`.
+
+The 7 checks, each reported on its own:
+
+| # | check | result |
+|---|---|---|
+| 1 | suite green AND test count went **up** | **PASS** — 572 → 578 |
+| 2 | read the whole diff; nothing outside scope moved | **PASS** — 4 source files, +467/−5 |
+| 3 | driven in the built-in browser, asserting on the **rendered DOM** | **PASS** |
+| 4 | the stated defect actually fixed, against the owner's words | **PASS** |
+| 5 | nothing else moved | **PASS** — 6 neighbours spot-checked, 0 changed |
+| 6 | the build produced the artifacts it should | **PASS** |
+| 7 | the **hashed** bundle really contains the change | **PASS** — `extFeedHost`=2, `src !== sub`=1, `pick-src`=2, all in the *served* files |
+
+**Propagation was observed, and it is worth recording how it looked.** The first
+HTTP round returned `app.d7f86fac.js` **404** while `index.html` still pointed at
+`app.d6578f48.js` — i.e. the site was serving the *previous* build cleanly. That
+is not a failed deploy and not a broken push: `origin/main` was confirmed at
+`4bcc90a`, `git ls-tree origin/main` listed both new artifacts, and both served
+**200** from the raw host. A later round returned **200** across the board with
+`index.html → app.d7f86fac.js` and SW cache `minradio-0b8cd45a`, and the driven
+browser read the new bundle live. So: **propagating, then propagated.**
+
+Production, driven on `https://danielomazarino.github.io/Min-SR-radio/`:
+```
+LIVE bundle: app.d7f86fac.js
+lex fridman ->  sub=Teknologi | src=lexfridman.com · 503 avsnitt · senast 17 sep
+                sub=Teknologi | src=acast.com · 200 avsnitt · senast 28 jul
+                sub=Teknologi | src=spreaker.com · 503 avsnitt · senast 17 sep
+nyheter ->      sub=P4 Jämtland ger dig bevakning där du… | src=Sveriges Radio
+                sub=P4 Kalmar ger dig nyheter, väder, traf… | src=Sveriges Radio
+```
+
+**What deploying establishes:** the right code is *served*. It says nothing
+about how it *behaves*. The owner must confirm on the iPhone, and should check
+the build id under NYHETER matches `d7f86fac` — if it does not, they are looking
+at old code and any report would be about the wrong build.
+
+**Not deployed, not asked for:** the A/B/C feed-disambiguation decision.
