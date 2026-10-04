@@ -7931,8 +7931,65 @@ function seekMeasureRecordText() {
     // their exact current behaviour.
     const mover = move || panel;
     let startX = 0, startY = 0, d = 0, dragging = false, intent = null, t0 = 0;
+    let scrollOwnsIt = false;
     const W = () => window.innerWidth;
     const H = () => window.innerHeight;
+
+    // ---- WS61: WHICH BOX ACTUALLY SCROLLS, AND HOW MUCH ROOM IS LEFT. ----
+    //
+    // The sheet is normally its own scroll container, but not every call site:
+    // the news reader scrolls a different box, and a future caller may scroll a
+    // wrapper. So ask the DOM instead of assuming -- `scroller` is the same rule
+    // for both uses below, so they can never disagree about what "the list" is.
+    // WS55 kept this `within` filter; WS61 replaced its only caller.
+    const isEl = (n) => !!n && n.nodeType === 1;
+    const scroller = () => {
+      let n = panel;
+      while (isEl(n)) {
+        if (n.scrollHeight > n.clientHeight + 1) {
+          const oy = getComputedStyle(n).overflowY;
+          if (oy === 'auto' || oy === 'scroll') return n;
+        }
+        n = n.parentElement;
+      }
+      return null;
+    };
+
+    // ---- WS61: THE OWNER'S RULE, IN TWO PARTS. ----
+    //
+    // OWNER, 2026-10-04, in two messages that CORRECTED each other, and both
+    // corrections are recorded here because I implemented the wrong half first:
+    //
+    //   1. "of course it should close the sheet as doing the same from the
+    //       banner earlier. the whole requirement is about increasing the area
+    //       that allows the card to close"
+    //   2. "for channels and long podcast lists of course scrolling within the
+    //       list is prio1 and when the list is on top half the screen to be used
+    //       for closing the card"
+    //
+    // So, together:
+    //
+    //   SCROLLING IS PRIORITY 1. If the list has room to move, the drag belongs
+    //   to the list -- full stop, regardless of where the finger started. I had
+    //   proposed this first and then REVERTED it on the strength of message 1;
+    //   message 2 shows both are true at once, and this is the rule that
+    //   satisfies both: scroll wins whenever there is anything to scroll.
+    //
+    //   WHEN THE LIST IS AT THE TOP, the top half of the screen closes the card.
+    //   That is the "increase the area" requirement, and it is a BOUND, not an
+    //   overlay: `closeZoneBottom()` measures half the viewport from the top of
+    //   the gesture surface. Nothing is painted over anything, so every control
+    //   inside the zone stays tappable -- which was the owner's other, harder
+    //   requirement and the reason WS60's overlay had to go.
+    //
+    // WHY HALF, MEASURED: the close threshold is `d > 35%` of the viewport, so
+    // an area much larger than half the screen could be started from and then
+    // fail the threshold, or a flick could start from the very bottom. Half the
+    // viewport is where a downward drag can always still reach the threshold.
+    const closeZoneBottom = () => {
+      const r = panel.getBoundingClientRect();
+      return r.top + (H() - r.top) / 2;
+    };
 
     panel.addEventListener('touchstart', (e) => {
       if (e.touches.length !== 1) return;
@@ -7940,7 +7997,7 @@ function seekMeasureRecordText() {
       // counts if it STARTED on a descendant matching that selector. Used for
       // the day labels, which do not exist when the card is built -- see the
       // binding site for why enumeration cannot work there.
-      if (within && !(e.target instanceof Element && e.target.closest(within))) {
+      if (within && !(isEl(e.target) && e.target.closest(within))) {
         dragging = false;
         return;
       }
@@ -7950,11 +8007,28 @@ function seekMeasureRecordText() {
       d = 0;
       dragging = true;
       intent = null;
+      // ---- WS61: DECIDE ONCE, HERE, WHERE THE TWO GESTURES ARE DISTINGUISHABLE. ----
+      //
+      // Both tests must be read at touchstart and not later. Mid-drag the list
+      // has already moved under the finger, so asking again would let the
+      // gesture take back a scroll the browser has already claimed -- and the
+      // zone test would compare against a surface that is already translating.
+      scrollOwnsIt = false;
+      if (axis === 'y') {
+        const s = scroller();
+        // PRIORITY 1: room to scroll => the drag is the list's, not ours.
+        if (s && s.scrollTop > 0) scrollOwnsIt = true;
+        // At scroll-top (or nothing to scroll) the top half closes the card.
+        else if (startY > closeZoneBottom()) scrollOwnsIt = true;
+      }
       mover.style.transition = 'none';
     }, { passive: true });
 
     panel.addEventListener('touchmove', (e) => {
       if (!dragging) return;
+      // WS61: hand the gesture straight back -- before any threshold, direction
+      // test or transform -- so the sheet never moves under a scrolling finger.
+      if (scrollOwnsIt) return;
       const cx = e.touches[0].clientX;
       const cy = e.touches[0].clientY;
       const adx = cx - startX, ady = cy - startY;
@@ -7976,6 +8050,15 @@ function seekMeasureRecordText() {
       if (!dragging) return;
       dragging = false;
       mover.style.transition = 'transform 0.2s ease';
+      // WS61: a gesture the list owned must not close the sheet on release
+      // either -- touchmove already refused to move it, and finishing here would
+      // run the whole threshold test on a drag we never followed.
+      if (scrollOwnsIt) {
+        scrollOwnsIt = false;
+        mover.style.transform = '';
+        return;
+      }
+      scrollOwnsIt = false;
       const elapsed = Date.now() - t0;
       // WS50: direction matters, and measuring |d| threw it away.
       //
@@ -8354,6 +8437,12 @@ function seekMeasureRecordText() {
     // region and must never be a swipe surface.
     enableSwipeToClose(overlay, article.querySelector('.sheet-grab-zone'), close, { axis: 'y', move: article });
     enableSwipeToClose(overlay, article.querySelector('.sheet-header'), close, { axis: 'y', move: article });
+    // WS61: the owner's specification — the gesture area is HALF THE SCREEN with
+    // every control inside it still clickable. A LISTENER binding, not an
+    // overlay: nothing is painted over the text, nothing is intercepted, and
+    // `enableSwipeToClose` never calls `preventDefault`, so a tap reaches its
+    // control and a drag down reads as the gesture while the sheet still scrolls.
+    enableSwipeToClose(overlay, article, close, { axis: 'y', move: article });
     body.appendChild(el('h2', { class: 'about-title', text: 'Om Min Radio' }));
     body.appendChild(el('p', { class: 'about-version', text: `bygg ${APP_BUILD} · Utvecklad av ${APP_DEVELOPER}` }));
 
@@ -9068,6 +9157,9 @@ function seekMeasureRecordText() {
       { axis: 'y', move: about });
     enableSwipeToClose(overlay, about.querySelector('.sheet-header'), close,
       { axis: 'y', move: about });
+    // WS61: half-screen gesture area, controls still clickable. See the note on
+    // the identical binding in openUserHelp.
+    enableSwipeToClose(overlay, about, close, { axis: 'y', move: about });
   }
 
   // ---------------- Fas 5: context cards (long-press) ----------------
@@ -9231,8 +9323,47 @@ function seekMeasureRecordText() {
     //
     // The sheet has no other touch listener, so this cannot double-fire, and
     // `within` scopes it to the labels only, leaving the list alone.
+    //
+    // ---- WS61: THE OWNER'S ACTUAL SPEC, implemented as a whole-sheet binding.
+    //
+    // OWNER, 2026-10-04, and this replaces what I shipped in WS60:
+    //
+    //   "it is the 50 percent of the screen with clickable channels, podcasts
+    //    and button being clickable at the same time"
+    //
+    // WS60 made the bands TALLER instead of making the gesture area LARGER, and
+    // the owner rejected it: the close gesture had "always worked" from the top
+    // band, so enlarging it was not the fix. The requirement is a gesture region
+    // covering HALF THE SCREEN, with every control inside it still tappable.
+    //
+    // WHY THAT IS POSSIBLE, and why I said earlier it was not: I was reasoning
+    // about a CAPTURE OVERLAY, which must be above or below the controls and so
+    // cannot do both. It does not have to be an overlay. `enableSwipeToClose`
+    // binds LISTENERS, not a layer — there is no element painting over anything,
+    // so nothing is intercepted. The listeners are all `{ passive: true }` and
+    // the function NEVER calls `preventDefault`, which means:
+    //
+    //   - a TAP (no touchmove, so `d` stays 0) never meets either close
+    //     condition — the flick needs `d > 40`, the distance rule needs
+    //     `d > 35%` of the viewport — so the button's own click fires normally;
+    //   - a DRAG starting on a button is read by the gesture AND still lets the
+    //     browser scroll, because the sheet is its own scroll container.
+    //
+    // The sheet already had exactly this whole-sheet binding for the day labels
+    // (the `within: '.card-day-label'` call below), so the mechanism is proven in
+    // this codebase rather than proposed.
+    //
+    // The band is therefore NOT the gesture area any more — it is decoration plus
+    // a guaranteed-small grab spot. The gesture area is the sheet itself, from
+    // its top edge down 50% of the viewport.
+    //
+    // `within` is deliberately ABSENT. It was previously used to scope the gesture
+    // to the day labels so that binding the sheet would not fight the scrolling
+    // list. The requirement has changed — the whole half-screen is now the
+    // gesture region — so scoping it away from the rows would defeat the request.
+    // The rows are protected by the tap/drag distinction above, not by exclusion.
     enableSwipeToClose(overlay, sheet, close, {
-      axis: 'y', move: sheet, within: '.card-day-label',
+      axis: 'y', move: sheet,
     });
   }
 
@@ -10397,6 +10528,19 @@ function seekMeasureRecordText() {
       { axis: 'y', move: sheet });
     enableSwipeToClose(overlay, sheet.querySelector('.sheet-actions'), closeWithDone,
       { axis: 'y', move: sheet });
+    // WS61: the owner's specification — the gesture area is HALF THE SCREEN and
+    // every control inside it stays clickable. This is a LISTENER binding, not an
+    // overlay: nothing is painted over the list, nothing is intercepted, and
+    // `enableSwipeToClose` never calls `preventDefault` — see the note above,
+    // which already reasoned this through for the action buttons. A tap keeps
+    // `d = 0` and reaches its button; a drag down reads as the gesture and still
+    // lets the sheet scroll.
+    //
+    // The three band bindings above are now SUBSET of this one. They are kept
+    // because they cost nothing and because removing them would change the
+    // settings sheet in a workstream about the tablå and Info cards — but the
+    // gesture area is no longer limited to them.
+    enableSwipeToClose(overlay, sheet, closeWithDone, { axis: 'y', move: sheet });
 
     overlay.addEventListener('click', (e) => {
       if (e.target === overlay) { closeSheet(); onDone?.(); }

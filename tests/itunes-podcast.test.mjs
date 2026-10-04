@@ -2433,6 +2433,12 @@ test('WS49: the "location is off" explanation must fire on OPEN, not only on tap
 // make every comparison false and let them pass for the wrong reason.
 const VIEWPORT = { innerWidth: 400, innerHeight: 800 };
 globalThis.window = VIEWPORT;
+// WS61: `enableSwipeToClose` now asks the DOM which box scrolls, which means it
+// calls getComputedStyle. The sandbox has no document, so provide the one
+// reading it makes. Returning 'auto' matches the sheet's real computed value,
+// so a stand-in that IS scrollable is treated exactly like the real sheet --
+// and a stand-in that is not (the default) is skipped without touching this.
+globalThis.getComputedStyle = () => ({ overflowY: 'auto' });
 const swipe = makeFn('enableSwipeToClose');
 
 
@@ -2486,6 +2492,25 @@ function fakePanel() {
   const handlers = {};
   return {
     style: { transform: '', transition: '' },
+    // ---- WS61: the stand-in must model the DOM the gesture now reads. ----
+    //
+    // `enableSwipeToClose` reads `panel.getBoundingClientRect()` (to bound the
+    // close zone) and walks `panel.parentElement` looking for the scroll
+    // container. A stand-in without those threw `getBoundingClientRect is not a
+    // function` and failed all five WS50 tests at once.
+    //
+    // The fix belongs in the HARNESS, not the production code: the production
+    // function is entitled to ask the DOM about the element it was handed, and
+    // weakening it to tolerate a fake would blind it to a real caller that
+    // passes a detached node. Default = NOT scrollable, so the WS50 gesture
+    // tests keep exercising the gesture itself; pass `{ scrollable: true }` to
+    // exercise the WS61 scroll-priority path.
+    nodeType: 1,
+    parentElement: null,
+    scrollTop: 0,
+    scrollHeight: 0,
+    clientHeight: 0,
+    getBoundingClientRect() { return { top: 0, left: 0, width: 400, height: 800, bottom: 800, right: 400 }; },
     addEventListener(type, fn) { (handlers[type] ||= []).push(fn); },
     dispatch(ev, type) { for (const fn of handlers[type] || []) fn(ev); },
   };
@@ -2835,16 +2860,52 @@ test('WS58: the reader grab-zone rules are gone — one band definition remains'
 // The drag binding must be the settings sheet's, on the sheet's two bands.
 // Binding the whole article is BUG 1's mechanism: every vertical touch inside
 // the scrolling text ran the drag logic and fought iOS scrolling.
-test('WS58: the Info page binds the drag to the bands, exactly as the sheet does', () => {
+// The drag binding must be the settings sheet's, on the sheet's own surfaces.
+//
+// SUPERSEDED IN PART (WS61, 2026-10-04). This test ended with:
+//     assert.doesNotMatch(help, /enableSwipeToClose\(overlay, article,\s*close/)
+// "the whole sheet must not be the swipe surface — that is BUG 1". The owner
+// overruled it, in these words:
+//
+//   "it is the 50 percent of the screen with clickable channels, podcasts and
+//    button being clickable at the same time"
+//
+// That was my error, twice. In WS60 I judged "half the screen" and "never
+// blocks a button" to be mutually exclusive and shrank the gesture area to a
+// 44 px band. They are not exclusive — I was reasoning about a CAPTURE
+// OVERLAY, which must sit above or below the controls. `enableSwipeToClose`
+// binds LISTENERS, not a layer: nothing is painted over anything, every
+// listener is `{ passive: true }`, and `preventDefault` is never called. A tap
+// leaves `d = 0` and meets neither close condition; only a downward drag
+// engages the sheet.
+//
+// MEASURED on the driven DOM after the change, per the owner's own two
+// requirements simultaneously:
+//   - TAP a `.tab`        -> aria-selected false -> true, sheet STILL OPEN;
+//   - DRAG from `.setting-row` -> sheet CLOSED;
+//   - Info sheet scrollTop 400 reachable (1887 > 637), band pinned at y=110;
+//   - UPWARD drag on `.about-para` -> scrollTop unchanged, sheet STILL OPEN.
+//
+// So the guard is restated to the property that actually matters — the scrolling
+// body must never be bound as its OWN surface, and the binding must move the
+// sheet — rather than to the old constant. The whole-article binding is now
+// required, not forbidden.
+test('WS58: the Info page binds the drag exactly as the cog-wheel page does', () => {
   const help = stripComments(region('function openUserHelp(', 'function openAbout(', APP_JS));
   assert.match(help, /enableSwipeToClose\(overlay, article\.querySelector\('\.sheet-grab-zone'\), close, \{ axis: 'y', move: article \}\)/,
     'the band must move the SHEET, as the cog-wheel page does');
   assert.match(help, /enableSwipeToClose\(overlay, article\.querySelector\('\.sheet-header'\), close, \{ axis: 'y', move: article \}\)/,
     'the header must be bound too');
-  // The scrolling body must never become a swipe surface. This is the guard that
-  // would catch a well-meaning "just bind the whole thing" simplification.
-  assert.doesNotMatch(help, /enableSwipeToClose\(overlay, article,\s*close/,
-    'the whole sheet must not be the swipe surface — that is BUG 1');
+  // WS61: the half-screen gesture area. Bound to the SHEET, not to a band, so
+  // the region is the top half of the viewport with every control inside it
+  // still tappable. `move: article` keeps the whole card moving, which is what
+  // a half-screen drag must look like.
+  assert.match(help, /enableSwipeToClose\(overlay, article, close, \{ axis: 'y', move: article \}\)/,
+    'the gesture area must be the sheet itself, so the drag reaches half the '
+    + 'screen height while its buttons stay tappable');
+  // The scrolling body must never become a swipe surface IN ITS OWN RIGHT. This
+  // is the part of the old guard that was never about whole-sheet scoping, and
+  // it is the one that would catch a "just bind the list too" simplification.
   assert.doesNotMatch(help, /card-body'\)\s*,\s*close/,
     'the scrolling body must never be a swipe surface');
 });
@@ -3251,16 +3312,35 @@ test('WS55: the band rule names all three surfaces, not a subset', () => {
 
 test('WS55: the day labels are a swipe surface, by DELEGATION not a loop', () => {
   const ctx = stripComments(region('function openContextCard', 'function openChannelCard', APP_JS));
-  // Delegated on the sheet, filtered by `within`. Asserted as the delegation
-  // form because the LOOP form looks right in source text and does nothing --
-  // MEASURED: the loop bound 0 listeners and a drag from a day label gave
-  // `transform: none` 3 of 3, because the labels are created inside the async
-  // `.then()` that runs AFTER this binding pass.
-  assert.match(ctx, /enableSwipeToClose\(overlay, sheet, close, \{\s*axis: 'y',\s*move: sheet,\s*within: '\.card-day-label',\s*\}\)/,
+  // Delegated on the SHEET. Asserted as the delegation form because the LOOP
+  // form looks right in source text and does nothing -- MEASURED: the loop bound
+  // 0 listeners and a drag from a day label gave `transform: none` 3 of 3,
+  // because the labels are created inside the async `.then()` that runs AFTER
+  // this binding pass.
+  //
+  // SUPERSEDED IN PART (WS61, 2026-10-04). This used to require the delegation
+  // to be FILTERED:
+  //     enableSwipeToClose(overlay, sheet, close, { axis:'y', move: sheet,
+  //                                               within: '.card-day-label' })
+  // The `within` filter existed only to keep the gesture off the rows. The owner
+  // overruled that:
+  //
+  //   "it is the 50 percent of the screen with clickable channels, podcasts
+  //    and button being clickable at the same time"
+  //
+  // The filter is gone because it is no longer needed -- the mechanism is the
+  // one already noted in the source: a passive listener with no `preventDefault`
+  // cannot block a click, and a tap leaves `d = 0` so neither close condition
+  // can be met. Delegation therefore now covers the labels, the rows and the
+  // header at once, which is exactly what the owner asked for.
+  //
+  // The property WS55 protected is DELEGATION, and that is what is asserted
+  // here. It is unchanged, and it is the property that would still fail if a
+  // future edit replaced this with a loop over the labels.
+  assert.match(ctx, /enableSwipeToClose\(overlay, sheet, close, \{\s*axis: 'y',\s*move: sheet,?\s*\}\)/,
     'the labels must be reached by delegation, so async creation cannot miss it');
-  assert.doesNotMatch(ctx, /for \(const \w+ of sheet\.querySelectorAll\('\.card-day-label'\)\)/,
+  assert.doesNotMatch(ctx, /for \(\s*(?:const|let|var)\s+\w+ of sheet\.querySelectorAll\('\.card-day-label'\)\)/,
     'a loop over the labels binds nothing -- they do not exist yet at this point');
-  // The filter must be honoured by the gesture function itself, not only named.
   const fn = stripComments(grab('enableSwipeToClose'));
   assert.match(fn, /within/,
     'enableSwipeToClose must accept and apply the `within` filter');
@@ -3869,4 +3949,76 @@ test('WS60: the tablå list clears the fixed band+header block', () => {
   // constant would have silently desynced.
   assert.doesNotMatch(css, /\.card-list \{[^}]*padding-top:\s*\d+px/,
     'the clearance must come from --card-fixed-h, not a literal that can drift');
+});
+
+// ---- WS61: the owner's rule, as a driven test rather than a source match. ----
+//
+// OWNER, 2026-10-04, in two messages that corrected each other:
+//   1. "of course it should close the sheet as doing the same from the banner
+//       earlier. the whole requirement is about increasing the area that allows
+//       the card to close"
+//   2. "for channels and long podcast lists of course scrolling within the list
+//       is prio1 and when the list is on top half the screen to be used for
+//       closing the card"
+//
+// Together: SCROLLING IS PRIORITY 1, and WHEN THE LIST IS AT THE TOP the top
+// half of the screen closes the card. Both, at once, on every card.
+//
+// I got this wrong twice before writing it down: first I made the gesture area
+// so small the buttons were free but the area was useless (WS60), then I
+// implemented "scroll wins" WITHOUT the half-screen bound, and then I reverted
+// it entirely on the strength of message 1 alone. Only message 2 makes both
+// true simultaneously. The tests below exist so the next session does not
+// re-derive that a third time.
+test('WS61: a scrollable sheet at scroll-top closes from the TOP HALF only', async () => {
+  const p = fakePanel();
+  // Scrollable, and sitting at the top: this is the state the owner describes
+  // as "the list is on top".
+  p.scrollHeight = 2000; p.clientHeight = 800; p.scrollTop = 0;
+  const half = Math.round((800 - 0) / 2);
+  // Start ABOVE the half line -> the top half -> must close.
+  let r = await driveSwipe(p, [[200, 300], [200, 330], [200, 380], [200, 440]], { axis: 'y', H: 800, stepMs: 40 });
+  assert.equal(r.closed, true,
+    'at scroll-top, a downward drag starting in the TOP HALF must close -- this '
+    + 'is the "increase the area" half of the requirement');
+  // Start BELOW the half line -> must NOT close, or the area is unbounded and
+  // the list can never be scrolled back through.
+  const p2 = fakePanel();
+  p2.scrollHeight = 2000; p2.clientHeight = 800; p2.scrollTop = 0;
+  r = await driveSwipe(p2, [[200, half + 90], [200, half + 120], [200, half + 170], [200, half + 230]], { axis: 'y', H: 800, stepMs: 40 });
+  assert.equal(r.closed, false,
+    'below the half line the gesture must not close -- otherwise "half the '
+    + 'screen" is not a bound at all');
+  void half;
+});
+
+test('WS61: SCROLLING IS PRIORITY 1 -- a scrolled sheet never closes on a drag', async () => {
+  const p = fakePanel();
+  // Room to scroll UP: the drag belongs to the list, wherever the finger is.
+  p.scrollHeight = 2000; p.clientHeight = 800; p.scrollTop = 600;
+  const r = await driveSwipe(p, [[200, 300], [200, 340], [200, 400], [200, 470]], { axis: 'y', H: 800, stepMs: 40 });
+  assert.equal(r.closed, false,
+    'with room to scroll, a downward drag must scroll the list, not close the '
+    + 'card -- the owner named this priority 1 for channels and long podcast '
+    + 'lists');
+  // And it must not have MOVED the sheet either: a refused gesture that still
+  // translates the panel is the worst of both.
+  assert.notEqual(r.transform, 'translateY(470px)',
+    'a scroll-owned gesture must not drag the sheet sideways');
+});
+
+test('WS61: the zone is measured from the top of the surface, in live pixels', () => {
+  // Source-level, because the bound is arithmetic on a live rect and the
+  // browser test is the one that proves the NUMBER. This guards the shape.
+  const fn = stripComments(grab('enableSwipeToClose'));
+  assert.match(fn, /closeZoneBottom/,
+    'the close area must be an explicit, named bound rather than the whole panel');
+  assert.match(fn, /r\.top \+ \(H\(\) - r\.top\) \/ 2/,
+    'the bound is half the VISIBLE height below the top of the surface -- half '
+    + 'the viewport, not half the panel, which would grow with the content');
+  assert.match(fn, /startY > closeZoneBottom\(\)/,
+    'the zone test must use the touch START position, or a drag that wanders '
+    + 'below the line mid-gesture would be judged after the fact');
+  assert.match(fn, /s\.scrollTop > 0/,
+    'scroll priority must be decided from the scroll position at touchstart');
 });

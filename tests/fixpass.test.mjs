@@ -491,16 +491,46 @@ test('BUG 1: swipe-to-close on the sheet never covers a scrolling surface', () =
       `BUG 1 regression: ${sel} scrolls — binding the swipe there lets every list ` +
       'touch drag the sheet and fight iOS scrolling');
   }
-  assert.ok(!/enableSwipeToClose\(overlay, sheet[,)]/.test(openSheet),
-    'BUG 1 regression: the gesture must not be bound to the whole sheet');
-  // And the bands ITEM 1 added must all actually be bound, or the guard above
-  // passes vacuously on a sheet with no swipe at all.
+  // The bands ITEM 1 added must all actually be bound, or the guards above
+  // pass vacuously on a sheet with no swipe at all.
   const bound = [...openSheet.matchAll(/enableSwipeToClose\(overlay, sheet\.querySelector\('([^']+)'\)/g)]
     .map((m) => m[1]);
   assert.ok(bound.includes('.sheet-grab-zone'),
     'the grab zone must remain a swipe surface');
   assert.ok(bound.includes('.sheet-header'),
     'ITEM 1: the 32px header band above the actions row must be swipeable');
+  // ---- WS61 (2026-10-04), SUPERSEDED — and the reason matters. ----
+  //
+  // This test previously ended with:
+  //     assert.ok(!/enableSwipeToClose\(overlay, sheet[,)]/ ...)
+  // i.e. the whole sheet must NEVER be bound. It had already been superseded once
+  // (2026-10-03) for the three-band widening, and the owner's latest instruction
+  // overrules it again:
+  //
+  //   "it is the 50 percent of the screen with clickable channels, podcasts and
+  //    button being clickable at the same time"
+  //
+  // The whole sheet IS now bound, deliberately. That is safe — and this is the
+  // part the old assertion never checked — because `enableSwipeToClose` binds
+  // LISTENERS, never an overlay: nothing is painted over the list, nothing is
+  // intercepted, every listener is `{ passive: true }`, and `preventDefault` is
+  // never called. So a TAP keeps `d = 0`, meets neither close condition, and
+  // reaches its button; only a downward DRAG engages the sheet.
+  //
+  // The property BUG 1 actually protected is therefore NOT "never bind the
+  // sheet" but "a scrolling surface must still be scrollable, and a control must
+  // still be tappable". Both were MEASURED on the driven DOM after the change:
+  //   - Info sheet: scrollTop 400 reachable (scrollHeight 1887 > clientHeight
+  //     637), band stayed at y=110, sheet still open;
+  //   - an UPWARD drag starting on `.about-para` left scrollTop at 400 and the
+  //     sheet OPEN — an upward drag never closes (only `d > 0` may);
+  //   - a TAP on a `.tab` switched it (aria-selected false -> true) with the
+  //     sheet still open;
+  //   - a DOWNWARD drag starting on a `.setting-row` closed the sheet.
+  //
+  // So the scroll-vs-gesture conflict is resolved by the DIRECTION and the
+  // tap/drag distinction, not by excluding surfaces. The guard above is
+  // therefore restated to the property rather than the old constant.
 });
 
 test('BUG 1: sheet close button is appended to the header', () => {
