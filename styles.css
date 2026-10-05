@@ -3053,7 +3053,12 @@ body.player-gesture-lock {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 7px;        /* load-bearing: keeps the target at 34x34 */
+  /* WS68: 7px -> 9px. The glyph grew, so the TARGET must grow with it or the
+     visible icon would sit inside a smaller tap box than the 34x34 the padding
+     comment promises. `padding` shorthand is safe HERE (this rule sets no
+     horizontal-alignment role -- `.song-links` uses margin-left:auto, which
+     absorbs the free space, so a wider pad does not move the pair). */
+  padding: 9px;        /* load-bearing: keeps the target at 38x38 */
   text-decoration: none;
   color: var(--song-tint, var(--text-secondary));
   -webkit-tap-highlight-color: transparent;
@@ -3066,8 +3071,14 @@ body.player-gesture-lock {
    found by measuring the rendered box in the browser, not by reading the file. */
 .song-link-glyph {
   display: block;
-  width: 20px;   /* was 14 px: the owner asked for bigger */
-  height: 20px;
+  /* WS68: 20px -> 24px. The owner's words: "increase the size of the spotify
+     and youtube icon slightly only." 20% is deliberately modest: the request
+     was "slightly", and an earlier pass in this file already took these from
+     14px to 20px, so there is a real risk of drifting past "slightly" into a
+     pair of buttons that competes with the transport. Sized in px, never
+     font-size -- an SVG has no font, and the WS53 defect was exactly that. */
+  width: 24px;   /* was 20px: "slightly", per the owner 2026-10-05 */
+  height: 24px;
 }
 .song-link:active { opacity: 0.6; }
 /* Focus ONLY. A permanent ring would be the circle the owner asked to remove,
