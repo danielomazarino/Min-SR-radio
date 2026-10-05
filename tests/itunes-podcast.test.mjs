@@ -30,7 +30,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const APP_JS = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+const APP_JS = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8').replace(/\r\n/g, '\n');
 const FAV_MJS = fs.readFileSync(path.join(__dirname, '..', 'src', 'favorites.mjs'), 'utf8');
 const FAV_TEST = fs.readFileSync(path.join(__dirname, 'favorites.test.mjs'), 'utf8');
 
@@ -4701,11 +4701,14 @@ test('WS67: degenerate inputs cannot throw or lose a row', () => {
 // date is correct against the live APIs. Only driving the live page does that.
 // ---------------------------------------------------------------------------
 
-test('WS67: the freshness button sits on the Poddar tab row, dark green, no circle', () => {
+test('WS67: the freshness button sits on the home Poddar row, dark green, no circle', () => {
   const css = stripComments(fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8'));
-  // Same row: the button is a THIRD child of `.tabs`, beside the two tabs.
-  assert.match(stripComments(APP_JS), /el\('div', \{ class: 'tabs' \}, tabChannels, tabPodcasts, freshBtn\)/,
-    'the freshness button must be on the same row as Poddar');
+  assert.match(stripComments(APP_JS),
+    /const heading = isPod\s*\?\s*buildPodcastSectionHeading\(title\)/,
+    'the home podcast section must build its heading with the freshness button');
+  assert.match(stripComments(APP_JS),
+    /el\('div', \{ class: 'tabs' \}, tabChannels, tabPodcasts\)/,
+    'the settings tabs must not contain a duplicate freshness button');
   // "horizontally on the same center alignment as the cog wheel": the cog is
   // 44x44 (`.edit-btn`), so the same box is what makes the centres line up. A
   // different height would need a magic offset, which is the fragile version of
@@ -4727,6 +4730,32 @@ test('WS67: the freshness button sits on the Poddar tab row, dark green, no circ
   assert.match(fresh[1], /background:\s*none/, '.fresh-btn must have NO lighter green circle');
   assert.ok(!/accent-soft/.test(fresh[1]),
     '.fresh-btn must not reference --accent-soft at all -- that is the circle the owner removed');
+});
+
+test('WS68: the home freshness button renders a bolt and opens its card', () => {
+  let buildCalls = 0;
+  let cardOpens = 0;
+  const makeNode = (tag, attrs = {}, ...children) => {
+    buildCalls += 1;
+    return { tag, attrs, children };
+  };
+  const heading = makeFn('buildPodcastSectionHeading', {
+    el: makeNode,
+    openFreshnessCard: () => { cardOpens += 1; },
+  })('Poddar');
+
+  assert.equal(buildCalls, 4, 'the extracted heading must build a wrapper, title, button, and icon');
+  assert.equal(heading.attrs.class, 'podcast-section-heading');
+  assert.equal(heading.children[0].attrs.text, 'Poddar');
+  const button = heading.children[1];
+  assert.equal(button.tag, 'button');
+  assert.equal(button.attrs.class, 'fresh-btn');
+  assert.equal(button.attrs['aria-label'], 'Podcastuppdatering');
+  assert.match(button.children[0].attrs.html, /<svg viewBox="0 0 24 24"/);
+  assert.match(button.children[0].attrs.html, /<path d="[^"]+"/);
+  assert.doesNotMatch(button.children[0].attrs.html, /fresh-bars|fresh-bar/);
+  button.attrs.onclick();
+  assert.equal(cardOpens, 1, 'pressing the rendered button must reach the card opener');
 });
 
 test('WS67: SR freshness asks page 2 before calling a feed silent', () => {

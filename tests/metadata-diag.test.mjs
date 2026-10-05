@@ -23,7 +23,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const APP_JS = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+const APP_JS = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8').replace(/\r\n/g, '\n');
 
 // Strip comments while SKIPPING string and template literals, so that URLs like
 // 'https://api.sr.se/...' are never mistaken for a line comment. Assertions that
@@ -1664,7 +1664,7 @@ test('WS4: the _srNextUpd leak bookkeeping is intact', () => {
 // paintNowPlaying() and the WS0 snapshot all query them inside $player.
 // =====================================================================
 
-const STYLES_WS5 = fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8');
+const STYLES_WS5 = fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8').replace(/\r\n/g, '\n');
 const RENDER_WS5 = stripComments(region('function renderPlayer()', '// ---- player gesture engine', APP_JS));
 const META_WS5 = (() => {
   const live = RENDER_WS5.slice(RENDER_WS5.indexOf("const meta = el('div', { class: 'player-meta' }"));

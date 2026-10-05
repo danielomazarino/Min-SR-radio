@@ -2772,22 +2772,16 @@ body.player-gesture-lock {
   color: #fff;
 }
 
-/* ---- WS67: the podcast-freshness button, on the tab row ----
- *
- * OWNER: "an icon on the same row as poddar with the flash fluent icon in the
- * darken green used for the cog wheel and info icon but without the lighter
- * green circle, and horizontally on the same center alignment as the cog wheel."
- *
- * Two deliberate choices:
- *   - NO background. `.edit-btn` is `background: var(--accent-soft)`; the owner
- *     asked for the dark green WITHOUT the lighter green circle, so this rule
- *     sets `background: none` explicitly. Leaving it unset would have inherited
- *     nothing, but saying it makes the difference from `.edit-btn` deliberate
- *     rather than accidental.
- *   - 44x44, the same box as `.edit-btn`, and the row centres it. The alignment
- *     the owner asked for is then structural: same height, same flex centring,
- *     no magic offset to drift later.
- */
+/* WS67: align the home-screen freshness control with the top-bar cog by sharing
+   the same content edge and a 44px target, rather than a pixel offset. */
+.podcast-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.podcast-section-heading .section-title { margin-bottom: 0; }
+
 .fresh-btn {
   width: 44px;
   height: 44px;
@@ -2803,18 +2797,8 @@ body.player-gesture-lock {
   justify-content: center;
 }
 .fresh-btn:active { opacity: 0.6; }
-.fresh-btn-icon { display: flex; align-items: flex-end; gap: 2.5px; height: 18px; }
-/* Rising bars = a feed being served; the owner asked for a Fluent-style mark and
- * this is the standard "activity/pulse" form of it. */
-.fresh-bar {
-  display: block;
-  width: 3.5px;
-  border-radius: 1.5px;
-  background: currentColor;
-}
-.fresh-bar.b1 { height: 7px; }
-.fresh-bar.b2 { height: 13px; }
-.fresh-bar.b3 { height: 18px; }
+.fresh-btn-icon { display: block; width: 22px; height: 22px; }
+.fresh-btn-icon svg { display: block; width: 100%; height: 100%; }
 
 .search-input {
   width: 100%;
