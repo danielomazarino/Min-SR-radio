@@ -4398,9 +4398,28 @@ test('WS66: the row shows the provider text AND the source, for BOTH providers',
   assert.match(body, /pick-src/, 'the source line must be rendered with .pick-src');
   // The source line is ADDED, so the three iTunes bits must be assembled there
   // rather than on the second line.
-  assert.match(body, /\$\{item\.episodeCount\} avsnitt/, 'the episode count must be shown');
-  assert.match(body, /senast \$\{extDateLabel\(item\.latestEpisodeUtc\)\}/, 'the newest-episode date must be shown');
+  // SUPERSEDED 2026-10-05 (WS66b), and the supersession is the point. OWNER, on
+  // the shipped build: "the number of episodes can go and the word senast. put
+  // the date in italic". These two assertions used to REQUIRE
+  // `${item.episodeCount} avsnitt` and `senast ${extDateLabel(...)}`; the owner
+  // removed both, so requiring them would guard a requirement that no longer
+  // exists. They are restated BELOW, STRONGER: the count must now be ABSENT from
+  // the rendered line, and the date must be its own italic ELEMENT rather than a
+  // substring -- a substring cannot be styled, which is exactly why the original
+  // could not satisfy the request.
+  assert.ok(!/\$\{item\.episodeCount\} avsnitt/.test(body),
+    'the episode count must NOT be rendered -- the owner removed it');
+  assert.ok(!/senast /.test(body),
+    'the word "senast" must NOT be rendered -- the owner removed it');
+  assert.match(body, /extDateLabel\(item\.latestEpisodeUtc\)/,
+    'the newest-episode date must still be shown -- it is what distinguishes a live feed from a dead one');
+  assert.match(body, /pick-src-date/,
+    'the date must be its own element; "in italic" cannot be applied to a substring');
   assert.match(body, /'Sveriges Radio'/, 'an SR row must name Sveriges Radio as its source');
+  // The date must survive even when the feed host does not, so the line is
+  // built from "either part", not from the host alone.
+  assert.match(body, /const line = src \|\| when/,
+    'a feed with no hostname must still show its date');
   // THE REGRESSION THIS COMMENT EXISTS FOR. If someone "tidies" the two branches
   // into one, this is the assertion that has to go red, and the failure message
   // names the 371 descriptions rather than saying "expected a match".
@@ -4448,23 +4467,98 @@ test('WS66: the source line is styled distinctly from the description above it',
 // string comparison it is -- which is the only thing that can go wrong.
 test('WS66: the source line is suppressed when it would repeat the second line', () => {
   const body = stripComments(APP_JS).slice(stripComments(APP_JS).indexOf('function renderList('));
-  assert.match(body, /if \(src && src !== sub\)/,
+  assert.match(body, /if \(line && line !== sub\)/,
     'a row whose second line already says "Sveriges Radio" must not repeat it');
+  // SUPERSEDED 2026-10-05 (WS66b): the guard used to be `src`, which was the
+  // host alone. It is now `line`, which is host + date, so the duplicate check
+  // has to compare the WHOLE line against `sub` -- otherwise a row whose
+  // description happened to equal the host but not the full line would still
+  // print the source twice.
+  assert.ok(!/if \(src && src !== sub\)/.test(body),
+    'the duplicate check must use the whole line, not the host alone');
   // The comparison itself, driven over the cases that actually occur. The third
   // column is RENDERED, i.e. the value of `Boolean(src && src !== sub)` -- the
   // expression the renderer uses, not its negation.
   const cases = [
     ['P4 Jämtland ger dig bevakning där du bor.', 'Sveriges Radio', true],
     ['Sveriges Radio', 'Sveriges Radio', false],            // SR row, no description
-    ['Teknologi', 'lexfridman.com · 503 avsnitt', true],
-    ['acast.com · 200 avsnitt', 'acast.com · 200 avsnitt', false], // iTunes, no genre
+    ['Teknologi', 'lexfridman.com · 17 sep', true],
+    ['acast.com · 28 jul', 'acast.com · 28 jul', false],     // iTunes, no genre
   ];
-  for (const [sub, src, rendered] of cases) {
-    assert.equal(Boolean(src && src !== sub), rendered,
-      `sub=${JSON.stringify(sub)} src=${JSON.stringify(src)}`);
+  for (const [sub, line, rendered] of cases) {
+    assert.equal(Boolean(line && line !== sub), rendered,
+      `sub=${JSON.stringify(sub)} line=${JSON.stringify(line)}`);
   }
   // CANARY: the expression must come out BOTH ways across these cases, or it is
   // not discriminating and a one-sided guard would pass unnoticed.
   assert.ok(cases.some(([, , r]) => r) && cases.some(([, , r]) => !r),
     'the duplicate guard must render some rows and suppress others');
+});
+
+// ---------------------------------------------------------------------------
+// WS66b — THE OWNER'S SECOND PASS, on the shipped build.
+//
+// "the number of episodes can go and the word senast. put the date in italic"
+//
+// Two separate instructions that have one root: the line read as a SENTENCE
+// ("lexfridman.com · 503 avsnitt · senast 17 sep") when it should read as an
+// IDENTITY (a host, and a moment). The count and the word were what made it a
+// sentence. The date is the part that carries meaning -- it is the only thing
+// that separates a live feed from an abandoned one -- so it stays, in italic.
+//
+// "in italic" is why the date had to become its own ELEMENT. It cannot be done
+// to a substring of a string, and the WS66 line was built by joining an array
+// into one `text` value.
+// ---------------------------------------------------------------------------
+
+test('WS66b: the date is an element styled italic, and only the date', () => {
+  const css = stripComments(fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8'));
+  const rule = css.match(/\.pick-src-date\s*\{([^}]*)\}/);
+  assert.ok(rule, '.pick-src-date must exist in styles.css');
+  assert.match(rule[1], /font-style:\s*italic/,
+    'the date must be italic, per the owner\'s explicit instruction');
+  // The host must NOT be italic. If both parts were italic the line would carry
+  // no distinction at all, and "put the date in italic" would have had no effect
+  // a reader could see.
+  const srcRule = css.match(/\.pick-src\s*\{([^}]*)\}/);
+  assert.ok(srcRule && !/font-style:\s*italic/.test(srcRule[1]),
+    '.pick-src (the host) must NOT be italic, or nothing is distinguished');
+  // The separator belongs to the italic element's ::before and is reset to
+  // normal, otherwise the dot itself is italicised and the two styles bleed
+  // into each other.
+  const sep = css.match(/\.pick-src \.pick-src-date::before\s*\{([^}]*)\}/);
+  assert.ok(sep, 'the separator must be styled, not a bare string join');
+  assert.match(sep[1], /font-style:\s*normal/, 'the separator dot must not be italic');
+});
+
+test('WS66b: the rendered line carries host + date and NOTHING else', () => {
+  const body = stripComments(APP_JS).slice(stripComments(APP_JS).indexOf('function renderList('));
+  // CANARY: a test that cannot distinguish the two versions proves nothing, so
+  // each part is asserted PRESENT and the removed parts are asserted ABSENT.
+  assert.match(body, /const src = isExt\s*\n?\s*\? \[item\.feedHost\]/, 'the host is the only non-date part');
+  assert.match(body, /const line = src \|\| when/, 'the line survives on either part alone');
+  // The count is still MAPPED and still TESTED -- the owner removed it from the
+  // SCREEN, not from the data. This asserts it is not rendered, which is a
+  // different and weaker claim, and the reason for it is recorded above.
+  // Checked against the whole file, because the mapping lives in
+  // `mapExtSearchRow` and `body` starts at `renderList` -- an earlier version of
+  // this assertion read `body` and passed for the wrong reason once already.
+  assert.match(stripComments(APP_JS), /episodeCount: Number\.isInteger\(x\.trackCount\)/,
+    'episodeCount must still be mapped -- it feeds other work and is not removed by this change');
+});
+
+// The separator/element split is the part most likely to be "simplified" back
+// into a string join by a later reader who does not know why it was done this
+// way. Driving it is not possible -- renderList closes over the whole app -- so
+// this asserts the SHAPE, and states what it does not prove.
+test('WS66b: the date is a CHILD element, not part of the joined string', () => {
+  const body = stripComments(APP_JS).slice(stripComments(APP_JS).indexOf('function renderList('));
+  assert.match(body, /el\('em', \{ class: 'pick-src-date'/, 'the date must be an <em class="pick-src-date">');
+  assert.match(body, /document\.createTextNode\(parts\[0\]\)/,
+    'the host must be a text node, so it stays OUTSIDE the italic element');
+  // The anti-pattern this replaced: one joined string with the date inside it.
+  // There is no way to italic a substring, so this shape cannot satisfy the
+  // request -- if it reappears, the requirement has been silently dropped.
+  assert.ok(!/text: \[src, when\]\.filter\(Boolean\)\.join\(' · '\)/.test(body),
+    'the date must not be folded back into the joined string -- that cannot be italicised');
 });
