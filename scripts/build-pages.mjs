@@ -176,7 +176,7 @@ const hashedAssetFingerprints = [...hashed.values()].map((file) => {
   return `${file}:${hash(bytes)}`;
 });
 const cacheFingerprint = [...hashedAssetFingerprints, ...moduleFingerprints].join(':');
-sw = sw.replace(/const CACHE_NAME = '.*';/, `const CACHE_NAME = 'minradio-${hash(Buffer.from(cacheFingerprint))}';`);
+sw = sw.replace(/const CACHE_NAME = '[^']*';?/, `const CACHE_NAME = 'minradio-${hash(Buffer.from(cacheFingerprint))}';`);
 fs.writeFileSync(path.join(dist, 'sw.js'), sw);
 
 for (const file of ['index.html', 'sw.js', 'manifest.webmanifest']) {

@@ -2586,6 +2586,13 @@ test('WS9: out of scope -- every seek function and the DVR constants are byte-id
 
 const BUILD_SCRIPT = fs.readFileSync(
   path.join(__dirname, '..', 'scripts', 'build-pages.mjs'), 'utf8');
+
+test('WS68: cache fingerprint updates the service-worker declaration with or without a semicolon', () => {
+  assert.match(BUILD_SCRIPT,
+    /sw = sw\.replace\(\/const CACHE_NAME = '\[\^'\]\*';\?\/, `const CACHE_NAME = 'minradio-\$\{hash\(Buffer\.from\(cacheFingerprint\)\)\}';`\);/,
+    'the build must match the source declaration and emit a valid cache declaration');
+});
+
 // Start at the appendChild call, NOT at `class: 'build-line'`: the class
 // attribute sits INSIDE the el('p', { ... }) call, so a region starting there
 // slices the opening off and an assertion about it can never match. That is
