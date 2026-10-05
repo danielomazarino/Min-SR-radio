@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = 'a97b4f1';
+  const APP_BUILD = '1f7382d';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -8324,8 +8324,13 @@ function seekMeasureRecordText() {
       // impossible -- any interleaving reverted on the next render.
       const list = isPod ? podcastRowOrder(favs[kind], extList) : favs[kind];
 
-      const sec = el('section', { class: 'section', 'aria-label': title },
-        el('h2', { class: 'section-title', text: title }));
+      const heading = isPod
+        ? buildPodcastSectionHeading(title)
+        : el('h2', { class: 'section-title', text: title });
+      const sec = el('section', {
+        class: `section${isPod ? ' podcast-section' : ''}`,
+        'aria-label': title,
+      }, heading);
       const scroller = el('div', { class: 'icon-scroller', role: 'list' });
 
       if (!list.length) {
@@ -9453,6 +9458,19 @@ function seekMeasureRecordText() {
     });
   }
 
+  function buildPodcastSectionHeading(title) {
+    return el('div', { class: 'podcast-section-heading' },
+      el('h2', { class: 'section-title', text: title }),
+      el('button', {
+        class: 'fresh-btn', type: 'button',
+        'aria-label': 'Podcastuppdatering',
+        onclick: () => openFreshnessCard(),
+      }, el('span', {
+        class: 'fresh-btn-icon',
+        html: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M13.2 2.5 5.7 13.1h5.1l-.8 8.4 8.3-11.2h-5.1l.8-7.8z"/></svg>',
+      })));
+  }
+
   /** The rows of the WS67 card. Split out so it can be reasoned about alone. */
   function buildFreshnessList(sorted, close) {
     const wrap = el('div', { class: 'fresh-list' });
@@ -10245,27 +10263,6 @@ function seekMeasureRecordText() {
     const tabPodcasts = el('button', { class: 'tab', type: 'button', text: 'Poddar',
       onclick: () => switchTab('podcasts') });
 
-    // ---- WS67: the freshness icon, on the SAME ROW as Poddar. ----
-    //
-    // OWNER: "an icon on the same row as poddar with the flash fluent icon in
-    // the darken green used for the cog wheel and info icon but without the
-    // lighter green circle, and horizontally on the same center alignment as the
-    // cog wheel."
-    //
-    // `.tab` is `flex: 1`, so the two tabs share the row equally and this button
-    // is a fixed 44px at the end -- the same box as the header cog, so its centre
-    // lines up with the cog's centre by construction rather than by a fudge
-    // offset. No background: the owner explicitly asked for the dark green
-    // WITHOUT the lighter green circle, which is `.edit-btn`'s `--accent-soft`.
-    const freshBtn = el('button', {
-      class: 'fresh-btn', type: 'button',
-      'aria-label': 'Podcastuppdatering',
-      onclick: () => openFreshnessCard(),
-    }, el('span', { class: 'fresh-btn-icon', 'aria-hidden': 'true' },
-      el('span', { class: 'fresh-bars' },
-        el('i', { class: 'fresh-bar b1' }), el('i', { class: 'fresh-bar b2' }),
-        el('i', { class: 'fresh-bar b3' }))));
-
     function switchTab(next) {
       tab = next;
       tabChannels.setAttribute('aria-selected', String(tab === 'channels'));
@@ -10896,7 +10893,7 @@ function seekMeasureRecordText() {
     // Selection section — its own header so the list reads as the main task
     sheet.appendChild(el('h3', { class: 'section-title', text: 'Välj favoriter' }));
     sheet.appendChild(counter);
-    sheet.appendChild(el('div', { class: 'tabs' }, tabChannels, tabPodcasts, freshBtn));
+    sheet.appendChild(el('div', { class: 'tabs' }, tabChannels, tabPodcasts));
     sheet.appendChild(searchInput);
     sheet.appendChild(listWrap);
     overlay.appendChild(sheet);
