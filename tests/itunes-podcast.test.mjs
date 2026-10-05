@@ -3226,7 +3226,36 @@ test('WS54: all three card types go through openContextCard', () => {
   const def = /function openContextCard\(\{/.test(APP_JS);
   const calls = [...APP_JS.matchAll(/openContextCard\(\{/g)].length - (def ? 1 : 0);
   assert.ok(def, 'openContextCard must exist');
-  assert.equal(calls, 3, 'the tablå card plus both podcast cards share one implementation');
+  // SUPERSEDED 2026-10-05 (WS67). The requirement this guards is "every card
+  // goes through the ONE implementation", not "there are exactly three". The
+  // owner added a fourth card -- the podcast-freshness overview -- and pinning
+  // the number would make adding a card look like a regression. Restated to
+  // assert the REAL property, which is stronger than a count: every card must
+  // go through openContextCard, and the known card types must each appear there.
+  assert.ok(calls >= 4,
+    `every card type must go through openContextCard; found ${calls} call sites`);
+  // The three original card types must still be routed through it, one each.
+  // Read from the source rather than assumed: the first version of this
+  // restatement guessed `subtitle: 'Tablå'` and failed, because the real string
+  // is 'Tablå — igår + idag'. A guard that encodes a guess about the app is
+  // worse than no guard.
+  const cardTitles = [...stripComments(APP_JS).matchAll(/openContextCard\(\{([\s\S]{0,400}?)buildBody:/g)]
+    .map((m) => m[1]);
+  assert.equal(cardTitles.length, calls,
+    'every openContextCard call must be counted by this guard -- if this fails, the list below is incomplete');
+  assert.ok(cardTitles.some((b) => /Tablå/.test(b)), 'the tabla card must still exist');
+  assert.ok(cardTitles.some((b) => /subtitle: 'Avsnitt'/.test(b)),
+    'both podcast episode cards must still exist');
+  assert.ok(cardTitles.some((b) => /Podcastuppdatering/.test(b)),
+    'the WS67 freshness card must exist');
+  // Both episode cards exist, so the count must be at least the original three
+  // plus the new one.
+  assert.ok(calls >= 4, `expected at least 4 card types, found ${calls}`);
+  // And the new card must NOT be a bespoke second implementation -- that is the
+  // property the old count was standing in for.
+  assert.match(region('function openFreshnessCard', 'function buildFreshnessList', stripComments(APP_JS)),
+    /openContextCard\(\{/,
+    'the freshness card must use openContextCard, so it gets the standard design and the swipe-to-close behaviour for free');
 });
 
 // ===========================================================================
@@ -4561,4 +4590,357 @@ test('WS66b: the date is a CHILD element, not part of the joined string', () => 
   // request -- if it reappears, the requirement has been silently dropped.
   assert.ok(!/text: \[src, when\]\.filter\(Boolean\)\.join\(' · '\)/.test(body),
     'the date must not be folded back into the joined string -- that cannot be italicised');
+});
+
+// ---------------------------------------------------------------------------
+// WS67 — "Podcastuppdatering": the owner's freshness card.
+//
+// "when clicked on it opens a card where the latest updated podcast in the
+//  favorites list is shown on top followed by the ones rest that where updated
+//  in the last week. if no update in the last week for a favorite, show the last
+//  update date there is on the selected stream. this would serve the purpose of
+//  seeing that feeds are serving with the latest podcasts in a good way, and give
+//  a quick overview of if any podcast has stopped broadcasting."
+//
+// `sortFavouritesByFreshness` is PURE -- no fetching, and `nowMs` is passed in
+// rather than read from the clock -- so the rule can be DRIVEN here rather than
+// asserted as source text. That is the whole reason it was written that way.
+// ---------------------------------------------------------------------------
+
+const sortFresh = makeFn('sortFavouritesByFreshness', { FRESH_WINDOW_MS: 7 * 24 * 60 * 60 * 1000 });
+const DAY = 24 * 60 * 60 * 1000;
+
+test('WS67: the newest favourite is first and is identified as newest', () => {
+  const now = Date.UTC(2026, 9, 5);
+  const out = sortFresh([
+    { id: 1, name: 'old', latestUtc: now - 40 * DAY },
+    { id: 2, name: 'newest', latestUtc: now - 2 * 3600 * 1000 },
+    { id: 3, name: 'week', latestUtc: now - 6 * DAY },
+  ], now);
+  assert.deepEqual(out.rows.map((r) => r.id), [2, 3, 1],
+    'rows must be newest-first -- that IS the card');
+  assert.equal(out.newest.id, 2, 'the newest row must be identified so it can be called out');
+  // CANARY: fresh/stale must be able to come out BOTH ways, or the split is
+  // unmeasurable (AGENTS.md: a metric that cannot fail is not a metric).
+  assert.deepEqual(out.fresh.map((r) => r.id), [2, 3]);
+  assert.deepEqual(out.stale.map((r) => r.id), [1]);
+});
+
+test('WS67: the week boundary is the owner\'s "last week", not a tuned offset', () => {
+  const now = Date.UTC(2026, 9, 5);
+  const just = sortFresh([{ id: 1, latestUtc: now - 7 * DAY + 60 * 1000 }], now);
+  const at = sortFresh([{ id: 1, latestUtc: now - 7 * DAY }], now);
+  const past = sortFresh([{ id: 1, latestUtc: now - 7 * DAY - 60 * 1000 }], now);
+  // 6d23h59m ago -> still this week. Exactly 7d -> not. A second either way must
+  // change the answer, or the window is untestable.
+  assert.equal(just.fresh.length, 1, 'a podcast updated within the week counts as fresh');
+  assert.equal(at.fresh.length, 0, 'exactly a week old is NOT within the week');
+  assert.equal(past.fresh.length, 0, 'older than a week is stale');
+  assert.notEqual(just.fresh.length, at.fresh.length, 'the boundary must be discriminating');
+});
+
+test('WS67: a stale favourite is STILL LISTED with its real date', () => {
+  const now = Date.UTC(2026, 9, 5);
+  const out = sortFresh([{ id: 9, name: 'dead', latestUtc: now - 200 * DAY }], now);
+  // This is the requirement that is easiest to get wrong: dropping the stale rows
+  // would produce a tidy card and defeat the entire stated purpose ("a quick
+  // overview of if any podcast has stopped broadcasting").
+  assert.equal(out.rows.length, 1, 'a silent podcast must still appear -- that is the point of the card');
+  assert.equal(out.rows[0].id, 9);
+  assert.deepEqual(out.stale.map((r) => r.id), [9]);
+});
+
+test('WS67: an unreadable feed sinks but is NOT hidden, and is NOT called stale', () => {
+  const now = Date.UTC(2026, 9, 5);
+  const out = sortFresh([
+    { id: 1, latestUtc: null },
+    { id: 2, latestUtc: now - 3600 * 1000 },
+  ], now);
+  assert.deepEqual(out.rows.map((r) => r.id), [2, 1], 'a row with no date must sink, not disappear');
+  assert.deepEqual(out.undated.map((r) => r.id), [1]);
+  // An unreadable feed and a silent feed are DIFFERENT facts. Counting the
+  // unreadable one as stale would make a network blip look like a dead feed --
+  // a false alarm, which is the one thing this card must not produce.
+  assert.deepEqual(out.stale.map((r) => r.id), [],
+    'a feed we could not read must NOT be reported as stale');
+  assert.deepEqual(out.fresh.map((r) => r.id), [2]);
+});
+
+test('WS67: degenerate inputs cannot throw or lose a row', () => {
+  const now = Date.UTC(2026, 9, 5);
+  for (const bad of [null, undefined, [], [null], [{}]]) {
+    const out = sortFresh(bad, now);
+    assert.ok(Array.isArray(out.rows), `rows must be an array for ${JSON.stringify(bad)}`);
+    assert.equal(out.newest, null, 'no rows means no newest');
+  }
+  // `{}` has no latestUtc -> undated, and it must survive.
+  assert.equal(sortFresh([{}], now).rows.length, 1, 'a row without a date must not be dropped');
+  // A non-numeric date is not a date. `latestUtc: "soon"` must not sort as 0 and
+  // sink below genuinely old feeds.
+  const mixed = sortFresh([
+    { id: 1, latestUtc: 'soon' },
+    { id: 2, latestUtc: now - 999 * DAY },
+  ], now);
+  assert.deepEqual(mixed.undated.map((r) => r.id), [1], 'a string date is not a date');
+  assert.deepEqual(mixed.rows.map((r) => r.id), [2, 1]);
+});
+
+// ---------------------------------------------------------------------------
+// WS67, part 2 -- the WIRING.
+//
+// Everything below is asserted on source text, and that is a real limitation,
+// stated rather than hidden: `openFreshnessCard` calls `apiFetch`, `extEpisodes`,
+// `openContextCard` and `playTrack`, so it closes over the whole application and
+// cannot be extracted and executed the way the sort rule is. What IS driven is
+// the rule; what is asserted here is that the rule is WIRED to the right
+// endpoints and the right card. A rewiring that keeps the text would still pass
+// here, which is why the browser run below is part of the deploy bar and not an
+// optional extra.
+//
+// WHAT THIS DOES NOT PROVE: that the card renders, that a row plays, or that a
+// date is correct against the live APIs. Only driving the live page does that.
+// ---------------------------------------------------------------------------
+
+test('WS67: the freshness button sits on the Poddar tab row, dark green, no circle', () => {
+  const css = stripComments(fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8'));
+  // Same row: the button is a THIRD child of `.tabs`, beside the two tabs.
+  assert.match(stripComments(APP_JS), /el\('div', \{ class: 'tabs' \}, tabChannels, tabPodcasts, freshBtn\)/,
+    'the freshness button must be on the same row as Poddar');
+  // "horizontally on the same center alignment as the cog wheel": the cog is
+  // 44x44 (`.edit-btn`), so the same box is what makes the centres line up. A
+  // different height would need a magic offset, which is the fragile version of
+  // the same requirement.
+  const cog = css.match(/\.edit-btn\s*\{([^}]*)\}/);
+  const fresh = css.match(/\.fresh-btn\s*\{([^}]*)\}/);
+  assert.ok(cog && fresh, 'both .edit-btn and .fresh-btn must exist');
+  const cogSize = (cog[1].match(/height:\s*(\d+)px/) || [])[1];
+  const freshSize = (fresh[1].match(/height:\s*(\d+)px/) || [])[1];
+  assert.ok(freshSize, '.fresh-btn needs an explicit px height');
+  assert.equal(freshSize, cogSize,
+    `.fresh-btn (${freshSize}px) must match .edit-btn (${cogSize}px) so the centres align structurally`);
+  assert.match(fresh[1], /justify-content:\s*center/, '.fresh-btn must centre its icon');
+  // "the darken green used for the cog wheel and info icon": the same token.
+  assert.match(fresh[1], /color:\s*var\(--accent\)/,
+    '.fresh-btn must use the same dark green as the cog wheel');
+  // "but without the lighter green circle": `.edit-btn` sets
+  // `background: var(--accent-soft)`. This must NOT.
+  assert.match(fresh[1], /background:\s*none/, '.fresh-btn must have NO lighter green circle');
+  assert.ok(!/accent-soft/.test(fresh[1]),
+    '.fresh-btn must not reference --accent-soft at all -- that is the circle the owner removed');
+});
+
+test('WS67: SR freshness asks page 2 before calling a feed silent', () => {
+  const src = stripComments(APP_JS);
+  const fn = region('async function favouriteLatestUtc', 'function openFreshnessCard', src);
+  // MEASURED on the live API: `episodes/index` returns an EMPTY page 1 for many
+  // SR programmes (programid 78 needed page 2's logic; ids 2439/8309 return 0 on
+  // both). Asking only page 1 would report a daily show as silent -- the exact
+  // false negative this card exists to catch, so the retry is the feature, not
+  // defensive padding.
+  assert.match(fn, /for \(const page of \[1, 2\]\)/,
+    'SR freshness must try page 2, because page 1 is empty for many SR programmes');
+  assert.match(fn, /episodes\/index\?format=json&programid=\$\{item\.id\}/,
+    'SR freshness must read the date from the same episodes/index the app already uses');
+  assert.match(fn, /parseSrDate\(ep\.publishdateutc\)/,
+    'the SR date must go through parseSrDate -- the API returns /Date(ms)/, not ISO');
+  // Both providers, or half the favourites row would be blank.
+  assert.match(fn, /item\.provider === 'itunes'/, 'iTunes favourites must be probed too');
+  assert.match(fn, /extEpisodes\(item\.id\)/, 'iTunes dates must come from the existing episode cache');
+  // Never throw: this runs once per favourite and one dead feed must not take
+  // the card down.
+  assert.match(fn, /catch\s*\{\s*return null/, 'a failing probe must resolve to null, never reject');
+});
+
+test('WS67: the card delegates to openContextCard and rows open a playable card', () => {
+  const src = stripComments(APP_JS);
+  // "a card with our standard design": reuse, not a second sheet implementation.
+  assert.match(region('function openFreshnessCard', 'function buildFreshnessList', src),
+    /openContextCard\(\{/, 'the freshness card must use the standard card');
+  // OWNER, follow-up: "make sure that the podcasts start to play when clicked on
+  // in the new card".
+  assert.match(region('function buildFreshnessList', 'function openContextCard', src),
+    /openPodcastCard\(\{/,
+    'clicking a row must open that podcast, so the card plays rather than only reports');
+  // `openPodcastCard` is the ONE splitter: it routes an itunes id to
+  // openExternalPodcastCard and an SR id to the SR card, and both build rows
+  // whose onclick calls playTrack. Reusing it is what makes "it plays" true for
+  // BOTH providers instead of a promise made only for the one I tested.
+  const op = region('function openPodcastCard', 'function openExternalPodcastCard', src);
+  assert.match(op, /pod\?\.provider === 'itunes'\) return openExternalPodcastCard\(pod\)/,
+    'openPodcastCard must still split the two providers -- the freshness card depends on this');
+  assert.match(op, /playTrack\(\{/, 'the SR episode rows must still call playTrack');
+  assert.match(region('function openExternalPodcastCard', 'function closeSheet', src), /playTrack\(\{/,
+    'the iTunes episode rows must still call playTrack');
+});
+
+test('WS67: every favourite appears, and the wording separates fresh from silent', () => {
+  const src = stripComments(APP_JS);
+  // The favourites list is the union of both providers, in the stored row order
+  // -- NOT `favs.podcasts` alone, which would silently omit every iTunes
+  // favourite. That is the same one-field-two-writers shape as the old artwork
+  // race: a source that looks right and is only half the list.
+  const fn = region('function openFreshnessCard', 'function buildFreshnessList', src);
+  assert.match(fn, /podcastRowOrder\(favs\.podcasts, extList\)/,
+    'the card must cover BOTH providers, in the same order as the home row');
+  assert.match(fn, /loadExternalPodcasts\(\)/, 'iTunes favourites must be included');
+  // Undated rows must not be filtered out of the list.
+  assert.ok(!/\.filter\(\(r\) => Number\.isFinite\(r\.latestUtc\)\)/.test(fn),
+    'the card must not drop a favourite just because its date is unknown');
+  // The two states the owner asked to distinguish, worded differently, and the
+  // unreadable case must be a THIRD wording rather than being called silent.
+  const list = region('function buildFreshnessList', 'function openContextCard', src);
+  assert.match(list, /'ingen nytt i veckan'/, 'a stale feed must say so in words');
+  assert.match(list, /'uppdaterad denna vecka'/, 'a fresh feed must say so in words');
+  assert.match(list, /'datum okänt'/, 'an unreadable feed must have its own wording');
+  assert.match(list, /extDateLabel\(r\.latestUtc\)/,
+    'a stale row must show its real last-update date, per the owner');
+});
+
+// ---------------------------------------------------------------------------
+// WS67, part 3 -- CLOSING THREE BLIND SPOTS THE MUTATION RUN FOUND.
+//
+// All three mutations below APPLIED to app.js and the suite still reported green.
+// A mutation that reports green because it never applied is a harness fault
+// (AGENTS.md: report NO-OP as a hard failure). These were worse: they applied,
+// and the suite was blind. Each is fixed below with the reason it was blind.
+// ---------------------------------------------------------------------------
+
+test('WS67: the freshness window is SEVEN days in app.js, not just in the test', () => {
+  // M22 APPLIED (`FRESH_WINDOW_MS = 30 * 24 * 60 * 60 * 1000`) and the suite
+  // stayed green. Cause: the guard injected the constant --
+  // `makeFn('sortFavouritesByFreshness', { FRESH_WINDOW_MS: 7 * ... })` -- so it
+  // tested its OWN value, never the application's. A test that supplies the
+  // value it is meant to be checking cannot fail on a wrong value.
+  //
+  // The fix: read the constant out of app.js, then use THAT to drive the rule,
+  // so a change to the application's own number is what makes this red.
+  const src = stripComments(APP_JS);
+  const declared = /const FRESH_WINDOW_MS = (\d+) \* 24 \* 60 \* 60 \* 1000;/.exec(src);
+  assert.ok(declared, 'FRESH_WINDOW_MS must be declared as N * 24 * 60 * 60 * 1000');
+  assert.equal(Number(declared[1]), 7,
+    'the freshness window must be 7 days -- the owner said "updated in the last week"');
+  // Now drive the rule with the value the APP declares, not one the test supplies.
+  const withAppValue = makeFn('sortFavouritesByFreshness',
+    { FRESH_WINDOW_MS: Number(declared[1]) * 24 * 60 * 60 * 1000 });
+  const now = Date.UTC(2026, 9, 5);
+  const D = 24 * 60 * 60 * 1000;
+  assert.equal(withAppValue([{ id: 1, latestUtc: now - 8 * D }], now).fresh.length, 0,
+    "8 days old must be stale under the app's own window");
+  assert.equal(withAppValue([{ id: 1, latestUtc: now - 6 * D }], now).fresh.length, 1,
+    "6 days old must be fresh under the app's own window");
+  // CANARY: the two must differ, or the driven assertions above prove nothing.
+  assert.notEqual(
+    withAppValue([{ id: 1, latestUtc: now - 8 * D }], now).fresh.length,
+    withAppValue([{ id: 1, latestUtc: now - 6 * D }], now).fresh.length,
+    'the driven window check must be able to come out both ways');
+});
+
+test('WS67: a freshness row is clickable and opens a playable podcast', () => {
+  // M24 APPLIED (`row.onclick` renamed away) and the suite stayed green. Cause:
+  // the guard asserted `openPodcastCard({` appears somewhere in
+  // buildFreshnessList -- but it also appears there in a COMMENT, and a regex
+  // cannot tell a call from prose. The comment in this very file is the reason
+  // that is not caught, so the assertion has to be about the wiring itself.
+  const src = stripComments(APP_JS); // comments REMOVED -- a call cannot hide in prose
+  const list = region('function buildFreshnessList', 'function openContextCard', src);
+  assert.match(list, /row\.onclick = \(\) =>/,
+    'each freshness row must have a real click handler -- the owner asked for the podcasts to play');
+  // The handler must do both halves of what was asked: close the card AND open
+  // the podcast. A handler that only opens would stack two sheets.
+  assert.match(list, /row\.onclick = \(\) => \{\s*close\(\);/,
+    'clicking a row must close the freshness card first');
+  assert.match(list, /openPodcastCard\(\{ id: r\.id, name: r\.name, image: r\.image, provider: r\.provider \}\)/,
+    'the row must pass its own id, name, artwork AND provider -- dropping provider would send an iTunes id down the SR path');
+  // CANARY: the provider must be threaded. Without it the row would still look
+  // correct and still open a card, just the wrong (empty) one.
+  assert.match(list, /provider: r\.provider/,
+    'provider must be passed through, or iTunes podcasts open an empty SR card');
+});
+
+test('WS67: the SR date goes through parseSrDate, inside this function only', () => {
+  // M25 APPLIED and the suite stayed green. Cause: the mutation rewrote ALL
+  // THREE `parseSrDate(ep.publishdateutc)` call sites in app.js, so two
+  // UNRELATED guards (the WS5 audio-row guards) also broke and one of them was
+  // not in the run, masking the failure. A guard is only as good as the mutation
+  // that tests it, so this one targets the occurrence INSIDE this function.
+  const src = stripComments(APP_JS);
+  const fn = region('async function favouriteLatestUtc', 'function openFreshnessCard', src);
+  assert.match(fn, /parseSrDate\(ep\.publishdateutc\)/,
+    "the SR date must be parsed by parseSrDate -- the API returns /Date(ms)/, and a raw string is never a finite number");
+  // The iTunes branch must NOT use parseSrDate: those dates are already ISO and
+  // go through Date.parse in the mapper. Applying parseSrDate to an ISO string
+  // returns null, so every iTunes row would read "datum okänt".
+  //
+  // The slice is taken from the provider check to the SR page loop, on RAW
+  // source -- NOT `stripComments`. The comment that introduces the SR branch is
+  // itself the boundary, so stripping comments first collapses the slice and
+  // captures the SR half as well, which inverts the assertion. A guard that
+  // fails for a reason other than the defect is a guard that will be "fixed" by
+  // deleting the defect it was meant to catch.
+  const rawFn = region('async function favouriteLatestUtc', 'function openFreshnessCard', APP_JS);
+  const itunesStart = rawFn.indexOf("provider === 'itunes'");
+  const srStart = rawFn.indexOf('for (const page of [1, 2])');
+  assert.ok(itunesStart !== -1 && srStart > itunesStart,
+    'the iTunes branch must come before the SR page loop');
+  const itunes = stripComments(rawFn.slice(itunesStart, srStart));
+  assert.ok(!/parseSrDate/.test(itunes),
+    'the iTunes branch must not use parseSrDate -- its dates are ISO and would parse to null');
+  // CANARY: the two branches must differ, so this pair cannot pass by both
+  // matching or both missing.
+  assert.match(fn, /Date\.isNaN|parseSrDate/,
+    'exactly one date-parsing path must be present in this function');
+});
+
+// ---------------------------------------------------------------------------
+// WS67, part 4 -- the news-ring clipping.
+//
+// OWNER, with a screenshot: "a small adjustment of the news titles positions so
+// that the border lines left and the top position are shown. see attach the
+// chromium example that is the same on iphone pwa using safari."
+//
+// MEASURED, driven DOM at 390px with `.news-item.playing` forced: the first item
+// sat at gapLeft 0 and gapTop 0 inside `.news-scroller`, whose
+// `overflow-y: auto` makes it a scroll container that clips anything drawn
+// outside its padding box. `.news-item.playing` paints an OUTSET
+// `box-shadow: 0 0 0 2px`, so exactly the left and top 2px were cut. The right
+// already had 2px of padding and the bottom was never reported -- which is what
+// makes this clipping rather than a misplaced border.
+//
+// AFTER: gapLeft 3, gapTop 3, gapRight 2, and still 4 visible rows.
+// ---------------------------------------------------------------------------
+
+test('WS67: the news scroller has room for the outset ring on left and top', () => {
+  const css = stripComments(fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8'));
+  const rule = css.match(/\.news-scroller\s*\{([^}]*)\}/);
+  assert.ok(rule, '.news-scroller must exist');
+  const body = rule[1];
+  // The clipper. Without this the padding below is inert, so it is asserted too:
+  // a guard that only checks the padding would pass on a box that no longer
+  // scrolls, which is a different layout entirely.
+  assert.match(body, /overflow-y:\s*auto/, 'the scroller must still clip vertically -- that is what made the ring disappear');
+
+  const pad = /padding:\s*([^;]+);/.exec(body);
+  assert.ok(pad, '.news-scroller needs an explicit padding');
+  const [top, right, bottom, left] = pad[1].trim().split(/\s+/);
+  const px = (v) => Number((v || '').replace('px', ''));
+  // The ring is 2px, so 3px clears it with 1px spare. Asserting "> 2" rather
+  // than "=== 3" keeps a future tweak from being a false alarm, but the CANARY
+  // below pins the behaviour to the exact measured value.
+  assert.ok(px(left) >= 3, `left padding ${left} must clear the 2px outset ring on the first item`);
+  assert.ok(px(top) >= 3, `top padding ${top} must clear the 2px outset ring on the first item`);
+  assert.ok(px(right) >= 2, `right padding ${right} must keep the pre-existing 2px`);
+  assert.ok(px(bottom) >= 1, 'bottom padding must not be negative -- the ring is drawn there too');
+
+  // The compensation. Adding padding to a box with a fixed max-height eats the
+  // scroll viewport, so the list would show LESS than the four rows it is
+  // explicitly sized for -- a silent regression that no row-count test sees.
+  const maxH = /max-height:\s*calc\(([^)]+)\)/.exec(body);
+  assert.ok(maxH, '.news-scroller needs its max-height');
+  assert.match(maxH[1], /\+\s*6px/,
+    'max-height must add back the 3px+3px of padding, or the scroller shows fewer than 4 rows');
+  // CANARY: the two must be consistent. 3+3 must appear in the max-height, or
+  // the padding and the compensation have drifted apart.
+  const added = px(top) + px(bottom);
+  assert.ok(maxH[1].includes(`+ ${added}px`),
+    `max-height must add the padding it actually has (${added}px), not a stale number`);
 });

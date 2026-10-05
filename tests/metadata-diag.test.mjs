@@ -2716,8 +2716,18 @@ test('WS10 Part B: the build id is shown on the main screen, without restoring t
 });
 
 test('WS10: the About overlay shows the real build identity', () => {
-  assert.ok(/bygg \$\{APP_BUILD\} · Utvecklad av/.test(ABOUT_LINE),
-    'About must show the build id');
+  // SUPERSEDED 2026-10-05 (WS67). OWNER: "take away the word bygg and just keep
+  // the build number too in the same work". The requirement this test guards --
+  // "About must show the build id" -- is UNCHANGED; only the label is gone. It
+  // is therefore restated to assert the id is still present AND that the word is
+  // now absent, which is a stronger pair than the original single regex. It is
+  // NOT weakened, and the attribution ("Utvecklad av") is still required.
+  assert.ok(/\$\{APP_BUILD\} · Utvecklad av/.test(ABOUT_LINE),
+    'About must show the build id, followed by the unchanged attribution');
+  assert.ok(!/bygg/.test(ABOUT_LINE),
+    'the word "bygg" must be gone -- the owner removed it in WS67');
+  assert.ok(/APP_BUILD/.test(ABOUT_LINE),
+    'the build id itself must still be there -- removing the label is not removing the id');
   assert.ok(!/APP_VERSION/.test(ABOUT_LINE),
     'About must not show the frozen version');
   // Wording, layout and the independent-app disclaimer are untouched -- only
@@ -2896,8 +2906,14 @@ test('WS11 Part B: no frozen version is displayed anywhere', () => {
     'the build line must go back under NYHETER in #main');
   assert.ok(!/document\.querySelector\('\.topbar'\)/.test(BUILD_LINE_WS12),
     'it must NOT be in the top bar -- the owner rejected that placement');
-  assert.ok(/text: `bygg \$\{APP_BUILD\}`/.test(BUILD_LINE_WS12),
+  // SUPERSEDED 2026-10-05 (WS67): asserted `text: \`bygg \${APP_BUILD}\`` and
+  // the owner removed the label. Restated to require the id AND forbid the word,
+  // which is strictly stronger than the original: a future edit that dropped the
+  // id entirely would also fail this.
+  assert.ok(/text: APP_BUILD,/.test(BUILD_LINE_WS12),
     'it must show the build id');
+  assert.ok(!/bygg/.test(BUILD_LINE_WS12),
+    'the word "bygg" must be gone from the home build line -- the owner removed it in WS67');
   // The WS10 build-id mechanism must NOT regress to the artifact commit.
   const BS = BUILD_SCRIPT;
   assert.ok(/APP_SOURCE_COMMIT|resolveBuildId/.test(BS),

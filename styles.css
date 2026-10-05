@@ -470,11 +470,43 @@ a:focus-visible {
 
 /* ---------- news scroller (4 visible, scroll to more) ---------- */
 .news-scroller {
-  max-height: calc(4 * 106px + 3 * 10px); /* 4 rows + gaps */
+  /* The +6px is the padding added below (3px top + 3px bottom). Without it the
+   * added padding would eat 6px of the scroll viewport and the list would show
+   * slightly LESS than four rows -- a quiet regression in a box whose whole
+   * purpose is "4 rows + gaps", and one that no unit test would notice because
+   * the row COUNT property is untouched. */
+  max-height: calc(4 * 106px + 3 * 10px + 6px); /* 4 rows + gaps + padding */
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
   padding-right: 2px;
+  /* ---- WS67: stop clipping the focused/playing ring ----
+   *
+   * OWNER, with a screenshot: "a small adjustment of the news titles positions
+   * so that the border lines left and the top position are shown. see attach the
+   * chromium example that is the same on iphone pwa using safari."
+   *
+   * MEASURED (driven DOM, 390px, `.news-item.playing` forced): the first item
+   * sits at gapLeft 0 and gapTop 0 INSIDE this element, and `overflow-y: auto`
+   * establishes a scroll container that clips anything drawn outside its own
+   * padding box. `.news-item.playing` draws `box-shadow: 0 0 0 2px var(--accent)`
+   * -- an OUTSET shadow -- so the 2px on the left and the 2px on the top were
+   * being cut off. Exactly the two edges the owner reported, and no others.
+   *
+   * The right edge already had 2px (`padding-right`, pre-existing) and the
+   * bottom was never reported, which is the tell that this is clipping rather
+   * than a misplaced border: a symmetric gap on all four sides would have been a
+   * different defect.
+   *
+   * The fix is padding, not a repositioned shadow: an inset border would change
+   * the ring's appearance and lose the "outside the card" reading, and a
+   * negative margin would move the layout. 3px clears the 2px ring on both
+   * edges; the 1px spare means a fractional device pixel ratio cannot clip it.
+   *
+   * `scroll-padding-top` is deliberately NOT set: this box is not the scroll
+   * container for the page, so it would do nothing.
+   */
+  padding: 3px 2px 3px 3px;
 }
 
 /* ---------- Nyheter collapse/expand (user request 2026-09-23, CORRECTED) ----------
@@ -2253,6 +2285,69 @@ body.player-gesture-lock {
 }
 .card-row:last-child { border-bottom: none; }
 .card-row:disabled { cursor: default; opacity: 0.55; }
+
+/* ---------- WS67: the podcast-freshness card ----------
+ *
+ * Deliberately built on the SAME measurements as `.card-row` (44px min target,
+ * 13.5px text, 10px/4px padding, 1px divider). The owner asked for "a card with
+ * our standard design", and a near-copy that reads as a near-copy is worse than
+ * reusing the row that already looks right: reusing it means a future change to
+ * the app's row styling reaches this card too, instead of leaving it behind as
+ * the one screen that no longer matches.
+ */
+.fresh-list { display: flex; flex-direction: column; }
+
+.fresh-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 4px;
+  min-height: 44px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13.5px;
+}
+.fresh-row:last-child { border-bottom: none; }
+.fresh-row:active { background: rgba(127, 127, 127, 0.15); }
+
+.fresh-img {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border-radius: 6px;
+  object-fit: cover;
+  background: var(--accent-soft);
+}
+
+.fresh-text { min-width: 0; flex: 1; }
+
+.fresh-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+/* The status line. `fresh-date` is italic for the same reason `.pick-src-date`
+ * is: the owner asked for a date to read differently from a label. */
+.fresh-when {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  opacity: 0.85;
+}
+.fresh-date { font-style: italic; }
+
+/* The freshest row is called out, because the owner's stated purpose is "the
+ * latest updated podcast in the favorites list is shown on top". A green left
+ * edge marks it without moving anything, so the list order still carries the
+ * meaning. */
+.fresh-row.is-newest .fresh-name { color: var(--accent); }
+.fresh-row.is-newest { box-shadow: inset 3px 0 0 var(--accent); }
 /* Whole row is the play target (user request 2026-09-23): the ▶ glyph is
    decoration — the row itself must read as a button. Active-state feedback
    makes the full-row hit area visible on tap. */
@@ -2676,6 +2771,50 @@ body.player-gesture-lock {
   background: var(--accent);
   color: #fff;
 }
+
+/* ---- WS67: the podcast-freshness button, on the tab row ----
+ *
+ * OWNER: "an icon on the same row as poddar with the flash fluent icon in the
+ * darken green used for the cog wheel and info icon but without the lighter
+ * green circle, and horizontally on the same center alignment as the cog wheel."
+ *
+ * Two deliberate choices:
+ *   - NO background. `.edit-btn` is `background: var(--accent-soft)`; the owner
+ *     asked for the dark green WITHOUT the lighter green circle, so this rule
+ *     sets `background: none` explicitly. Leaving it unset would have inherited
+ *     nothing, but saying it makes the difference from `.edit-btn` deliberate
+ *     rather than accidental.
+ *   - 44x44, the same box as `.edit-btn`, and the row centres it. The alignment
+ *     the owner asked for is then structural: same height, same flex centring,
+ *     no magic offset to drift later.
+ */
+.fresh-btn {
+  width: 44px;
+  height: 44px;
+  flex: none;
+  align-self: center;
+  border-radius: 50%;
+  border: none;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.fresh-btn:active { opacity: 0.6; }
+.fresh-btn-icon { display: flex; align-items: flex-end; gap: 2.5px; height: 18px; }
+/* Rising bars = a feed being served; the owner asked for a Fluent-style mark and
+ * this is the standard "activity/pulse" form of it. */
+.fresh-bar {
+  display: block;
+  width: 3.5px;
+  border-radius: 1.5px;
+  background: currentColor;
+}
+.fresh-bar.b1 { height: 7px; }
+.fresh-bar.b2 { height: 13px; }
+.fresh-bar.b3 { height: 18px; }
 
 .search-input {
   width: 100%;
