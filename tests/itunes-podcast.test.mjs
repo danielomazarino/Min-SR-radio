@@ -3033,7 +3033,14 @@ test('WS53/E2: the SVG glyph is sized, not font-sized', () => {
   const h = rule.match(/height:\s*(\d+)px/);
   assert.ok(w, `the glyph must have an explicit width; got: ${rule.trim()}`);
   assert.ok(h, `the glyph must have an explicit height; got: ${rule.trim()}`);
-  assert.doesNotMatch(rule, /font-size/,
+  // The slice is COMMENT-STRIPPED before matching. The raw slice used to fail
+  // on its own: the WS68 comment inside this very rule says "Sized in px, never
+  // font-size", so `doesNotMatch(/font-size/)` matched the PROSE and reported a
+  // defect in a rule whose declarations were clean. A guard that fails on its
+  // own explanatory comment is worse than no guard -- it invites deleting the
+  // comment instead of reading the rule.
+  const decls = rule.replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.doesNotMatch(decls, /font-size/,
     'font-size does nothing to an SVG and hid a 24 px render inside a 26 px button');
   // The owner asked for the icons to be BIGGER because a thumb was missing them.
   assert.ok(Number(w[1]) >= 20,
@@ -4992,4 +4999,51 @@ test('WS67: the news scroller has room for the outset ring on left and top', () 
   const added = px(top) + px(bottom);
   assert.ok(maxH[1].includes(`+ ${added}px`),
     `max-height must add the padding it actually has (${added}px), not a stale number`);
+});
+
+// ---------------------------------------------------------------------------
+// WS68, part 2 -- the player's vertical room, VERTICAL-ONLY.
+//
+// OWNER: "the player where i have also asked for some more space vertically".
+// The constraint is the point: horizontal metrics are byte-identical, so
+// nothing moves sideways and no row can wrap. The room comes from line-height
+// and min-height, never from horizontal padding.
+// ---------------------------------------------------------------------------
+
+test('WS68: the player rows gain vertical room without any horizontal change', () => {
+  const css = stripComments(fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8'));
+  // The container's horizontal padding must be byte-identical: 16px inline.
+  const player = css.match(/\.player\s*\{([^}]*)\}/);
+  assert.ok(player, '.player must exist');
+  assert.match(player[1], /padding:\s*11px 16px /,
+    'the player\'s horizontal padding must stay 16px -- the owner asked for VERTICAL space only');
+  // The rows breathe via line-height, not padding.
+  // The regex is anchored to LINE START (`^` + `m` flag). Unanchored, it matched
+  // `.player-mini .player-title` first -- the substring `.player-title` occurs
+  // inside that compound selector -- and the guard failed on a rule I never
+  // wrote. A guard that reads the wrong rule is a guard that will be "fixed" by
+  // deleting the right one.
+  for (const sel of ['.player-title', '.player-sub']) {
+    const rule = css.match(new RegExp(`^${sel.replace(/\./g, '\\.')}\\s*\\{([^}]*)\\}`, 'm'));
+    assert.ok(rule, `${sel} must exist as its own top-level rule`);
+    assert.match(rule[1], /line-height:\s*1\.45/,
+      `${sel} must carry the vertical breathing room`);
+    assert.ok(!/padding/.test(rule[1]),
+      `${sel} must NOT use padding for the extra room -- that would grow the player's total height`);
+  }
+  // The meta row has a floor so the taller line boxes have something to sit in.
+  const metaRow = css.match(/^\.player-meta-row\s*\{([^}]*)\}/m);
+  assert.ok(metaRow, '.player-meta-row must exist');
+  assert.match(metaRow[1], /min-height:\s*22px/, '.player-meta-row needs its floor');
+  // The song-links row must be tall enough for the 24px glyphs.
+  const links = css.match(/^\.song-links\s*\{([^}]*)\}/m);
+  assert.ok(links, '.song-links must exist');
+  assert.match(links[1], /min-height:\s*34px/,
+    '.song-links must be at least as tall as the 24px glyphs plus their padding');
+  // The nowrap guards must survive: a wrap would raise the row height and
+  // defeat the point of vertical-only growth.
+  for (const sel of ['.player-title', '.player-sub']) {
+    const rule = css.match(new RegExp(`^${sel.replace(/\./g, '\\.')}\\s*\\{([^}]*)\\}`, 'm'));
+    assert.match(rule[1], /white-space:\s*nowrap/, `${sel} must still clip, not wrap`);
+  }
 });
