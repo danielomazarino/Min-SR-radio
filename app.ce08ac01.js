@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '00e19a1';
+  const APP_BUILD = '2600f83';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -9959,17 +9959,46 @@ function seekMeasureRecordText() {
         // providers are never mistaken for each other.
         if (tab !== 'channels') {
           const src = isExt
-            ? [item.feedHost,
-              item.episodeCount ? `${item.episodeCount} avsnitt` : null,
-              item.latestEpisodeUtc ? `senast ${extDateLabel(item.latestEpisodeUtc)}` : null,
-            ].filter(Boolean).join(' · ')
+            ? [item.feedHost].filter(Boolean).join(' · ')
             : 'Sveriges Radio';
+          // ---- WS66b, from the owner looking at the shipped build: ----
+          //
+          // "the number of episodes can go and the word senast. put the date in
+          //  italic"
+          //
+          // The date STAYS -- it is the only thing that separates a live feed
+          // from an abandoned one, and that was the whole point of the line.
+          // What goes is everything around it: the count and the word
+          // "senast", which between them made the line read as a sentence
+          // rather than as an identity. `503 avsnitt` is a number the owner has
+          // no way to interpret and no reason to compare; `senast` was my label,
+          // not theirs.
+          //
+          // The date is its own ELEMENT rather than part of the `src` string,
+          // because "in italic" is a style and a style cannot be applied to a
+          // substring of a string. `episodeCount` is still mapped and still
+          // tested -- it is simply no longer rendered.
+          const when = isExt && item.latestEpisodeUtc
+            ? extDateLabel(item.latestEpisodeUtc)
+            : null;
+          // The line is kept when EITHER part survives, so a feed with no
+          // hostname still shows its date. `episodeCount` alone can no longer
+          // justify a line, which is the owner's decision applied literally.
+          const line = src || when ? [src, when].filter(Boolean).join(' · ') : '';
           // Never print the same string twice. An SR row with no description
           // falls back to `sub = 'Sveriges Radio'`, and without this the row
           // would say "Sveriges Radio" on both lines -- the identical
           // duplication this change was made to remove on the iTunes side.
           // Latent only: MEASURED, all 371 SR podcasts have a description.
-          if (src && src !== sub) textWrap.appendChild(el('div', { class: 'pick-src', text: src }));
+          if (line && line !== sub) {
+            const parts = [src, when].filter(Boolean);
+            const node = el('div', { class: 'pick-src' });
+            node.appendChild(document.createTextNode(parts[0]));
+            for (let i = 1; i < parts.length; i += 1) {
+              node.appendChild(el('em', { class: 'pick-src-date', text: parts[i] }));
+            }
+            textWrap.appendChild(node);
+          }
         }
         btn.appendChild(textWrap);
         btn.appendChild(el('span', { class: 'pick-check', 'aria-hidden': 'true', text: '✓' }));

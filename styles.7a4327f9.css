@@ -2773,6 +2773,27 @@ body.player-gesture-lock {
   overflow-wrap: anywhere;
 }
 
+/*
+ * The newest-episode date, in italic.
+ *
+ * OWNER, on the shipped WS66 build: "the number of episodes can go and the word
+ * senast. put the date in italic". The date is kept deliberately -- it is what
+ * separates a live feed from an abandoned one -- and italic is the owner's signal
+ * that it is a moment rather than an identity. The host beside it is not
+ * italicised, so the two are distinguishable by more than punctuation.
+ */
+.pick-src-date {
+  font-style: italic;
+}
+
+/* The separator is a real text node between two elements, so it needs its own
+ * spacing. `margin` on the inline elements would also add space at the edges of
+ * a line that has only one part, which is why the dot is a styled element. */
+.pick-src .pick-src-date::before {
+  content: ' · ';
+  font-style: normal;
+}
+
 .pick-check {
   margin-left: auto;
   width: 24px;
