@@ -82,7 +82,14 @@ cross-platform test discovery instead.
    Report every pre-existing failure classification and the before/after count.
 7. Review the entire diff and check nearby home rendering, top-bar alignment,
    settings tabs, and card behavior. Build only after the source-and-test
-   commit; confirm the hashed production bundle contains the change.
+   commit; confirm the hashed production bundle contains the change and is
+   byte-identical after Git checkout.
+8. Hashed bundles must be protected from Git's automatic line-ending rewriting
+   so their content hashes remain true on both Windows and Linux. `.gitattributes`
+   should set `-text` on `app.*.js` and `styles.*.css`, and a regression test
+   should check that policy. The first live pass exposed this issue: the Windows
+   working copy had CRLF bytes but the pushed Git blob had LF bytes, despite the
+   asset returning HTTP 200 and containing the right code.
 
 ## Commit and deployment ownership
 
