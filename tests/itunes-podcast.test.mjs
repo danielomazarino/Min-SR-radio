@@ -25,9 +25,11 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { normalizeLineEndings } from '../scripts/normalize-line-endings.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const APP_JS = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8').replace(/\r\n/g, '\n');
@@ -4756,6 +4758,24 @@ test('WS68: the home freshness button renders a bolt and opens its card', () => 
   assert.doesNotMatch(button.children[0].attrs.html, /fresh-bars|fresh-bar/);
   button.attrs.onclick();
   assert.equal(cardOpens, 1, 'pressing the rendered button must reach the card opener');
+});
+
+test('WS68: Git preserves the bytes of content-hashed Pages assets', () => {
+  const attributes = execFileSync('git', [
+    'check-attr', 'text', '--', 'app.01234567.js', 'styles.01234567.css',
+  ], {
+    cwd: path.join(__dirname, '..'),
+    encoding: 'utf8',
+  });
+  assert.match(attributes, /app\.01234567\.js: text: unset/,
+    'Git must not rewrite line endings in the hashed JS bundle');
+  assert.match(attributes, /styles\.01234567\.css: text: unset/,
+    'Git must not rewrite line endings in the hashed stylesheet');
+});
+
+test('WS68: build text uses stable LF bytes before hashing', () => {
+  assert.equal(normalizeLineEndings('app\r\nline\r'), 'app\nline\n');
+  assert.equal(normalizeLineEndings('already\nstable'), 'already\nstable');
 });
 
 test('WS67: SR freshness asks page 2 before calling a feed silent', () => {

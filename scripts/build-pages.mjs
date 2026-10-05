@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { normalizeLineEndings } from './normalize-line-endings.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dist = path.join(root, 'dist');
@@ -49,6 +50,11 @@ for (const module of moduleFiles) {
 
 fs.rmSync(dist, { recursive: true, force: true });
 for (const file of ['index.html', 'app.js', 'styles.css', 'sw.js', 'manifest.webmanifest']) copyFile(file);
+for (const file of ['app.js', 'styles.css']) {
+  const target = path.join(dist, file);
+  const text = fs.readFileSync(target, 'utf8');
+  fs.writeFileSync(target, normalizeLineEndings(text));
+}
 for (const icon of ['favicon.svg', 'apple-touch-icon.png', 'icon-192.png', 'icon-512.png', 'icon-512-maskable.png']) {
   const source = path.join(root, 'icons', icon);
   if (!fs.existsSync(source)) throw new Error(`Missing PWA icon: icons/${icon}`);
@@ -165,8 +171,12 @@ const moduleFingerprints = moduleAssets.map((file) => {
   const bytes = fs.readFileSync(path.join(root, file));
   return `${file}:${hash(bytes)}`;
 });
-const cacheFingerprint = [...hashed.values(), ...moduleFingerprints].join(':');
-sw = sw.replace(/const CACHE_NAME = '.*';/, `const CACHE_NAME = 'minradio-${hash(Buffer.from(cacheFingerprint))}';`);
+const hashedAssetFingerprints = [...hashed.values()].map((file) => {
+  const bytes = fs.readFileSync(path.join(dist, file));
+  return `${file}:${hash(bytes)}`;
+});
+const cacheFingerprint = [...hashedAssetFingerprints, ...moduleFingerprints].join(':');
+sw = sw.replace(/const CACHE_NAME = '[^']*';?/, `const CACHE_NAME = 'minradio-${hash(Buffer.from(cacheFingerprint))}';`);
 fs.writeFileSync(path.join(dist, 'sw.js'), sw);
 
 for (const file of ['index.html', 'sw.js', 'manifest.webmanifest']) {

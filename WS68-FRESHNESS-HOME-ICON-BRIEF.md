@@ -82,7 +82,21 @@ cross-platform test discovery instead.
    Report every pre-existing failure classification and the before/after count.
 7. Review the entire diff and check nearby home rendering, top-bar alignment,
    settings tabs, and card behavior. Build only after the source-and-test
-   commit; confirm the hashed production bundle contains the change.
+   commit; confirm the hashed production bundle contains the change and is
+   byte-identical after Git checkout.
+8. Hashed bundles must be protected from Git's automatic line-ending rewriting
+   so their content hashes remain true on both Windows and Linux. `.gitattributes`
+   should set `-text` on `app.*.js` and `styles.*.css`, and a regression test
+   should check that policy. The build also normalizes authored JS/CSS to LF
+   before hashing so the same source produces stable asset bytes across OSes.
+   The first live pass exposed this issue: the Windows working copy had CRLF
+   bytes but the pushed Git blob had LF bytes, despite the asset returning
+   HTTP 200 and containing the right code.
+9. Service-worker cache identity must include the actual bytes of each emitted
+   hashed JS/CSS asset, not only its filename. That guarantees a changed payload
+   cannot remain trapped under a previous cache name if line-ending settings or
+   another post-build transformation ever changes bytes without changing the
+   intended source.
 
 ## Commit and deployment ownership
 
