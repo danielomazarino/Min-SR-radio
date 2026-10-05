@@ -9792,3 +9792,109 @@ the count, reduce the line to the host alone. Checksums restored and re-verified
   stale, **C** a switcher. Recommended **A + B**. The display fix above makes the
   choice *possible*; it does not make it.
 - Not touched: episode list, favourites, player, transport.
+
+## WS67 — 2026-10-05 — "Podcastuppdatering", the news ring, and "bygg" removed
+
+**Three owner requests in one pass, plus one pre-deploy adjustment.**
+
+> "an icon on the same row as poddar with the flash fluent icon in the darken green
+>  used for the cog wheel and info icon but without the lighter green circle, and
+>  horizontally on the same center alignment as the cog wheel. when clicked on it
+>  opens a card where the latest updated podcast in the favorites list is shown on
+>  top followed by the ones rest that where updated in the last week. if no update
+>  in the last week for a favorite, show the last update date there is on the
+>  selected stream. this would serve the purpose of seeing that feeds are serving
+>  with the latest podcasts in a good way, and give a quick overview of if any
+>  podcast has stopped broadcasting."
+
+> "of course also make sure that the podcasts start to play when clicked on in the
+>  new card"
+
+> "take away the word bygg and just keep the build number too in the same work"
+
+> "also add before deployment a small adjustment of the news titels positions so
+>  that the border lines left and the top position are shown"
+
+### The card
+
+`sortFavouritesByFreshness(rows, nowMs)` is **pure** — no fetching, and `nowMs`
+is passed in rather than read from a clock — so the ordering rule is **driven** in
+the tests, not asserted as source text. Three states, worded differently on
+screen, because they are three different facts:
+
+| state | wording | why it must be separate |
+|---|---|---|
+| updated within 7 days | *date* · uppdaterad denna vecka | the normal case |
+| older than 7 days | *date* · ingen nytt i veckan | **still listed** — spotting a stopped feed is the entire purpose |
+| could not be read | datum okänt | a network blip must never read as a dead feed |
+
+Dropping the stale rows would produce a tidy card and defeat the stated purpose.
+
+**SR asks page 1 AND page 2.** MEASURED on the live API: `episodes/index` returns
+an **empty page 1** for many SR programmes. Asking only page 1 would report a busy
+daily show as silent — the exact false negative this card exists to catch.
+
+**A probe of mine returned all zeros at first, and the wrong reason.** I used
+`api.sr.se/v2` instead of `api.sr.se/api/v2`. A wrong base looks exactly like a
+catalogue of dead feeds; per §6 I enumerated before concluding anything.
+
+The card delegates to `openPodcastCard`, which is what makes "it plays" true for
+**both** providers rather than a promise made only for the one that was tested.
+
+### The news ring
+
+MEASURED at 390px with `.news-item.playing` forced: the first item sat at
+**gapLeft 0 / gapTop 0** inside `.news-scroller`, whose `overflow-y: auto` makes
+it a scroll container that clips anything drawn outside its padding box. The ring
+is an **outset** `box-shadow: 0 0 0 2px`, so exactly the left and top 2px were
+cut. The right already had 2px and the bottom was never reported — which is what
+identifies this as clipping rather than a misplaced border.
+
+Fix: 3px padding. `max-height` gains the matching **+6px**, or the list would
+quietly show fewer than the four rows it is explicitly sized for.
+**After: gapLeft 3, gapTop 3, still 4 visible rows.**
+
+### Three blind spots found by mutation — all APPLIED while the suite stayed green
+
+| mutation | why the suite was blind | fix |
+|---|---|---|
+| `FRESH_WINDOW_MS` → 30 days | the guard **injected** the constant, so it tested its own value | read the constant out of `app.js`, then drive the rule with it |
+| `row.onclick` renamed away | the regex also matched a **comment** | assert on `stripComments` output, where a call cannot hide in prose |
+| `parseSrDate` removed | the mutation hit **all three** call sites in `app.js`; an unrelated passing guard masked it | target the occurrence **inside this function**, and assert the iTunes branch does *not* use it |
+
+A test that supplies the value it is meant to be checking is not a test. All three
+re-proven red.
+
+### MEASURED — production, 390px
+
+```
+button: 44x44, color rgb(0, 80, 78), background rgba(0,0,0,0)
+         centre 730 == tab centre 730        <- aligned structurally, not by offset
+card:    Podcastuppdatering / 2 favoriter
+  Nyheter P4 Jämtland   1 okt  · uppdaterad denna vecka   italic, is-newest
+  Lex Fridman Podcast    17 sep · ingen nytt i veckan      italic
+news:    gapLeft 3, gapTop 3, 4 visible rows
+build:   a97b4f1  (matches source commit a97b4f1)
+play:    row -> episode card -> #502 playing, 0:02 / 223:50
+```
+
+**NOT verified — the SR audio path.** SR `.m4a` files abort in headless Chromium
+(`net::ERR_ABORTED` on `lyssna-cdn.sr.se`). A **control run through the
+pre-existing home-icon path aborted identically**, so this is a headless limit and
+not a WS67 defect — but it does mean SR playback from the new card is
+**code-proven and iTunes-played**, never device-played.
+
+### Test count
+
+594 (was 581) — **+13**. Two guards restated **SUPERSEDED** with reasons kept:
+`bygg` removed (now asserted *absent*, which is stronger), and the WS54 card count
+(now asserts every card routes through `openContextCard` instead of pinning "3").
+
+### NOT DONE
+
+- The **feed-disambiguation** decision remains the owner's: **A** auto-pick the
+  freshest feed, **B** warn when a saved feed is stale, **C** a switcher.
+  Recommended **A + B**. This card makes the stale feed *visible*; it does not
+  choose for you.
+- The freshness card probes on open only — no background refresh, no badge count.
+- Not touched: episode list, favourites, player, transport.
