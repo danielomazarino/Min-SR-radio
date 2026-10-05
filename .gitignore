@@ -3,6 +3,7 @@ server.js
 scripts/*
 !scripts/
 !scripts/build-pages.mjs
+!scripts/normalize-line-endings.mjs
 public/
 node_modules/
 dist/
