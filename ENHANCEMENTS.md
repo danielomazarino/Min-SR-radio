@@ -9695,3 +9695,100 @@ the build id under NYHETER matches `d7f86fac` — if it does not, they are looki
 at old code and any report would be about the wrong build.
 
 **Not deployed, not asked for:** the A/B/C feed-disambiguation decision.
+
+## WS66b — 2026-10-05 — the source line, second pass, and a DEPLOY-CHECK DEFECT
+
+**Owner, on the shipped WS66 build:**
+> "the number of episodes can go and the word senast. put the date in italic"
+
+Two instructions with one root. The line read as a **sentence** —
+`lexfridman.com · 503 avsnitt · senast 17 sep` — where it should read as an
+**identity**: a host, and a moment. The count and the word are what made it a
+sentence. `503 avsnitt` is a number the owner has no way to interpret and no
+reason to compare; `senast` was my label, not theirs.
+
+**The date STAYS.** It is the only thing separating a live feed from an abandoned
+one, which is the entire reason the line exists.
+
+### Why the date had to become an element
+
+"Put the date in italic" is impossible on the WS66 line: it was one joined
+string, and **a style cannot be applied to a substring of a string**. So the date
+is now its own `<em>`, the host stays a plain text node, and the separator moved
+to `::before` with `font-style: normal` so the two styles do not bleed into each
+other. If the host were italic too, "put the date in italic" would have had no
+visible effect at all.
+
+`episodeCount` is still **mapped** and still **tested** — the owner removed it
+from the screen, not from the data.
+
+### MEASURED — production, 390px, rendered DOM and computed styles
+
+```
+Lex Fridman Podcast   sub=Teknologi
+  src=lexfridman.com   em=17 sep      emItalic=italic  hostItalic=normal  rowW=335 overflow=false
+Lex Fridman Podcast   sub=Teknologi
+  src=acast.com        em=28 jul      emItalic=italic  hostItalic=normal  rowW=335 overflow=false
+Lex Fridman Podcast   sub=Teknologi
+  src=spreaker.com     em=17 sep      emItalic=italic  hostItalic=normal  rowW=335 overflow=false
+… | 5 minute podcast summaries
+  src=spreaker.com     em=13 jul 2021 emItalic=italic  hostItalic=normal  rowW=335 overflow=false
+SR: Nyheter P4 Jämtland  sub=P4 Jämtland ger dig bevakning där du bor…  src=Sveriges Radio  em=null
+```
+
+Accessibility tree confirms the structure independently of CSS:
+`text: lexfridman.com` + `emphasis: · 17 sep`. No overflow; row width 335 of 390.
+**Does NOT prove:** the iPhone rendering, or anything about playback.
+
+### The deploy-check defect — the more important finding
+
+**The owner reported the build as `00e19a1`. That was correct and I was wrong
+to tell them to look for `d7f86fac`.** `d7f86fac` is the *file* name; the build id
+is a different thing, and the served bundle contained `APP_BUILD = '00e19a1'`.
+
+**Cause: I built BEFORE committing the source.** `resolveBuildId()` reads
+`git log -1 --format=%h -- app.js`, so with `app.js` uncommitted it saw the
+*previous* commit and injected that. The design is right — artifact-only commits
+must not move the id — but it requires the source commit to exist first, and
+AGENTS.md §8 says *commit BEFORE building*. I inverted the order.
+
+**What this invalidated.** Deploy check 7 verified the change was in the hashed
+bundle. True. But it never verified that the **on-screen id matched the commit**
+— a different property, and the only one that lets the owner tell builds apart.
+A green deploy was unverifiable to the person it was for. **Check 7 is now two
+checks**, and this deploy verified the second: `bygg 2600f83` read from the live
+"Om Min Radio" sheet, matching the source commit exactly.
+
+**I also broke §8 during diagnosis.** Running `npm run build` to investigate
+rewrote tracked artifacts and deleted the committed `app.d7f86fac.js`. Backed up
+first, confirmed no uncommitted source work was at risk, restored, verified by
+checksum — but the build should not have been run at all.
+
+### Test count
+
+581 (was 578) — **+3**. Two guards restated as **SUPERSEDED**, not weakened:
+they previously *required* the count and the word "senast", and now assert their
+**absence** plus the stronger structural property (date as an `<em>`, not a
+substring). The reasons are recorded in the tests.
+
+Mutation-verified **7/7**: drop the italic, italicise the host, drop the
+separator, italicise the separator, fold the date back into the string, restore
+the count, reduce the line to the host alone. Checksums restored and re-verified.
+
+### Two harness problems worth recording
+
+- Headless Edge ignores `--window-size`; the 390px viewport had to come from
+  `Emulation.setDeviceMetricsOverride`. Every earlier "390px" reading in this
+  session was in fact **492px**, and one row-overflow conclusion drawn at 492px
+  would not have held at 390. It did hold here, but it was unverified when first
+  measured.
+- `public/` is a stale copy of the site; **Pages serves the repo root**. Driving
+  `public/` would have tested the wrong files.
+
+### NOT DONE
+
+- **The feed-disambiguation decision is still open** and still the owner's:
+  **A** auto-pick the freshest feed on first save, **B** warn when a saved feed is
+  stale, **C** a switcher. Recommended **A + B**. The display fix above makes the
+  choice *possible*; it does not make it.
+- Not touched: episode list, favourites, player, transport.
