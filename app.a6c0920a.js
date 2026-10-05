@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '2600f83';
+  const APP_BUILD = 'a97b4f1';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -8480,7 +8480,12 @@ function seekMeasureRecordText() {
     // no disclaimer -- those remain in the About overlay only.
     $main.appendChild(el('p', {
       class: 'build-line',
-      text: `bygg ${APP_BUILD}`,
+      // OWNER, 2026-10-05: "take away the word bygg and just keep the build
+      // number too in the same work". The number is the whole point of the
+      // line -- it is how the owner tells one build from the next -- so only
+      // the label goes. `APP_BUILD` alone is unambiguous next to a screen that
+      // is otherwise Swedish prose.
+      text: APP_BUILD,
     }));
 
     updatePlayingMarks();
@@ -8570,7 +8575,9 @@ function seekMeasureRecordText() {
     // control and a drag down reads as the gesture while the sheet still scrolls.
     enableSwipeToClose(overlay, article, close, { axis: 'y', move: article });
     body.appendChild(el('h2', { class: 'about-title', text: 'Om Min Radio' }));
-    body.appendChild(el('p', { class: 'about-version', text: `bygg ${APP_BUILD} · Utvecklad av ${APP_DEVELOPER}` }));
+    // "bygg" removed per the owner, same reasoning as the home-screen line.
+    // "Utvecklad av" stays: that is attribution, not a build label.
+    body.appendChild(el('p', { class: 'about-version', text: `${APP_BUILD} · Utvecklad av ${APP_DEVELOPER}` }));
 
     // ---- E4 (2026-10-03): the Info page is REWRITTEN, not patched. ----
     //
@@ -9317,6 +9324,174 @@ function seekMeasureRecordText() {
   }
 
   // Generic context-card sheet (reuses the settings-sheet visual language).
+  // ---------------- WS67: how fresh are my favourite podcasts? ---------------
+  //
+  // OWNER: "when clicked on it opens a card where the latest updated podcast in
+  // the favorites list is shown on top followed by the ones rest that where
+  // updated in the last week. if no update in the last week for a favorite,
+  // show the last update date there is on the selected stream. this would serve
+  // the purpose of seeing that feeds are serving with the latest podcasts in a
+  // good way, and give a quick overview of if any podcast has stopped
+  // broadcasting."
+  //
+  // The rule, stated exactly so it can be tested:
+  //   * every favourite appears -- the card is an OVERVIEW, so a silent podcast
+  //     is the most important row on it, not a reason to hide the card;
+  //   * newest first, and the newest one is called out at the top;
+  //   * anything older than a week is still listed, with its real date, because
+  //     "this feed stopped" is precisely what the owner is looking for.
+  //
+  // A week is a CONSTANT here, not a tuned offset. It is the owner's word
+  // ("last week"), not a fudge factor fitted to an observation.
+  const FRESH_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+  /**
+   * Order favourites by how recently they published, and split the two cases the
+   * owner asked to be able to tell apart.
+   *
+   * PURE: no fetching, no clock of its own -- `nowMs` is passed in so the same
+   * input always gives the same output and the rule can be driven in a test.
+   * A row with no usable date sinks to the bottom rather than disappearing; a
+   * feed we cannot read is a fact the owner needs to see, not a row to hide.
+   */
+  function sortFavouritesByFreshness(rows, nowMs) {
+    const list = (rows || []).filter(Boolean);
+    const dated = list.filter((r) => Number.isFinite(r.latestUtc));
+    const undated = list.filter((r) => !Number.isFinite(r.latestUtc));
+    dated.sort((a, b) => b.latestUtc - a.latestUtc);
+    const rowsOut = [...dated, ...undated];
+    return {
+      rows: rowsOut,
+      fresh: dated.filter((r) => nowMs - r.latestUtc < FRESH_WINDOW_MS),
+      stale: dated.filter((r) => nowMs - r.latestUtc >= FRESH_WINDOW_MS),
+      undated,
+      newest: dated[0] || null,
+    };
+  }
+
+  /**
+   * The newest episode date for ONE favourite, for either provider.
+   *
+   * Never throws and never rejects: this runs once per favourite in a list, and
+   * one dead feed must not take the whole card down with it. A failure resolves
+   * to `null`, which the renderer words as "no date" rather than as "stopped".
+   */
+  async function favouriteLatestUtc(item) {
+    if (!item) return null;
+    try {
+      if (item.provider === 'itunes') {
+        const eps = await extEpisodes(item.id);
+        // sortExtEpisodes already orders newest-first, but a feed whose dates
+        // are all null would leave `publishDateUtc` null on every row, so the
+        // maximum is taken rather than trusting the first element.
+        let best = null;
+        for (const ep of eps) {
+          const ms = ep?.publishDateUtc;
+          if (Number.isFinite(ms) && (best === null || ms > best)) best = ms;
+        }
+        return best;
+      }
+      // SR: page 1 is EMPTY for many programmes (documented in openPodcastCard),
+      // so page 2 must be tried before concluding "no episodes". Asking only for
+      // page 1 would report a busy daily show as silent -- the exact false
+      // negative this card exists to catch.
+      for (const page of [1, 2]) {
+        const data = await apiFetch(
+          `${SR_API}/episodes/index?format=json&programid=${item.id}&size=1&page=${page}`
+        );
+        const ep = Array.isArray(data?.episodes) ? data.episodes[0] : null;
+        const ms = ep ? parseSrDate(ep.publishdateutc) : null;
+        if (Number.isFinite(ms)) return ms;
+      }
+      return null;
+    } catch {
+      return null; // silent: the row says the date is unknown, not that it stopped
+    }
+  }
+
+  /**
+   * The WS67 card: every favourite podcast, freshest first, with the newest one
+   * called out. Clicking a row opens that podcast's normal episode card, so the
+   * thing being monitored and the thing being played are the same surface.
+   */
+  function openFreshnessCard() {
+    const favs = loadFavorites();
+    const extList = loadExternalPodcasts();
+    const order = podcastRowOrder(favs.podcasts, extList);
+    const catalogue = podcastCache || [];
+    const rows = order
+      .map((id) => resolvePodcastRow(catalogue, id,
+        extList.some((p) => p.id === id) ? 'itunes' : 'sr'))
+      .filter(Boolean)
+      .map((item) => ({ id: item.id, name: item.name, image: item.image || null,
+        provider: item.provider }));
+
+    openContextCard({
+      title: 'Podcastuppdatering',
+      subtitle: rows.length ? `${rows.length} favoriter` : 'Inga favoriter',
+      image: null,
+      buildBody: (body, close) => {
+        if (!rows.length) {
+          body.appendChild(el('div', { class: 'state-msg',
+            text: 'Inga poddar valda ännu. Lägg till en podd för att se dess senaste avsnitt.' }));
+          return;
+        }
+        body.appendChild(el('div', { class: 'card-loading', text: 'Kontrollerar favoriter…' }));
+        (async () => {
+          const probed = await Promise.all(rows.map(async (r) => ({
+            ...r, latestUtc: await favouriteLatestUtc(r),
+          })));
+          const sorted = sortFavouritesByFreshness(probed, Date.now());
+          body.textContent = '';
+          body.appendChild(buildFreshnessList(sorted, close));
+        })().catch(() => {
+          body.textContent = '';
+          body.appendChild(el('div', { class: 'state-msg',
+            text: 'Kunde inte kontrollera poddarna just nu.' }));
+        });
+      },
+    });
+  }
+
+  /** The rows of the WS67 card. Split out so it can be reasoned about alone. */
+  function buildFreshnessList(sorted, close) {
+    const wrap = el('div', { class: 'fresh-list' });
+    const newestId = sorted.newest?.id;
+
+    const rowFor = (r) => {
+      const isNewest = r.id === newestId;
+      const when = Number.isFinite(r.latestUtc) ? extDateLabel(r.latestUtc) : null;
+      const row = el('button', {
+        class: `fresh-row${isNewest ? ' is-newest' : ''}`, type: 'button',
+        'aria-label': `${r.name}${when ? `, senast ${when}` : ', datum okänt'}`,
+      });
+      if (r.image) row.appendChild(el('img', { class: 'fresh-img', src: r.image, alt: '' }));
+      const text = el('div', { class: 'fresh-text' });
+      text.appendChild(el('div', { class: 'fresh-name', text: r.name }));
+      // The status word is the point of the card: it separates "publishing this
+      // week" from "has not published for a month" at a glance, without
+      // arithmetic. A row we could not read says so and is NOT called stale --
+      // an unreadable feed and a silent feed are different facts.
+      text.appendChild(el('div', { class: 'fresh-when' },
+        when ? el('em', { class: 'fresh-date', text: when }) : null,
+        when ? ' · ' : '',
+        Number.isFinite(r.latestUtc) && !sorted.fresh.some((f) => f.id === r.id)
+          ? 'ingen nytt i veckan' : (when ? 'uppdaterad denna vecka' : 'datum okänt')));
+      row.appendChild(text);
+      // Playback: clicking opens that podcast's own episode card, which is the
+      // same card the home row opens -- so the monitored surface and the played
+      // surface cannot drift apart.
+      row.onclick = () => {
+        close();
+        openPodcastCard({ id: r.id, name: r.name, image: r.image, provider: r.provider });
+      };
+      return row;
+    };
+
+    for (const r of sorted.rows) wrap.appendChild(rowFor(r));
+    return wrap;
+  }
+
   function openContextCard({ title, subtitle, image, buildBody }) {
     const overlay = el('div', { class: 'sheet-overlay' });
     const sheet = el('div', { class: 'sheet context-card', role: 'dialog', 'aria-modal': 'true', 'aria-label': title });
@@ -10070,6 +10245,27 @@ function seekMeasureRecordText() {
     const tabPodcasts = el('button', { class: 'tab', type: 'button', text: 'Poddar',
       onclick: () => switchTab('podcasts') });
 
+    // ---- WS67: the freshness icon, on the SAME ROW as Poddar. ----
+    //
+    // OWNER: "an icon on the same row as poddar with the flash fluent icon in
+    // the darken green used for the cog wheel and info icon but without the
+    // lighter green circle, and horizontally on the same center alignment as the
+    // cog wheel."
+    //
+    // `.tab` is `flex: 1`, so the two tabs share the row equally and this button
+    // is a fixed 44px at the end -- the same box as the header cog, so its centre
+    // lines up with the cog's centre by construction rather than by a fudge
+    // offset. No background: the owner explicitly asked for the dark green
+    // WITHOUT the lighter green circle, which is `.edit-btn`'s `--accent-soft`.
+    const freshBtn = el('button', {
+      class: 'fresh-btn', type: 'button',
+      'aria-label': 'Podcastuppdatering',
+      onclick: () => openFreshnessCard(),
+    }, el('span', { class: 'fresh-btn-icon', 'aria-hidden': 'true' },
+      el('span', { class: 'fresh-bars' },
+        el('i', { class: 'fresh-bar b1' }), el('i', { class: 'fresh-bar b2' }),
+        el('i', { class: 'fresh-bar b3' }))));
+
     function switchTab(next) {
       tab = next;
       tabChannels.setAttribute('aria-selected', String(tab === 'channels'));
@@ -10700,7 +10896,7 @@ function seekMeasureRecordText() {
     // Selection section — its own header so the list reads as the main task
     sheet.appendChild(el('h3', { class: 'section-title', text: 'Välj favoriter' }));
     sheet.appendChild(counter);
-    sheet.appendChild(el('div', { class: 'tabs' }, tabChannels, tabPodcasts));
+    sheet.appendChild(el('div', { class: 'tabs' }, tabChannels, tabPodcasts, freshBtn));
     sheet.appendChild(searchInput);
     sheet.appendChild(listWrap);
     overlay.appendChild(sheet);
