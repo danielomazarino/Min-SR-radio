@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '1f7382d';
+  const APP_BUILD = '30ef46b';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -4095,15 +4095,35 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
 
   // ---- buffering indicator ----
   // While audio is loading (no playback yet, or re-buffering mid-play) the
-  // quality pill pulses with a "buffrar" suffix — zero extra layout space.
-  // Reverts to the plain quality label once audio flows again.
+  // quality pill pulses — zero extra layout space.
+  //
+  // WS68 (owner, 2026-10-05): the word "buffrar" is GONE from the pill. The
+  // owner's words: "remove the word 'buffer' on the pill that is blinking
+  // during buffering to save space. the blinking is enough for the user to
+  // understand buffering happens."
+  //
+  // WHY THE ANIMATION IS THE WHOLE SIGNAL, and why that is safe here rather
+  // than merely asserted. The pill is a static, already-present element: it
+  // does not appear, it changes appearance. So the pulse costs the layout
+  // NOTHING — there is no insert, no reflow, no extra row. The saving is in
+  // WIDTH: the suffix is gone, so the pill stops being ~"MP3 · buffrar" wide
+  // and returns to ~"MP3". On a narrow column that is real horizontal room for
+  // the name next to it (the pill shares row 2 with nothing, but row 1's
+  // identity name is what the freed column feeds).
+  //
+  // `prefers-reduced-motion` is the honest limit of this design and it is
+  // already handled below in CSS: a user who asked for reduced motion gets NO
+  // animation and therefore NO buffering cue at all. That trade is the owner's
+  // to have named, so it is recorded here rather than discovered later.
   function setBadgeBuffering(buffering) {
     const badge = $player.querySelector('.player-quality');
     if (!badge) return;
     badge.classList.toggle('buffering', buffering);
     const cur = state.current;
     const fmt = badge.dataset.format || qualityLabel(cur) || '';
-    badge.textContent = buffering ? `${fmt} · buffrar` : fmt;
+    // The text is the FORMAT LABEL ONLY, in both states. The visual difference
+    // between buffering and not is carried entirely by `.buffering`'s pulse.
+    badge.textContent = fmt;
   }
 
   // ---- quality label (Phase 1: honest bitrate from descriptors) ----
@@ -7082,11 +7102,30 @@ function seekMeasureRecordText() {
     // right of the play/stop button". For non-DVR (podcast/episode) playback
     // the ±15 s buttons use plain currentTime seeks (SEEK_STEP_S).
     const isDvr = live && cur.dvrAvailable;
+    // WS68 (owner, 2026-10-05): the ±15 s buttons ALWAYS wear the circular
+    // arrow, and ALWAYS carry `.dvr-step-btn`, in BOTH players.
+    //
+    // WHY, stated as the owner stated it: "i want both players to always show
+    // the circular arrows for +-15 second moves. not to mix up for the user
+    // with arrow icons for the dvr player that skips programmes and go back to
+    // live in the last forward step."
+    //
+    // The old code swapped the glyph on `isDvr`. That made the SAME control
+    // mean two different things by its shape alone: a plain double-triangle on
+    // a podcast, a circular arrow on DVR -- while the DVR row ALSO carries
+    // `.dvr-program-btn` double-triangles that skip PROGRAMMES, and whose
+    // forward button doubles as "back to live". So on a DVR panel the user saw
+    // double-triangles meaning "±15 s" in one row and double-triangles meaning
+    // "±programme / to live" beside it. Same shape, different action: that is
+    // the confusion, and it was mine to remove.
+    //
+    // The ICON is now unconditional; the BEHAVIOUR is untouched. `isDvr` still
+    // decides whether a press calls seekBy() (window-clamped) or writes
+    // currentTime directly, and still decides whether the programme-skip
+    // buttons exist at all. Only the picture the button wears changed.
     const backBtn = el('button', {
-      class: `player-btn${isDvr ? ' dvr-step-btn' : ''}`, type: 'button', 'aria-label': 'Bakåt 15 sekunder',
-      html: isDvr
-        ? '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>'
-        : '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z"/></svg>',
+      class: 'player-btn dvr-step-btn', type: 'button', 'aria-label': 'Bakåt 15 sekunder',
+      html: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>',
       onclick: () => {
         if (isDvr) seekBy(-SEEK_STEP_S_DVR);
         else audioEl.currentTime = Math.max(0, audioEl.currentTime - SEEK_STEP_S);
@@ -7124,10 +7163,9 @@ function seekMeasureRecordText() {
     }) : null;
 
     const fwdBtn = el('button', {
-      class: `player-btn${isDvr ? ' dvr-step-btn' : ''}`, type: 'button', 'aria-label': 'Framåt 15 sekunder',
-      html: isDvr
-        ? '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z"/></svg>'
-        : '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13 6v12l8.5-6L13 6zM3 18l8.5-6L3 6v12z"/></svg>',
+      class: 'player-btn dvr-step-btn', type: 'button', 'aria-label': 'Framåt 15 sekunder',
+      // Same circular arrow as the back button, same reason (see backBtn).
+      html: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z"/></svg>',
       onclick: () => {
         if (isDvr) { seekBy(SEEK_STEP_S_DVR); return; }
         const d = Number.isFinite(audioEl.duration) && audioEl.duration > 0
