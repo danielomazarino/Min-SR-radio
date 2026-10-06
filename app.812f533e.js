@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '815d98a';
+  const APP_BUILD = '80e792c';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -3683,13 +3683,21 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // second, then vanished for ~30 s — user report 2026-09-23).
     renderPlayer();
     if (track.kind === 'live') {
-      startNowPlayingPoll();
-      // WS38: the rate sampler rides the SAME lifecycle as the live channel —
-      // started here, stopped with the poll. It is deliberately NOT tied to the
-      // Info panel, because the owner must not have to hold the panel open for
-      // a rate to exist (§3.2).
-      startSeekRateSampling();
-      resolveProgramTitle(track); // Pågår nu-programmet som undertitel
+      // WS69: a Bauer channel must not touch SR's schedule or rightnow APIs.
+      // The poll gate alone was not enough: resolveProgramTitle still fired
+      // and asked SR's scheduledepisodes about channelid=900001 — an id that
+      // is not SR's. Bauer metadata comes from the stream's own ICY blocks.
+      if (track.provider === 'bauer') {
+        startSeekRateSampling();
+      } else {
+        startNowPlayingPoll();
+        // WS38: the rate sampler rides the SAME lifecycle as the live channel —
+        // started here, stopped with the poll. It is deliberately NOT tied to the
+        // Info panel, because the owner must not have to hold the panel open for
+        // a rate to exist (§3.2).
+        startSeekRateSampling();
+        resolveProgramTitle(track); // Pågår nu-programmet som undertitel
+      }
     } else {
       // Archived episode: load its music playlist (cached per episode).
       // The audio path is untouched — metadata only.
