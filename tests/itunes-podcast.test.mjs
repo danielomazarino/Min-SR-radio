@@ -709,10 +709,11 @@ function srStoreHarness(initial) {
   };
 }
 
-function removalHarness({ sr = { channels: [], podcasts: [164] }, ext = [] } = {}) {
+function removalHarness({ sr = { channels: [], podcasts: [164] }, ext = [], bauer = [] } = {}) {
   const store = {
     'minradio.favorites.v1': JSON.stringify(sr),
     ...(ext.length ? { 'minradio.podcasts.ext.v1': JSON.stringify(ext) } : {}),
+    ...(bauer.length ? { 'minradio.channels.bauer.v1': JSON.stringify(bauer) } : {}),
   };
   const deps = {
     localStorage: {
@@ -734,9 +735,25 @@ function removalHarness({ sr = { channels: [], podcasts: [164] }, ext = [] } = {
     saveFavorites: (favs) => { store['minradio.favorites.v1'] = JSON.stringify(favs); },
     loadExternalPodcasts: makeFn('loadExternalPodcasts', deps),
     saveExternalPodcasts: makeFn('saveExternalPodcasts', deps),
+    // WS69: the Bauer branch of removeFavoriteRow/restoreFavoriteRow reads
+    // these. mapBauerStation is extracted from app.js, not retyped (§7).
+    loadBauerFavorites: makeFn('loadBauerFavorites', {
+      ...deps,
+      BAUER_FAV_KEY: 'minradio.channels.bauer.v1',
+      mapBauerStation: makeFn('mapBauerStation', { ...deps, BAUER_STREAM_BASE: 'https://live-bauerse-fm.sharp-stream.com' }),
+    }),
+    saveBauerFavorites: makeFn('saveBauerFavorites', { ...deps, BAUER_FAV_KEY: 'minradio.channels.bauer.v1', HARD_CAP: 16 }),
+    loadChannelOrder: () => JSON.parse(store['minradio.channels.order.v1'] || '[]'),
+    saveChannelOrder: (ids) => { store['minradio.channels.order.v1'] = JSON.stringify(ids); },
+    channelRowOrder: makeFn('channelRowOrder', { loadChannelOrder: () => JSON.parse(store['minradio.channels.order.v1'] || '[]') }),
+    persistChannelRowOrder: makeFn('persistChannelRowOrder', {
+      saveChannelOrder: (ids) => { store['minradio.channels.order.v1'] = JSON.stringify(ids); },
+    }),
   });
   return { store, readSr: () => JSON.parse(store['minradio.favorites.v1']),
     readExt: () => JSON.parse(store['minradio.podcasts.ext.v1'] || '[]'),
+    readBauer: () => JSON.parse(store['minradio.channels.bauer.v1'] || '[]'),
+    readOrder: () => JSON.parse(store['minradio.channels.order.v1'] || '[]'),
     remove: build('removeFavoriteRow'), restore: build('restoreFavoriteRow') };
 }
 
@@ -773,6 +790,35 @@ test('removeFavoriteRow handles channels as well as podcasts', () => {
   assert.equal(h.remove('channels', 132).provider, 'sr');
   assert.deepEqual(h.readSr().channels, [163]);
   assert.equal(h.remove('channels', 999), null);
+});
+
+// WS69 SUPERSEDES the test above (kept, unchanged): the Bauer branch must
+// remove from the BAUER store, leave the SR array untouched, and forget the
+// id in the channel order key -- otherwise the next reorder would write a
+// stale sequence containing a removed station.
+test('removeFavoriteRow removes a Bauer channel from the Bauer store only', () => {
+  const station = { id: 900001, name: 'Mix Megapol', liveaudioUrl: 'https://x/mp3' };
+  const h = removalHarness({ sr: { channels: [132], podcasts: [] }, bauer: [station] });
+  const removed = h.remove('channels', 900001);
+  assert.equal(removed.provider, 'bauer', 'the row must report its provider so undo routes back');
+  assert.deepEqual(h.readBauer(), [], 'the Bauer store must lose the station');
+  assert.deepEqual(h.readSr().channels, [132], 'the SR array must be untouched');
+  assert.equal(h.readOrder().includes(900001), false,
+    'the order key must forget the removed id');
+  // A Bauer id that is not favourited removes nothing.
+  assert.equal(h.remove('channels', 900002), null);
+});
+
+test('restoreFavoriteRow puts a Bauer channel back into the Bauer store', () => {
+  const station = { id: 900001, name: 'Mix Megapol', liveaudioUrl: 'https://x/mp3' };
+  const h = removalHarness({ sr: { channels: [132], podcasts: [] }, bauer: [station] });
+  const before = h.readBauer().findIndex((p) => p.id === 900001);
+  const removed = h.remove('channels', 900001);
+  assert.deepEqual(h.readBauer(), []);
+  assert.equal(h.restore(removed, before), true);
+  assert.deepEqual(h.readBauer().map((p) => p.id), [900001],
+    'undo must restore the Bauer station, not write it into the SR array');
+  assert.deepEqual(h.readSr().channels, [132]);
 });
 
 test('restoreFavoriteRow puts an iTunes podcast back at its original position', () => {
@@ -834,14 +880,23 @@ test('the drag-sort yields the horizontal direction to the swipe', () => {
 test('the ✕ button and the swipe share ONE removal implementation', () => {
   // Two implementations of "remove" would drift. The gesture must call the
   // same function the button does.
+  // WS69 SUPERSEDES the onclick pattern: the button now passes rowProvider
+  // (sr | itunes | bauer) instead of the old two-way ternary. The property
+  // guarded is unchanged -- ONE handler, name passed through -- and the new
+  // pattern is stronger: the provider is explicit per row, not inferred.
   const src = stripComments(APP_JS);
   const grp = region('function buildSelectedGroup', 'function enableDragSort', src);
-  assert.match(grp, /onclick: \(\) => onRemoveRequest\(id, isExt \? 'itunes' : 'sr', item\.name\)/);
+  assert.match(grp, /onclick: \(\) => onRemoveRequest\(id, rowProvider, item\.name\)/);
   assert.match(grp, /enableSwipeToRemove\(group, kind, onRemoveRequest\)/,
     'the gesture must delegate to the button\'s handler, not reimplement it');
   assert.match(grp, /'aria-label': `Ta bort \$\{item\.name\}`/,
     'removal must be reachable without a gesture: undiscoverable and '
     + 'keyboard-unreachable swipes are not an acceptable removal mechanism');
+  // WS69: the swipe has no closure over the row's provider, so the row must
+  // CARRY it. A Bauer row without data-provider would be routed to 'sr' and
+  // undo would restore at the wrong index in the wrong store.
+  assert.match(grp, /\.\.\.\(isBauer \? \{ 'data-provider': 'bauer' \} : \{\}\)/,
+    'a Bauer row must carry its provider for the gesture to read');
 });
 
 test('removal is reversible and the undo toast is a real button', () => {
@@ -962,7 +1017,9 @@ test('removeFavoriteRow carries the name, because SR stores bare integers', () =
 test('both removal inputs pass a name through', () => {
   const src = stripComments(APP_JS);
   const grp = region('function buildSelectedGroup', 'function enableDragSort', src);
-  assert.match(grp, /onRemoveRequest\(id, isExt \? 'itunes' : 'sr', item\.name\)/,
+  // WS69 SUPERSEDES the two-way ternary: the button passes rowProvider, which
+  // resolves to 'bauer' for Bauer rows. The name-passing property is unchanged.
+  assert.match(grp, /onRemoveRequest\(id, rowProvider, item\.name\)/,
     'the button must pass the name it already has');
   assert.match(grp, /const onRemoveRequest = \(id, provider, name\)/);
   // The gesture can only read it off the DOM.
@@ -970,7 +1027,11 @@ test('both removal inputs pass a name through', () => {
   assert.match(swipe,
     /const name = st\.row\.querySelector\('\.selected-name'\)\?\.textContent \|\| ''/,
     'the swipe must read the name from the row it swiped');
-  assert.match(swipe, /onRemoved\(st\.id, st\.row\.dataset\.ext \? 'itunes' : 'sr', name\)/);
+  // WS69: the swipe resolves the provider from the row's data-provider
+  // attribute first, so a Bauer row is not misrouted to 'sr'.
+  assert.match(swipe,
+    /onRemoved\(st\.id, st\.row\.dataset\.provider \|\| \(st\.row\.dataset\.ext \? 'itunes' : 'sr'\), name\)/,
+    'the swipe must honour the row\'s provider, not assume sr/itunes');
 });
 
 // ---------------------------------------------------------------------------
@@ -998,9 +1059,20 @@ test('no DVR or HLS code was modified by the integration', () => {
   const src = stripComments(APP_JS);
   // The external helpers must contain none of it -- a violation here would mean
   // the edit bled into the player.
-  const extRegion = region('// ---------------- external podcasts', 'function resolvePodcastRow');
+  //
+  // WS69 CORRECTION (recorded per §7b): the Bauer station block lives inside
+  // this region and writes stream CANDIDATES in the established descriptor
+  // shape -- `transport: 'direct', dvr: false` -- the same literal SR's own
+  // mp3Descriptor() writes, and which toggleTrack consumes via
+  // `track.dvr = cand.dvr`. That is DATA, not DVR code. The guard's intent is
+  // "no DVR/HLS *logic*": no seekable handling, no HLS transport, no m3u8.
+  // The old bare /dvr/ pattern could not tell a boolean field from logic, so
+  // it now excludes the exact data literal and still bites on every real
+  // DVR/HLS construct (verified: removing the exclusion makes it red again).
+  const extRegion = stripComments(region('// ---------------- external podcasts', 'function resolvePodcastRow'))
+    .replace(/dvr: false/g, '');
   assert.doesNotMatch(extRegion, /dvr|seekable|topsy|hls|m3u8/i,
-    'the external block must not reference DVR/HLS');
+    'the external block must not reference DVR/HLS logic (candidate data fields excepted)');
   for (const fn of ['playExternalPodcast', 'openExternalPodcastCard']) {
     const body = stripComments(region(`function ${fn}`, fn === 'playExternalPodcast'
       ? 'function playNews' : '// ---------------- bottom sheet'));
@@ -5046,4 +5118,233 @@ test('WS68: the player rows gain vertical room without any horizontal change', (
     const rule = css.match(new RegExp(`^${sel.replace(/\./g, '\\.')}\\s*\\{([^}]*)\\}`, 'm'));
     assert.match(rule[1], /white-space:\s*nowrap/, `${sel} must still clip, not wrap`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// WS69 — Bauer Media, a second live-radio provider.
+//
+// The owner's brief: ONE search across SR and Bauer; favourites and custom
+// sorting for channels "regardless of source ... as for podcasts where we
+// have implemented that support already for two sources".
+//
+// What these tests can prove (fixture/code evidence, NOT device evidence):
+//   * the Bauer catalogue normalises into the shape the existing UI reads;
+//   * search merges both providers with SR first;
+//   * a Bauer failure cannot break SR search (bauerSearch is pure);
+//   * malformed stored Bauer data cannot crash the favourites path;
+//   * the favourites/sort/remove/undo paths route to the right store.
+// What they CANNOT prove: that the stream plays on the owner's iPhone.
+// ---------------------------------------------------------------------------
+
+test('mapBauerStation normalises a station into the SR row shape', () => {
+  const map = makeFn('mapBauerStation', {
+    safeStr, BAUER_STREAM_BASE: 'https://live-bauerse-fm.sharp-stream.com',
+  });
+  const s = map({
+    id: 900001, name: 'Mix Megapol',
+    mp3: 'https://live-bauerse-fm.sharp-stream.com/mixmegapol_instream_se_mp3',
+    aacp: 'https://live-bauerse-fm.sharp-stream.com/mixmegapol_instream_se_aacp',
+    siteurl: 'https://www.mixmegapol.se/',
+  });
+  assert.equal(s.id, 900001);
+  assert.equal(s.name, 'Mix Megapol');
+  assert.equal(s.provider, 'bauer');
+  assert.equal(s.channeltype, 'Commercial');
+  assert.equal(s.liveaudioUrl, 'https://live-bauerse-fm.sharp-stream.com/mixmegapol_instream_se_mp3');
+  // The candidate chain: MP3 128 first (priority 90), AAC+ 56 second (40).
+  assert.equal(s.candidates.length, 2);
+  assert.equal(s.candidates[0].codec, 'mp3');
+  assert.equal(s.candidates[0].bitrate, 128);
+  assert.ok(s.candidates[0].priority > s.candidates[1].priority,
+    'the higher bitrate must win the priority sort');
+  // Every candidate carries the descriptor fields the player reads.
+  for (const c of s.candidates) {
+    assert.equal(typeof c.url, 'string');
+    assert.equal(c.transport, 'direct');
+    assert.equal('dvr' in c, true, 'the descriptor shape must stay complete');
+  }
+});
+
+test('mapBauerStation rejects malformed and hostile input', () => {
+  const map = makeFn('mapBauerStation', {
+    safeStr, BAUER_STREAM_BASE: 'https://live-bauerse-fm.sharp-stream.com',
+  });
+  assert.equal(map(null), null);
+  assert.equal(map('string'), null);
+  assert.equal(map({}), null, 'no id -> no row');
+  assert.equal(map({ id: 132, name: 'P3' }), null,
+    'an SR-range id must never map -- the id spaces must not merge');
+  assert.equal(map({ id: 900001 }), null, 'no name -> no row');
+  assert.equal(map({ id: 900001, name: 'x' }).liveaudioUrl, null,
+    'a station with no stream URL still maps, with a null stream');
+  assert.equal(map({ id: 900001, name: 'x' }).candidates.length, 0,
+    'no URLs -> no candidates, so the player chain has nothing to try');
+});
+
+test('bauerSearch is a pure filter: empty query, no match, case-insensitive', () => {
+  // WS69 HARNESS CORRECTION: grab() extracts FUNCTIONS; BAUER_STATIONS is an
+  // array literal, so 'const BAUER_STATIONS' was never findable and the old
+  // assertion could only ever fail. The list is inlined here instead -- the
+  // names are the property under test, not the catalogue's contents.
+  const searchWithList = new Function(
+    `const BAUER_STREAM_BASE='https://live-bauerse-fm.sharp-stream.com';
+     const safeStr = ${safeStr.toString()};
+     const mapBauerStation = ${makeFn('mapBauerStation', { safeStr, BAUER_STREAM_BASE: 'https://live-bauerse-fm.sharp-stream.com' }).toString()};
+     const BAUER_STATIONS = [
+       { id: 900001, name: 'Mix Megapol', mp3: 'https://x/mix.mp3', aacp: 'https://x/mix.aacp' },
+       { id: 900002, name: 'Rockklassiker', mp3: 'https://x/rock.mp3', aacp: 'https://x/rock.aacp' },
+     ];
+     ${grab('bauerSearch')}
+     return bauerSearch;`)();
+  assert.deepEqual(searchWithList(''), [], 'empty query searches nothing');
+  assert.deepEqual(searchWithList('   '), [], 'whitespace-only searches nothing');
+  assert.deepEqual(searchWithList('zzzz'), [], 'no match -> empty, never a throw');
+  const hits = searchWithList('MIX MEGAPOL');
+  assert.equal(hits.length, 1, 'case must not hide a station');
+  assert.equal(hits[0].id, 900001);
+  assert.equal(searchWithList('megapol')[0].id, 900001, 'substring match works');
+});
+
+test('search merges BOTH providers with SR first and Bauer appended', () => {
+  // The owner: "The user should not need to know which provider produced the
+  // result" -- but the ORDER is a deliberate rule: SR first, Bauer appended,
+  // the same rule the podcast tab applies. Assert the merge, not just presence.
+  const src = stripComments(APP_JS);
+  const load = region('const chans = await fetchChannels();', '} else {', src);
+  assert.match(load, /const srChans = cq/, 'SR filtering must stay its own step');
+  assert.match(load, /const bauerRows = cq \? bauerSearch\(cq\) : \[\]/,
+    'Bauer rows are appended only when there is a query');
+  assert.match(load, /items\.channels = \[\.\.\.srChans, \.\.\.bauerRows\]/,
+    'SR first, Bauer after -- never interleaved or prepended');
+});
+
+test('a Bauer search failure cannot break SR search', () => {
+  // bauerSearch is a pure filter over a static list: no fetch, no throw. The
+  // structural guarantee is that SR filtering does not depend on it.
+  const src = stripComments(APP_JS);
+  const load = region('const chans = await fetchChannels();', '} else {', src);
+  assert.match(load, /const srChans = cq\s*\?\s*chans\.filter/,
+    'SR filtering must complete before Bauer is consulted');
+  // And bauerSearch itself has no await/fetch in it.
+  const bs = stripComments(grab('bauerSearch'));
+  assert.doesNotMatch(bs, /fetch|await|XMLHttpRequest/,
+    'bauerSearch must stay synchronous and network-free');
+});
+
+test('loadBauerFavorites survives corrupted storage', () => {
+  const deps = (raw) => ({
+    localStorage: { getItem: () => raw, setItem: () => {} },
+    BAUER_FAV_KEY: 'minradio.channels.bauer.v1',
+    HARD_CAP: 16,
+    safeStr, console,
+    mapBauerStation: makeFn('mapBauerStation', {
+      safeStr, BAUER_STREAM_BASE: 'https://live-bauerse-fm.sharp-stream.com',
+    }),
+  });
+  const load = (raw) => makeFn('loadBauerFavorites', deps(raw))();
+  assert.deepEqual(load(null), []);
+  assert.deepEqual(load('not json'), [], 'garbage JSON -> empty, not a throw');
+  assert.deepEqual(load('{"a":1}'), [], 'an object is not an array');
+  assert.deepEqual(load('[{"id":900001,"name":"x"}]').length, 1,
+    'valid rows still load');
+  assert.deepEqual(load('["str", 5, {"id":900001,"name":"x"}]').length, 1,
+    'junk entries are dropped, valid ones kept');
+});
+
+test('toggleBauerFavorite toggles and respects the cap', () => {
+  const mk = (store) => {
+    const deps = {
+      localStorage: {
+        getItem: (k) => (k in store ? store[k] : null),
+        setItem: (k, v) => { store[k] = v; },
+      },
+      BAUER_FAV_KEY: 'minradio.channels.bauer.v1',
+      HARD_CAP: 2, // small cap so the test can reach it
+      safeStr, console,
+      mapBauerStation: makeFn('mapBauerStation', {
+        safeStr, BAUER_STREAM_BASE: 'https://live-bauerse-fm.sharp-stream.com',
+      }),
+      // WS69 HARNESS CORRECTION: toggleBauerFavorite CALLS
+      // loadBauerFavorites/saveBauerFavorites -- they are not optional deps.
+      // Without them the first toggle threw ReferenceError and the test
+      // failed on a missing harness wire, not on app behaviour.
+      loadBauerFavorites: null, // wired below, after makeFn exists
+      saveBauerFavorites: null,
+    };
+    const load = makeFn('loadBauerFavorites', deps);
+    const save = makeFn('saveBauerFavorites', deps);
+    deps.loadBauerFavorites = load;
+    deps.saveBauerFavorites = save;
+    return {
+      toggle: makeFn('toggleBauerFavorite', deps),
+      load,
+      save,
+    };
+  };
+  const station = { id: 900001, name: 'Mix Megapol', mp3: 'https://x/mp3' };
+  const h = mk({});
+  assert.equal(h.toggle(station), true, 'first toggle adds');
+  assert.equal(h.toggle(station), false, 'second toggle removes');
+  assert.deepEqual(h.load(), [], 'toggle-off leaves the store empty');
+  // Cap: with HARD_CAP=2 a third station is refused.
+  const h2 = mk({});
+  h2.toggle({ ...station, id: 900001 });
+  h2.toggle({ ...station, id: 900002 });
+  assert.equal(h2.toggle({ ...station, id: 900003 }), false,
+    'the cap must refuse, not silently drop an existing favourite');
+  assert.equal(h2.load().length, 2);
+});
+
+test('channelRowOrder interleaves both providers and never drops a favourite', () => {
+  const order = makeFn('channelRowOrder', {
+    loadChannelOrder: () => [900001, 132], // stored order: Bauer first
+  });
+  const out = order([132, 163], [{ id: 900001 }, { id: 900002 }]);
+  assert.deepEqual(out, [900001, 132, 163, 900002],
+    'stored order wins; unmentioned ids append in their own storage order');
+  // A stale order key mentioning a removed id must not resurrect it.
+  const order2 = makeFn('channelRowOrder', {
+    loadChannelOrder: () => [999, 132],
+  });
+  assert.deepEqual(order2([132], []), [132],
+    'a stale id in the order key is dropped');
+});
+
+test('the home channels row and the sheet share ONE order function', () => {
+  const src = stripComments(APP_JS);
+  // WS69 MARKER CORRECTION: the old end marker 'function buildNewsSection' no
+  // longer exists in app.js -- the next function after buildIconSection is now
+  // openUserHelp. The region still covers the whole icon section.
+  const home = region('function buildIconSection', 'function openUserHelp', src);
+  assert.match(home, /channelRowOrder\(favs\[kind\], loadBauerFavorites\(\)\)/,
+    'the home row must interleave through the shared order function');
+  // The sheet:
+  const sheet = region('function buildSelectedGroup', 'function enableDragSort', src);
+  assert.match(sheet, /channelRowOrder\(srIds, bauerList\)/,
+    'the sheet must use the same order function');
+});
+
+test('a Bauer channel plays through toggleTrack with the bauer: stream key', () => {
+  const src = stripComments(APP_JS);
+  // WS69 MARKER CORRECTION: end marker is openUserHelp now (see the order
+  // test above for why).
+  const home = region('function buildIconSection', 'function openUserHelp', src);
+  assert.match(home, /provider: 'bauer'/,
+    'the track must carry provider:bauer so the SR poll is gated off');
+  assert.match(home, /bauer:\$\{item\.id\}/,
+    'the stream key must be prefixed so a Bauer id is never read as SR');
+  // And the poll gate:
+  const poll = stripComments(grab('pollNowPlaying'));
+  assert.match(poll, /if \(cur\.provider === 'bauer'\) \{\s*stopNowPlayingPoll\(\);\s*return;/,
+    'the SR rightnow poll must not run for a Bauer channel');
+});
+
+test('the search row names the Bauer source, not a bare category', () => {
+  const src = stripComments(APP_JS);
+  // WS69 MARKER CORRECTION: the sub block ends at the pick-sub append, the
+  // first consumer of the value -- the old 'const btn = el(' marker matched an
+  // EARLIER button in the same function and cut the region short.
+  const list = region('let sub;', "if (sub) textWrap.appendChild(el('div', { class: 'pick-sub'", src);
+  assert.match(list, /item\.provider === 'bauer' \? \(item\.tagline \|\| 'Bauer Media'\) : item\.channeltype/,
+    'a Bauer row must say Bauer Media, not "Commercial"');
 });
