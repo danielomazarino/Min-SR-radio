@@ -364,11 +364,16 @@ test('the toggle is icon-only, reflects the saved mode, and carries aria state',
     'aria-pressed must carry the toggle state');
   assert.match(src, /Spela nyheter i följd: (på|av)/,
     'an aria-label must exist (no visible text)');
-  // Both icon variants must be present: loop for autoplay, loop-off for manual.
+  // WS70 OWNER CORRECTION (2026-10-06): the two states now render the SAME
+  // repeat glyph — colour alone carries the state (accent = on, secondary =
+  // off). The old repeat-off path read as "misformed" on the owner's screen:
+  // a different shape, not a dimmed copy of the same icon. The property this
+  // test guards is unchanged and now stronger: ONE glyph, present exactly
+  // once, with aria-pressed as the state carrier.
   assert.ok(src.includes('M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z'),
-    'the loop (repeat) icon must exist for autoplay mode');
-  assert.ok(src.includes('M21 7h-2.3l1.8-1.8-1.4-1.4L2.4 20.6l1.4 1.4L6.8 19H17v3l4-4-4-4v3H8.8l2-2H17v-3l4-4-4-4v3h2.6L21 7zM7 17H5v-4H3v6h4v-2z'),
-    'the loop-off icon must exist for manual mode');
+    'the loop (repeat) icon must exist for BOTH modes');
+  assert.ok(!src.includes('M21 7h-2.3l1.8-1.8-1.4-1.4'),
+    'the old repeat-off glyph must be gone — one shape, two colours');
   // Toggling off mid-playback must clear the queue; toggling on must not
   // start anything by itself.
   const btn = src.slice(src.indexOf('const newsAutoplayBtn = el('), src.indexOf('newsHeaderRow.appendChild(newsAutoplayBtn)'));

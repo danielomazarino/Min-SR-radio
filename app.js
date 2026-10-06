@@ -321,6 +321,11 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       mp3: `${BAUER_STREAM_BASE}/mixmegapol_instream_se_mp3`,
       aacp: `${BAUER_STREAM_BASE}/mixmegapol_instream_se_aacp`,
       siteurl: 'https://www.mixmegapol.se/',
+      // Station logo, verified 2026-10-06: HTTP 200 image/png, CORS `*`
+      // (tested with the deployed Pages origin), from Bauer's own CDN via
+      // the station site's og:image. <img> needs no CORS; the header is
+      // recorded so the fact survives a later audit.
+      image: 'https://media.bauerradio.com/image/upload/c_crop,g_custom/v1592840543/brand_manager/stations/ytwsvxzhg2maeejuhxh8.png',
     },
     {
       id: 900002,
@@ -328,6 +333,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       mp3: `${BAUER_STREAM_BASE}/rockklassiker_instream_se_mp3`,
       aacp: `${BAUER_STREAM_BASE}/rockklassiker_instream_se_aacp`,
       siteurl: 'https://www.rockklassiker.se/',
+      image: 'https://media.bauerradio.com/image/upload/c_crop,g_custom/v1592841144/brand_manager/stations/bpnhincodnqx2ovi5bdj.png',
     },
     {
       id: 900003,
@@ -335,6 +341,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       mp3: `${BAUER_STREAM_BASE}/nrj_instreamtest_se_mp3`,
       aacp: `${BAUER_STREAM_BASE}/nrj_instreamtest_se_aacp`,
       siteurl: 'https://www.nrj.se/',
+      image: 'https://media.bauerradio.com/image/upload/c_crop,g_custom/v1592840683/brand_manager/stations/oyiql9yfescpoghmsgjj.png',
     },
     {
       id: 900004,
@@ -342,6 +349,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       mp3: `${BAUER_STREAM_BASE}/nostalgi_mp3`,
       aacp: `${BAUER_STREAM_BASE}/nostalgi_aacp`,
       siteurl: 'https://www.nostalgi.se/',
+      image: 'https://media.bauerradio.com/image/upload/c_crop,g_custom/v1737034118/brand_manager/stations/op6ypjaehhe7gbxelsha.jpg',
     },
   ];
 
@@ -374,7 +382,9 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       id: s.id,
       name,
       tagline: 'Bauer Media · Direkt',
-      image: null, // no verified station artwork; the letter placeholder renders
+      // Station logo from the verified catalogue entry; a stored favourite
+      // carries it through the round-trip. null keeps the letter placeholder.
+      image: safeStr(s.image, 500) || null,
       siteurl: safeStr(s.siteurl, 300) || null,
       liveaudioUrl: mp3,
       channeltype: 'Commercial',
@@ -8877,11 +8887,12 @@ function seekMeasureRecordText() {
       'aria-label': loadNewsAutoplay()
         ? 'Spela nyheter i följd: på'
         : 'Spela nyheter i följd: av',
-      html: loadNewsAutoplay()
-        // repeat (loop) — autoplay mode
-        ? '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>'
-        // repeat-off — manual mode
-        : '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M21 7h-2.3l1.8-1.8-1.4-1.4L2.4 20.6l1.4 1.4L6.8 19H17v3l4-4-4-4v3H8.8l2-2H17v-3l4-4-4-4v3h2.6L21 7zM7 17H5v-4H3v6h4v-2z"/></svg>',
+      // OWNER, 2026-10-06: the deselected (repeat-off) glyph read as
+      // "misformed" — a different shape, not a dimmed copy of the same one.
+      // BOTH states now render the SAME repeat path; colour alone carries the
+      // state (accent = on, secondary = off). aria-pressed stays the
+      // accessible state carrier, as before.
+      html: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>',
       onclick: () => {
         // Toggling OFF mid-playback: the current clip continues, but the
         // queue is cleared so nothing starts automatically afterwards.
@@ -8895,9 +8906,8 @@ function seekMeasureRecordText() {
         newsAutoplayBtn.setAttribute('aria-label', on
           ? 'Spela nyheter i följd: på'
           : 'Spela nyheter i följd: av');
-        newsAutoplayBtn.innerHTML = on
-          ? '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>'
-          : '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M21 7h-2.3l1.8-1.8-1.4-1.4L2.4 20.6l1.4 1.4L6.8 19H17v3l4-4-4-4v3H8.8l2-2H17v-3l4-4-4-4v3h2.6L21 7zM7 17H5v-4H3v6h4v-2z"/></svg>';
+        // Same glyph in both states — colour carries the difference.
+        newsAutoplayBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>';
       },
     });
     newsHeaderRow.appendChild(newsAutoplayBtn);
