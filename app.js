@@ -404,7 +404,11 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
    */
   function bauerSearch(query) {
     const q = (query || '').trim().toLowerCase();
-    if (!q) return [];
+    // OWNER, 2026-10-06: an empty query returns the WHOLE catalogue now --
+    // the channels list is open (no search gate), so the Bauer stations must
+    // appear in it without the user typing anything. A non-empty query
+    // filters, as before.
+    if (!q) return BAUER_STATIONS.map(mapBauerStation).filter(Boolean);
     return BAUER_STATIONS
       .map(mapBauerStation)
       .filter((s) => s && s.name.toLowerCase().includes(q));
@@ -10770,7 +10774,13 @@ function seekMeasureRecordText() {
           const srChans = cq
             ? chans.filter((c) => (c.name || '').toLowerCase().includes(cq))
             : chans;
-          const bauerRows = cq ? bauerSearch(cq) : [];
+          // OWNER, 2026-10-06: the Bauer stations must be in the OPEN list
+          // too, not only behind a search -- "i wanted the bauer api to be
+          // open and not limit channels". bauerSearch('') returns the whole
+          // catalogue (its empty-query guard returns []), so pass the query
+          // through and let the function decide; for an empty query the
+          // full station list is appended after the full SR list.
+          const bauerRows = bauerSearch(cq);
           items.channels = [...srChans, ...bauerRows];
         } else {
           const all = await fetchPodcasts();

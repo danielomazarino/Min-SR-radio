@@ -5200,8 +5200,11 @@ test('bauerSearch is a pure filter: empty query, no match, case-insensitive', ()
      ];
      ${grab('bauerSearch')}
      return bauerSearch;`)();
-  assert.deepEqual(searchWithList(''), [], 'empty query searches nothing');
-  assert.deepEqual(searchWithList('   '), [], 'whitespace-only searches nothing');
+  // WS69 OWNER REVERSAL 2026-10-06: an empty query returns the WHOLE
+  // catalogue -- the channels list is open, so the Bauer stations appear
+  // without the user typing anything.
+  assert.equal(searchWithList('').length, 2, 'empty query -> whole catalogue');
+  assert.equal(searchWithList('   ').length, 2, 'whitespace-only -> whole catalogue');
   assert.deepEqual(searchWithList('zzzz'), [], 'no match -> empty, never a throw');
   const hits = searchWithList('MIX MEGAPOL');
   assert.equal(hits.length, 1, 'case must not hide a station');
@@ -5216,8 +5219,12 @@ test('search merges BOTH providers with SR first and Bauer appended', () => {
   const src = stripComments(APP_JS);
   const load = region('const chans = await fetchChannels();', '} else {', src);
   assert.match(load, /const srChans = cq/, 'SR filtering must stay its own step');
-  assert.match(load, /const bauerRows = cq \? bauerSearch\(cq\) : \[\]/,
-    'Bauer rows are appended only when there is a query');
+  // WS69 OWNER REVERSAL 2026-10-06: "i wanted the bauer api to be open and
+  // not limit channels". bauerSearch is called UNCONDITIONALLY now -- an
+  // empty query returns the whole catalogue, so the open list contains the
+  // Bauer stations too.
+  assert.match(load, /const bauerRows = bauerSearch\(cq\)/,
+    'Bauer rows are appended unconditionally -- the list is open');
   assert.match(load, /items\.channels = \[\.\.\.srChans, \.\.\.bauerRows\]/,
     'SR first, Bauer after -- never interleaved or prepended');
 });
