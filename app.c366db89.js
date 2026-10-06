@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '30ef46b';
+  const APP_BUILD = '16fe812';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -276,6 +276,116 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // ever resolve against the wrong catalogue and the existing SR favourites
   // stay byte-for-byte compatible.
   const ITUNES_API = 'https://itunes.apple.com';
+
+  // ---------------- WS69: Bauer Media, a SECOND live-radio provider ----------
+  //
+  // OWNER: "Extend the existing Min-SR-radio PWA search so that end users have
+  // ONE seamless search experience for both Sveriges Radio and Swedish Bauer
+  // Media commercial radio stations. The user must NOT have to choose a
+  // provider."
+  //
+  // EVERY URL BELOW IS VERIFIED, not assumed. Evidence, measured 2026-10-05:
+  //
+  //   * Mix Megapol MP3  -> HTTP 200, Content-Type audio/mpeg, icy-br 128,
+  //                        Access-Control-Allow-Origin echoes any Origin
+  //                        (tested with the deployed GitHub Pages origin),
+  //                        and `new Audio(url)` reached readyState 3 from
+  //                        http://127.0.0.1:8777.
+  //   * Mix Megapol AAC+ -> HTTP 200, audio/aacp, icy-br 56. Same CORS.
+  //   * Bauer's OWN web player (mixmegapol.se __NEXT_DATA__) publishes exactly
+  //     these two plus an HLS playlist measured at 55 kbps -- so 128 kbps MP3
+  //     IS the best stream that exists. A suffix sweep (_320/_192/_128/_hq)
+  //     returned 404 for every variant.
+  //   * Rockklassiker / NRJ / Nostalgi: same table, read from their own sites'
+  //     __NEXT_DATA__ (hq = 112 kbps MP3 / 48 kbps ADTS).
+  //
+  // ID SPACE: Bauer ids are 900000+, far above SR's channel range (measured
+  // 132..5283) and above iTunes collectionIds' typical range in this app's
+  // usage. A Bauer id can therefore never collide with an SR channel id, and
+  // the existing SR favourites stay byte-for-byte compatible.
+  const BAUER_STREAM_BASE = 'https://live-bauerse-fm.sharp-stream.com';
+
+  /**
+   * The verified Bauer catalogue. One entry per station, each field carrying
+   * what the existing UI/player already reads. Adding a station is ONE object
+   * here -- no other file, no new code path.
+   *
+   * `mp3` is the primary stream (128 kbps, verified). `aacp` is the fallback
+   * (56 kbps, verified), ordered after it because the existing candidate chain
+   * sorts by priority descending and the higher bitrate must win.
+   */
+  const BAUER_STATIONS = [
+    {
+      id: 900001,
+      name: 'Mix Megapol',
+      mp3: `${BAUER_STREAM_BASE}/mixmegapol_instream_se_mp3`,
+      aacp: `${BAUER_STREAM_BASE}/mixmegapol_instream_se_aacp`,
+      siteurl: 'https://www.mixmegapol.se/',
+    },
+    {
+      id: 900002,
+      name: 'Rockklassiker',
+      mp3: `${BAUER_STREAM_BASE}/rockklassiker_instream_se_mp3`,
+      aacp: `${BAUER_STREAM_BASE}/rockklassiker_instream_se_aacp`,
+      siteurl: 'https://www.rockklassiker.se/',
+    },
+    {
+      id: 900003,
+      name: 'NRJ',
+      mp3: `${BAUER_STREAM_BASE}/nrj_instreamtest_se_mp3`,
+      aacp: `${BAUER_STREAM_BASE}/nrj_instreamtest_se_aacp`,
+      siteurl: 'https://www.nrj.se/',
+    },
+    {
+      id: 900004,
+      name: 'Radio Nostalgi',
+      mp3: `${BAUER_STREAM_BASE}/nostalgi_mp3`,
+      aacp: `${BAUER_STREAM_BASE}/nostalgi_aacp`,
+      siteurl: 'https://www.nostalgi.se/',
+    },
+  ];
+
+  /** Normalise a Bauer station into the SAME shape the SR channel rows read. */
+  function mapBauerStation(s) {
+    if (!s || typeof s !== 'object') return null;
+    if (!Number.isInteger(s.id) || s.id < 900000) return null;
+    const name = safeStr(s.name, 80);
+    if (!name) return null;
+    return {
+      id: s.id,
+      name,
+      tagline: 'Bauer Media · Direkt',
+      image: null, // no verified station artwork; the letter placeholder renders
+      siteurl: safeStr(s.siteurl, 300) || null,
+      liveaudioUrl: safeStr(s.mp3, 500) || null,
+      channeltype: 'Commercial',
+      provider: 'bauer',
+      // The candidate chain, highest priority first. MP3 128 kbps beats AAC+
+      // 56 kbps; both verified. Same descriptor shape as resolveStreams().
+      candidates: [
+        { url: safeStr(s.mp3, 500), codec: 'mp3', bitrate: 128,
+          transport: 'direct', dvr: false, priority: 90 },
+        { url: safeStr(s.aacp, 500), codec: 'aac', bitrate: 56,
+          transport: 'direct', dvr: false, priority: 40 },
+      ].filter((c) => c.url),
+    };
+  }
+
+  /**
+   * Search the Bauer catalogue. Pure client-side filtering over a static,
+   * verified list -- there is no Bauer search API, and inventing one is
+   * explicitly forbidden by the brief. Never throws and never rejects: a Bauer
+   * failure must not break SR search, and there is no network call here to
+   * fail.
+   */
+  function bauerSearch(query) {
+    const q = (query || '').trim().toLowerCase();
+    if (!q) return [];
+    return BAUER_STATIONS
+      .map(mapBauerStation)
+      .filter((s) => s && s.name.toLowerCase().includes(q));
+  }
+
   // Only search once the user has typed enough to be deliberate. Below 3
   // characters this would fire on every keystroke against a catalogue we
   // never preload.
@@ -298,6 +408,10 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // protects the SR favourites (favoritesFromRaw drops non-integers) while
   // giving the row a single order that both providers can occupy.
   const PODCAST_ORDER_KEY = 'minradio.podcasts.order.v1';
+  // WS69: the channel row's order across BOTH providers (SR + Bauer). Same
+  // contract as the podcast order key: stored order wins, unmentioned ids are
+  // appended, stale ids are dropped by the callers.
+  const CHANNEL_ORDER_KEY = 'minradio.channels.order.v1';
 
   // Session caches. Deliberately module-level Maps, NOT localStorage: these
   // are cheap to rebuild and must never be able to outlive a schema change.
@@ -539,6 +653,89 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     }
   }
 
+  // ---------------- WS69: Bauer channel favourites ----------------
+  //
+  // OWNER: "after search everything in the app for the end users should work
+  // exactly the same ... so yes favorites and custom sorting of channels
+  // regardless of source is a must, as for podcasts where we have implemented
+  // that support already for two sources."
+  //
+  // The podcasts row already solved this exact problem for a second provider:
+  // SR ids in the numeric favourites array, external ids in their OWN storage,
+  // and ONE order key spanning both. Bauer channels follow that same pattern
+  // rather than inventing a third shape. Bauer ids are 900000+, so they can
+  // never collide with SR channel ids (measured 132..5283) -- but they still
+  // get their own storage, because writing them into the SR array would put
+  // them through saveFavorites()'s Number.isInteger filter and then fail to
+  // resolve against the SR catalogue on load.
+  const BAUER_FAV_KEY = 'minradio.channels.bauer.v1';
+
+  /**
+   * The user's Bauer channel favourites, as full station objects.
+   * Mirrors loadExternalPodcasts(): validated on read, capped, never throws.
+   */
+  function loadBauerFavorites() {
+    try {
+      const raw = localStorage.getItem(BAUER_FAV_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map(mapBauerStation)
+        .filter(Boolean)
+        .slice(0, HARD_CAP);
+    } catch (err) {
+      console.warn('Bauer favourites storage corrupted, resetting:', err);
+      return [];
+    }
+  }
+
+  function saveBauerFavorites(list) {
+    try {
+      localStorage.setItem(BAUER_FAV_KEY, JSON.stringify(
+        (Array.isArray(list) ? list : []).slice(0, HARD_CAP)
+      ));
+      return true;
+    } catch (err) {
+      console.warn('Could not save Bauer favourites:', err);
+      return false;
+    }
+  }
+
+  /** Toggle one Bauer station in/out of the favourites. */
+  function toggleBauerFavorite(station) {
+    const list = loadBauerFavorites();
+    const idx = list.findIndex((p) => p.id === station.id);
+    if (idx >= 0) {
+      list.splice(idx, 1);
+      saveBauerFavorites(list);
+      return false;
+    }
+    if (list.length >= HARD_CAP) return false;
+    list.push(station);
+    saveBauerFavorites(list);
+    return true;
+  }
+
+  /**
+   * The channel row's visible order across BOTH providers.
+   * Same contract as podcastRowOrder(): stored order wins for ids it contains,
+   * anything unmentioned is appended in its own storage's order. A partial or
+   * stale order key can therefore never drop a favourite.
+   */
+  function channelRowOrder(srIds, bauerList) {
+    const bauerIds = bauerList.map((p) => p.id);
+    const all = [...srIds, ...bauerIds];
+    const stored = loadChannelOrder().filter((id) => all.includes(id));
+    const missing = all.filter((id) => !stored.includes(id));
+    return [...stored, ...missing];
+  }
+
+  /** Write the channel row order, dropping ids that no longer exist. */
+  function persistChannelRowOrder(ids) {
+    return saveChannelOrder(ids.filter((id) => Number.isInteger(id)));
+  }
+
   /** Add or remove an external podcast. Returns true when it is now favourited. */
   function toggleExternalPodcast(pod) {
     const list = loadExternalPodcasts();
@@ -578,6 +775,25 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
    * fail. Removing by id is idempotent and provider-explicit.
    */
   function removeFavoriteRow(kind, id, name) {
+    // ---- WS69: a Bauer channel removes from the Bauer store. ----
+    //
+    // Checked FIRST: the SR branch below would accept a Bauer id (it is an
+    // integer), splice nothing if absent -- but if an SR channel ever shared
+    // the id it would remove the WRONG row. Provider-explicit, like every
+    // other branch in this function.
+    if (kind === 'channels' && loadBauerFavorites().some((p) => p.id === id)) {
+      const list = loadBauerFavorites();
+      const idx = list.findIndex((p) => p.id === id);
+      const [removed] = list.splice(idx, 1);
+      saveBauerFavorites(list);
+      // The order key must follow, or the removed id would sit in it and the
+      // next reorder would write a stale sequence.
+      persistChannelRowOrder(
+        channelRowOrder(loadFavorites().channels, loadBauerFavorites())
+          .filter((x) => x !== id)
+      );
+      return { ...removed, kind, provider: 'bauer' };
+    }
     // `name` is passed IN by the caller, because an SR favourite is stored as
     // a bare integer -- loadFavorites() returns ids only, with no name to
     // recover. Without it the undo toast reads "Borttaget: undefined", which
@@ -613,6 +829,17 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
    */
   function restoreFavoriteRow(row, index) {
     if (!row) return false;
+    // ---- WS69: a Bauer row restores into the Bauer store. ----
+    // The stored row carries the full station object (mapBauerStation shape),
+    // so re-saving it goes through the same validation as a fresh favourite.
+    if (row.provider === 'bauer') {
+      const list = loadBauerFavorites();
+      if (list.some((p) => p.id === row.id)) return false;
+      const at = Number.isInteger(index) ? Math.min(index, list.length) : list.length;
+      list.splice(at, 0, row);
+      saveBauerFavorites(list);
+      return true;
+    }
     if (row.provider === 'itunes') {
       const list = loadExternalPodcasts();
       if (list.some((p) => p.id === row.id)) return false;
@@ -662,6 +889,31 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     } catch (err) {
       console.warn('Podcast order storage corrupted, resetting:', err);
       return [];
+    }
+  }
+
+  /** WS69: the channel row's order across both providers. Same shape. */
+  function loadChannelOrder() {
+    try {
+      const raw = localStorage.getItem(CHANNEL_ORDER_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.filter((id) => Number.isInteger(id)) : [];
+    } catch (err) {
+      console.warn('Channel order storage corrupted, resetting:', err);
+      return [];
+    }
+  }
+
+  function saveChannelOrder(ids) {
+    try {
+      localStorage.setItem(CHANNEL_ORDER_KEY, JSON.stringify(
+        (Array.isArray(ids) ? ids : []).filter((id) => Number.isInteger(id))
+      ));
+      return true;
+    } catch (err) {
+      console.warn('Could not save channel order:', err);
+      return false;
     }
   }
 
@@ -2287,6 +2539,19 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       stopNowPlayingPoll();
       return;
     }
+    // ---- WS69: a Bauer channel must NOT be polled against SR's API. ----
+    //
+    // `playlists/rightnow?channelid=900001` would ask SR about a channel id
+    // that is not SR's, and the response would either 404 or -- worse -- match
+    // some unrelated SR programme and paint ITS song onto the Bauer player.
+    // Bauer now-playing comes from the stream's own ICY metadata (verified:
+    // request the stream with `Icy-MetaData: 1` and it serves a title block
+    // every 1024 bytes), which is parsed by the Bauer metadata reader, not by
+    // this poll. So for Bauer the SR poll simply does not run.
+    if (cur.provider === 'bauer') {
+      stopNowPlayingPoll();
+      return;
+    }
     const seq = ++nowPlayingSeq;
     fetchNowPlaying(cur.id, seq).finally(() => {
       // Re-arm only if still the same live channel and the player is open.
@@ -3492,6 +3757,10 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
 
   function stopAndClosePlayer() {
     clearPlaybackWatchdog();
+    // WS70: stopping the player ends the active news sequence. The SAVED
+    // preference is deliberately untouched — stopping a sequence must not
+    // silently change the autoplay mode.
+    clearNewsSequence();
     if (audioEl._srStuckGuard) { clearInterval(audioEl._srStuckGuard); audioEl._srStuckGuard = null; }
     hlsDetach(); // no HLS instance may outlive the player
     stopNowPlayingPoll(); // metadata loop must not outlive the player
@@ -3647,6 +3916,14 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       } else if (ev === 'pause' || ev === 'ended') {
         clearPlaybackWatchdog();
       }
+      // WS70: advance the news autoplay sequence on a NORMAL finish only.
+      // `pause` never advances (the user paused, not finished); `error` never
+      // reaches here (the error handler above deals with it). If the user
+      // turned autoplay off mid-playback the queue is already cleared, so
+      // this is a no-op — the current clip simply finishes and nothing starts.
+      // When the limit or the end of the list is reached, advanceNewsSequence
+      // clears the queue and the player is left in its normal finished state.
+      if (ev === 'ended' && advanceNewsSequence()) return;
       updatePlayingMarks();
       if (ev === 'pause' || ev === 'play') {
         renderPlayer();
@@ -7990,12 +8267,81 @@ function seekMeasureRecordText() {
     }
   }
 
+  // ---------------- WS70: news autoplay ----------------
+  // One icon-only toggle beside the NYHETER header switches between the
+  // existing manual news playback and autoplay of a FINITE sequence of news
+  // clips. The preference is persisted with the same namespaced-localStorage
+  // pattern as NEWS_COUNT_KEY; default is manual, so existing users see no
+  // behaviour change until they opt in.
+  const NEWS_AUTOPLAY_KEY = 'minradio.newsautoplay.v1';
+  function loadNewsAutoplay() {
+    return localStorage.getItem(NEWS_AUTOPLAY_KEY) === 'on';
+  }
+  function saveNewsAutoplay(on) {
+    try { localStorage.setItem(NEWS_AUTOPLAY_KEY, on ? 'on' : 'off'); } catch { /* ignore */ }
+  }
+
+  // The active sequence: a STABLE SNAPSHOT of the news list as it stood when
+  // playback started, sliced from the selected clip forward. A later feed
+  // refresh re-renders the rows but never rewrites an active queue.
+  //
+  // ONE FIELD, ONE WRITER (the WS24 lesson): this array is written by
+  // startNewsSequence() and cleared by clearNewsSequence() — nowhere else.
+  // The `ended` listener below is its only reader. Storing it on the track
+  // object would be wrong: playTrack() builds a fresh track per play, so a
+  // queue that travelled with it would be rebuilt on every advance.
+  let newsAutoplayQueue = null; // null = no active sequence
+
+  function clearNewsSequence() {
+    newsAutoplayQueue = null;
+  }
+
+  // Build the sequence for `item` under the CURRENT mode. Called from the
+  // news-row click path, so selecting another card during playback starts
+  // that selection and rebuilds the sequence from it. In manual mode the
+  // queue is cleared — a stale queue must never outlive the mode that
+  // created it.
+  function startNewsSequence(item) {
+    if (!loadNewsAutoplay()) { clearNewsSequence(); return; }
+    const list = state.news.filter((n) => n.audioUrl);
+    const idx = list.findIndex((n) => n.id === item.id);
+    if (idx === -1) { clearNewsSequence(); return; }
+    // The selected clip counts as item 1; at most the configured number of
+    // clips total. No wrap: the slice simply ends at the list's end.
+    newsAutoplayQueue = list.slice(idx, idx + loadNewsCount());
+  }
+
+  // Advance on a NORMAL finish only. Returns true when the next clip was
+  // started. A missing/invalid source is skipped (playNews routes a
+  // source-less item to the reader, which would be a wrong "advance"); a
+  // failed start clears the queue and leaves the player as it is.
+  function advanceNewsSequence() {
+    const queue = newsAutoplayQueue;
+    if (!queue || !queue.length) { clearNewsSequence(); return false; }
+    const cur = state.current;
+    const pos = cur ? queue.findIndex((n) => n.id === cur.id) : -1;
+    const next = queue.slice(pos + 1).find((n) => n.audioUrl);
+    if (!next) { clearNewsSequence(); return false; }
+    try {
+      playNews(next);
+      return true;
+    } catch {
+      clearNewsSequence();
+      return false;
+    }
+  }
+
   function playNews(item) {
     if (!item.audioUrl) {
       // Text flash → open the in-app article reader
       openArticle(item);
       return;
     }
+    // WS70: the sequence is decided HERE, at the last moment "came from the
+    // Nyheter list" is still knowable — the same reason the news-broadcast
+    // mark below is written here. Podcast and radio playback never reach
+    // this function, so autoplay cannot leak into them.
+    startNewsSequence(item);
     toggleTrack({
       kind: 'episode',
       id: item.id,
@@ -8360,7 +8706,13 @@ function seekMeasureRecordText() {
       // podcastRowOrder() interleaves both providers by the stored order.
       // Previously this was [...favs, ...ext], which made a mixed order
       // impossible -- any interleaving reverted on the next render.
-      const list = isPod ? podcastRowOrder(favs[kind], extList) : favs[kind];
+      //
+      // WS69: the CHANNELS row interleaves too now -- SR + Bauer, through
+      // channelRowOrder(), the same contract. The owner: "favorites and custom
+      // sorting of channels regardless of source is a must".
+      const list = isPod
+        ? podcastRowOrder(favs[kind], extList)
+        : channelRowOrder(favs[kind], loadBauerFavorites());
 
       const heading = isPod
         ? buildPodcastSectionHeading(title)
@@ -8377,7 +8729,16 @@ function seekMeasureRecordText() {
       for (const id of list) {
         // Provider-explicit: SR ids and iTunes collectionIds are both bare
         // integers, so a colliding id must resolve against its OWN list.
-        const item = resolvePodcastRow(catalogue, id, isPod && extList.some((p) => p.id === id) ? 'itunes' : 'sr');
+        //
+        // WS69: Bauer channel ids resolve against the Bauer favourites. The
+        // id spaces do not overlap (SR 132..5283, Bauer 900000+), but the
+        // provider is still checked explicitly rather than by range -- a range
+        // check is a guess about data this app does not own.
+        const bauerList = isPod ? [] : loadBauerFavorites();
+        const item = isPod
+          ? resolvePodcastRow(catalogue, id, extList.some((p) => p.id === id) ? 'itunes' : 'sr')
+          : (bauerList.find((p) => p.id === id)
+            || resolvePodcastRow(catalogue, id, 'sr'));
         if (!item) continue; // unknown id — skip silently
         const isExtPod = isPod && item.provider === 'itunes';
         const btn = el('button', {
@@ -8386,22 +8747,41 @@ function seekMeasureRecordText() {
           role: 'listitem',
           // The external key is prefixed so a collectionId can never collide
           // with an SR podcast id in the playing-mark lookup below.
+          // WS69: a Bauer channel is prefixed `bauer:` for the same reason --
+          // its id must never be read as an SR channel id.
           'data-stream-key': isExtPod ? `xpod:${item.id}`
-            : (isPod ? `pod:${item.id}` : `live:${item.id}`),
+            : (isPod ? `pod:${item.id}`
+              : (item.provider === 'bauer' ? `bauer:${item.id}` : `live:${item.id}`)),
           'data-stream-title': item.name,
           ...(isPod ? { 'data-stream-label': `Spela senaste avsnittet av ${item.name}` } : {}),
           'aria-pressed': 'false',
           'aria-label': isPod ? `Spela senaste avsnittet av ${item.name}` : `Spela ${item.name}`,
           // An external row is passed whole, because its episode list comes
           // from a different endpoint. The SR call site is byte-identical.
+          //
+          // WS69: a Bauer channel plays through the SAME toggleTrack with the
+          // SAME track shape -- only the candidates differ (verified Bauer
+          // URLs instead of resolveStreams' SR table). The stream key is
+          // prefixed `bauer:` so a Bauer id can never be mistaken for an SR
+          // channel in the playing-mark lookup, the same reason the podcast
+          // key is prefixed `xpod:`.
           onclick: () => (isPod
             ? (isExtPod ? playExternalPodcast(item) : playPodcast(item.id))
-            : toggleTrack({
-              kind: 'live', id: item.id, title: item.name, subtitle: 'Direkt',
-              audioUrl: item.liveaudioUrl, artwork: item.image,
-              description: item.tagline || null,
-              candidates: liveCandidates(item),
-            })),
+            : (item.provider === 'bauer'
+              ? toggleTrack({
+                kind: 'live', id: item.id, title: item.name,
+                subtitle: 'Bauer Media · Direkt',
+                audioUrl: item.liveaudioUrl, artwork: item.image,
+                description: item.tagline || null,
+                candidates: item.candidates || [],
+                provider: 'bauer',
+              })
+              : toggleTrack({
+                kind: 'live', id: item.id, title: item.name, subtitle: 'Direkt',
+                audioUrl: item.liveaudioUrl, artwork: item.image,
+                description: item.tagline || null,
+                candidates: liveCandidates(item),
+              }))),
         });
         // Fas 5: long-press opens the context card (tablå for channels,
         // episode list for podcasts). Tap still plays.
@@ -8440,7 +8820,14 @@ function seekMeasureRecordText() {
     // starts the section auto-collapses (header only); the user can expand
     // it manually during playback and it stays expanded. When playback
     // stops it returns to fully expanded.
+    //
+    // WS70: the header row now also carries the autoplay toggle, as a
+    // SIBLING of the fold button — a button inside a button is invalid HTML
+    // and would break the fold toggle's hit target. The row is a flex
+    // container; the fold button takes flex: 1 so the chevron stays at the
+    // right edge and the loop icon sits immediately right of NYHETER.
     const newsSection = el('section', { class: 'section news-section' });
+    const newsHeaderRow = el('div', { class: 'news-header-row' });
     const newsToggle = el('button', {
       class: 'news-toggle', type: 'button',
       'aria-expanded': String(newsExpanded),
@@ -8455,7 +8842,44 @@ function seekMeasureRecordText() {
     },
       el('h2', { class: 'section-title', text: 'Nyheter' }),
       el('span', { class: 'news-toggle-chevron', 'aria-hidden': 'true' }));
-    newsSection.appendChild(newsToggle);
+    newsHeaderRow.appendChild(newsToggle);
+    // WS70: the autoplay toggle. Icon-only, no visible text. The icon shows
+    // the SELECTED MODE, not whether a queue is currently playing. Same
+    // inline-SVG Material paths the player buttons already use — no new
+    // icon package. aria-pressed carries the toggle state for assistive
+    // tech; the app-wide button:focus-visible outline covers keyboard use.
+    const newsAutoplayBtn = el('button', {
+      class: `news-autoplay-btn${loadNewsAutoplay() ? ' active' : ''}`,
+      type: 'button',
+      'aria-pressed': String(loadNewsAutoplay()),
+      'aria-label': loadNewsAutoplay()
+        ? 'Spela nyheter i följd: på'
+        : 'Spela nyheter i följd: av',
+      html: loadNewsAutoplay()
+        // repeat (loop) — autoplay mode
+        ? '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>'
+        // repeat-off — manual mode
+        : '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M21 7h-2.3l1.8-1.8-1.4-1.4L2.4 20.6l1.4 1.4L6.8 19H17v3l4-4-4-4v3H8.8l2-2H17v-3l4-4-4-4v3h2.6L21 7zM7 17H5v-4H3v6h4v-2z"/></svg>',
+      onclick: () => {
+        // Toggling OFF mid-playback: the current clip continues, but the
+        // queue is cleared so nothing starts automatically afterwards.
+        // Toggling ON does not start anything by itself — the next card
+        // the user taps builds the sequence.
+        const on = !loadNewsAutoplay();
+        saveNewsAutoplay(on);
+        if (!on) clearNewsSequence();
+        newsAutoplayBtn.classList.toggle('active', on);
+        newsAutoplayBtn.setAttribute('aria-pressed', String(on));
+        newsAutoplayBtn.setAttribute('aria-label', on
+          ? 'Spela nyheter i följd: på'
+          : 'Spela nyheter i följd: av');
+        newsAutoplayBtn.innerHTML = on
+          ? '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>'
+          : '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M21 7h-2.3l1.8-1.8-1.4-1.4L2.4 20.6l1.4 1.4L6.8 19H17v3l4-4-4-4v3H8.8l2-2H17v-3l4-4-4-4v3h2.6L21 7zM7 17H5v-4H3v6h4v-2z"/></svg>';
+      },
+    });
+    newsHeaderRow.appendChild(newsAutoplayBtn);
+    newsSection.appendChild(newsHeaderRow);
     if (!state.news.length) {
       newsSection.appendChild(el('div', { class: 'state-msg', text: 'Inga nyheter just nu.' }));
     } else {
@@ -9977,22 +10401,58 @@ function seekMeasureRecordText() {
       // counting only picks[tab] reported "0 valda" while a row sat selected
       // -- and, worse, left the Spara button disabled, so a user whose only
       // pick was an external podcast could not save at all.
+      //
+      // WS69: Bauer channels are the same shape on the channels tab -- their
+      // favourites live in their own storage, so they must be counted here too
+      // or the counter reads "0 valda" with a Bauer row selected and Spara
+      // stays disabled. Exactly the defect the podcast fix describes.
       const n = picks[tab].length
-        + (tab === 'podcasts' ? loadExternalPodcasts().length : 0);
+        + (tab === 'podcasts' ? loadExternalPodcasts().length : 0)
+        + (tab === 'channels' ? loadBauerFavorites().length : 0);
       counter.textContent = tab === 'channels'
         ? `Kanaler (${n} valda)`
         : `Poddar (${n} valda)`;
     }
 
     function doneBtnState() {
+      // WS69: Bauer favourites count too -- a user whose only pick is a Bauer
+      // channel must be able to save, exactly like the external-podcast case
+      // this function was already fixed for.
       const total = picks.channels.length + picks.podcasts.length
-        + loadExternalPodcasts().length;
+        + loadExternalPodcasts().length
+        + loadBauerFavorites().length;
       doneBtn.disabled = total === 0;
       doneBtn.textContent = 'Spara';
       doneBtn.title = total === 0 ? 'Välj minst en kanal eller podd först' : '';
     }
 
     function togglePick(kind, id) {
+      // ---- WS69: Bauer channel rows route to their OWN storage. ----
+      //
+      // Checked BEFORE the external-podcast branch because both are
+      // provider-marked rows on the search list, and a Bauer row must not fall
+      // through into the SR numeric array -- saveFavorites() would accept the
+      // id (it is an integer) and the row would then silently vanish on the
+      // next load, when it failed to resolve against the SR catalogue.
+      if (kind === 'channels') {
+        const bauerRow = items.channels?.find((i) => i.id === id && i.provider === 'bauer');
+        if (bauerRow || loadBauerFavorites().some((p) => p.id === id)) {
+          toggleBauerFavorite(bauerRow || BAUER_STATIONS.map(mapBauerStation).find((s) => s.id === id));
+          // A newly added row belongs at the END of the row, which is where it
+          // appeared in the search list the user just used -- the same rule the
+          // external-podcast branch applies below.
+          if (bauerRow) {
+            persistChannelRowOrder(
+              channelRowOrder(loadFavorites().channels, loadBauerFavorites())
+            );
+          }
+          updateCounter();
+          doneBtnState();
+          renderList();
+          rebuildSelected();
+          return;
+        }
+      }
       // External podcasts never enter the numeric SR array -- they live in
       // their own key, so saveFavorites()/Number.isInteger is not involved and
       // the SR favourites stay byte-identical. add=true when the row being
@@ -10153,7 +10613,10 @@ function seekMeasureRecordText() {
         //                 the same name are no longer identical on screen.
         let sub;
         if (tab === 'channels') {
-          sub = item.channeltype;
+          // WS69: a Bauer row says who it is -- "Commercial" would read as a
+          // category label with no source, exactly the ambiguity the owner
+          // asked to remove for podcasts.
+          sub = item.provider === 'bauer' ? (item.tagline || 'Bauer Media') : item.channeltype;
         } else if (isExt) {
           // The provider's OWN text, unchanged. For iTunes this is
           // `primaryGenreName` -- "Teknologi" -- which the owner explicitly wants
@@ -10250,9 +10713,25 @@ function seekMeasureRecordText() {
           // had to be extended by hand for the same reason.
           const chans = await fetchChannels();
           const cq = (query || '').trim().toLowerCase();
-          items.channels = cq
+          // ---- WS69: ONE search, TWO providers. ----
+          //
+          // OWNER: "Searching for 'Mix Megapol' should return a normal
+          // live-radio result ... Searching for 'P3' must continue to return
+          // the existing Sveriges Radio result exactly as before. The user
+          // should not need to know which provider produced the result."
+          //
+          // SR FIRST, unchanged -- the same ordering rule the podcast tab
+          // already applies ("SR FIRST, unchanged. The external source is
+          // appended after it and can only ever add rows"). bauerSearch is a
+          // pure client-side filter over a static verified list: it cannot
+          // throw, cannot reject, and cannot slow the search down, so no
+          // timeout is needed here and an outage at Bauer is structurally
+          // impossible to reflect into SR results.
+          const srChans = cq
             ? chans.filter((c) => (c.name || '').toLowerCase().includes(cq))
             : chans;
+          const bauerRows = cq ? bauerSearch(cq) : [];
+          items.channels = [...srChans, ...bauerRows];
         } else {
           const all = await fetchPodcasts();
           // client-side search (SR's server-side name filter is broken)
@@ -10481,9 +10960,14 @@ function seekMeasureRecordText() {
       const srIds = loadFavorites()[kind];
       // ONE order for the whole row, shared with buildIconSection, so the
       // arrangement the user makes here is the arrangement they see there.
+      //
+      // WS69: the channels group interleaves Bauer rows too, through the same
+      // channelRowOrder the home row uses -- so the arrangement made here IS
+      // the arrangement on the home screen, for both providers.
+      const bauerList = kind === 'channels' ? loadBauerFavorites() : [];
       const list = kind === 'podcasts'
         ? podcastRowOrder(srIds, extList)
-        : srIds;
+        : channelRowOrder(srIds, bauerList);
       if (!list.length) {
         group.appendChild(el('div', { class: 'selected-empty', text: 'Inga valda ännu.' }));
         return group;
@@ -10495,7 +10979,13 @@ function seekMeasureRecordText() {
        * gesture must not be a "second implementation" of the same action.
        */
       const onRemoveRequest = (id, provider, name) => {
-        const before = provider === 'itunes'
+        // WS69: the "before" index must come from the store the row actually
+        // lives in -- a Bauer id is not in loadFavorites(), so the SR branch
+        // would return -1 and undo would restore at the end instead of in
+        // place.
+        const before = provider === 'bauer'
+          ? loadBauerFavorites().findIndex((p) => p.id === id)
+          : provider === 'itunes'
           ? loadExternalPodcasts().findIndex((p) => p.id === id)
           : loadFavorites()[kind].indexOf(id);
         const removed = removeFavoriteRow(kind, id, name);
@@ -10508,7 +10998,14 @@ function seekMeasureRecordText() {
         }
         // The stored order must forget the removed id, or it would linger in
         // the order key and reappear if the same podcast were re-added.
-        if (kind === 'podcasts') {
+        // WS69: a Bauer removal persists the CHANNEL order key, not the
+        // podcast one -- the two keys are separate stores.
+        if (removed.provider === 'bauer') {
+          persistChannelRowOrder(
+            channelRowOrder(loadFavorites().channels, loadBauerFavorites())
+              .filter((x) => x !== id)
+          );
+        } else if (kind === 'podcasts') {
           persistPodcastRowOrder(
             podcastRowOrder(loadFavorites().podcasts, loadExternalPodcasts())
               .filter((x) => x !== id)
@@ -10527,8 +11024,13 @@ function seekMeasureRecordText() {
             picks[kind].splice(at, 0, id);
           }
           // Put it back where it was, in the ORDER too -- otherwise undo
-          // would restore the podcast but lose its position.
-          if (kind === 'podcasts') {
+          // would restore the podcast but lose its position. WS69: a Bauer
+          // undo restores the CHANNEL order key.
+          if (removed.provider === 'bauer') {
+            persistChannelRowOrder(
+              channelRowOrder(loadFavorites().channels, loadBauerFavorites())
+            );
+          } else if (kind === 'podcasts') {
             persistPodcastRowOrder(
               podcastRowOrder(loadFavorites().podcasts, loadExternalPodcasts())
             );
@@ -10542,12 +11044,23 @@ function seekMeasureRecordText() {
 
       list.forEach((id, pos) => {
         const isExt = extList.some((p) => p.id === id);
-        const item = resolvePodcastRow(catalogue, id, isExt ? 'itunes' : 'sr');
+        // WS69: a Bauer row resolves against the Bauer favourites, and its
+        // provider is passed through so remove/move route to the right store.
+        const isBauer = bauerList.some((p) => p.id === id);
+        const item = isBauer
+          ? bauerList.find((p) => p.id === id)
+          : resolvePodcastRow(catalogue, id, isExt ? 'itunes' : 'sr');
         if (!item) return;
+        const rowProvider = isBauer ? 'bauer' : (isExt ? 'itunes' : 'sr');
         const rowEl = el('div', {
           class: 'selected-item', draggable: 'true', 'data-id': String(id),
           // Marks the row for persistExternalOrder(), which selects on it.
           ...(isExt ? { 'data-ext': '1' } : {}),
+          // WS69: the swipe gesture reads the provider off the row -- it has
+          // no closure over isBauer/isExt, so the row must carry the truth.
+          // Without this a Bauer swipe would be routed to 'sr' and undo
+          // would restore at the wrong index in the wrong store.
+          ...(isBauer ? { 'data-provider': 'bauer' } : {}),
         },
           // The delete action revealed BEHIND the row as it slides left, in the
           // iOS Mail / WhatsApp idiom: a plain coloured panel with an ICON and
@@ -10595,6 +11108,28 @@ function seekMeasureRecordText() {
          * membership changes -- only the sequence the row is displayed in.
          */
         const move = (direction) => {
+          // WS69: a Bauer row swaps within the unified CHANNEL order, then
+          // each provider's slice is written back to its own store -- the
+          // same contract as the podcasts branch below.
+          if (bauerList.some((p) => p.id === id)) {
+            const current = channelRowOrder(loadFavorites().channels, bauerList);
+            const from = current.indexOf(id);
+            if (from === -1) return;
+            const to = direction === 'up' ? from - 1 : from + 1;
+            if (to < 0 || to >= current.length) return;   // already at that end
+            const next = [...current];
+            [next[from], next[to]] = [next[to], next[from]];
+            const bauerIds = new Set(bauerList.map((p) => p.id));
+            const favs = loadFavorites();
+            favs.channels = next.filter((x) => !bauerIds.has(x));
+            saveFavorites(favs);
+            saveBauerFavorites(next
+              .filter((x) => bauerIds.has(x))
+              .map((x) => bauerList.find((p) => p.id === x)));
+            persistChannelRowOrder(next);
+            rebuildSelected();
+            return;
+          }
           if (kind !== 'podcasts') {
             const favs = loadFavorites();
             if (moveFavorite(favs, kind, id, direction)) {
@@ -10644,7 +11179,7 @@ function seekMeasureRecordText() {
           class: 'selected-btn selected-btn-remove', type: 'button',
           'aria-label': `Ta bort ${item.name}`,
           html: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>',
-          onclick: () => onRemoveRequest(id, isExt ? 'itunes' : 'sr', item.name),
+          onclick: () => onRemoveRequest(id, rowProvider, item.name),
         }));
         // The controls live INSIDE the face so they slide with it. Appending
         // them to the row would leave them stationary over the panel.
@@ -10693,6 +11228,18 @@ function seekMeasureRecordText() {
         const known = new Set(favs[kind]);
         favs[kind] = order.filter((id) => known.has(id));
         saveFavorites(favs);
+        // WS69: the channels sheet can contain Bauer rows. Writing only the
+        // SR slice would leave the Bauer slice stale in its own store, and
+        // the order key would never learn the drag's interleaving -- the
+        // reorder would look right until the next render rebuilt it.
+        if (kind === 'channels') {
+          const bauerList = loadBauerFavorites();
+          const bauerIds = new Set(bauerList.map((p) => p.id));
+          saveBauerFavorites(order
+            .filter((id) => bauerIds.has(id))
+            .map((id) => bauerList.find((p) => p.id === id)));
+          persistChannelRowOrder(order);
+        }
       };
 
       const rows = () => [...group.querySelectorAll('.selected-item')];
@@ -10903,7 +11450,9 @@ function seekMeasureRecordText() {
             // Read the name from the DOM: an SR favourite is stored as a bare
             // integer, so the row is the only place the name still exists.
             const name = st.row.querySelector('.selected-name')?.textContent || '';
-            onRemoved(st.id, st.row.dataset.ext ? 'itunes' : 'sr', name);
+            // WS69: the row's own data-provider attribute is authoritative --
+            // a Bauer row must not fall through to 'sr' here.
+            onRemoved(st.id, st.row.dataset.provider || (st.row.dataset.ext ? 'itunes' : 'sr'), name);
           };
           setTimeout(commit, 170);
         } else {
