@@ -3757,6 +3757,10 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
 
   function stopAndClosePlayer() {
     clearPlaybackWatchdog();
+    // WS70: stopping the player ends the active news sequence. The SAVED
+    // preference is deliberately untouched — stopping a sequence must not
+    // silently change the autoplay mode.
+    clearNewsSequence();
     if (audioEl._srStuckGuard) { clearInterval(audioEl._srStuckGuard); audioEl._srStuckGuard = null; }
     hlsDetach(); // no HLS instance may outlive the player
     stopNowPlayingPoll(); // metadata loop must not outlive the player
@@ -3912,6 +3916,14 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       } else if (ev === 'pause' || ev === 'ended') {
         clearPlaybackWatchdog();
       }
+      // WS70: advance the news autoplay sequence on a NORMAL finish only.
+      // `pause` never advances (the user paused, not finished); `error` never
+      // reaches here (the error handler above deals with it). If the user
+      // turned autoplay off mid-playback the queue is already cleared, so
+      // this is a no-op — the current clip simply finishes and nothing starts.
+      // When the limit or the end of the list is reached, advanceNewsSequence
+      // clears the queue and the player is left in its normal finished state.
+      if (ev === 'ended' && advanceNewsSequence()) return;
       updatePlayingMarks();
       if (ev === 'pause' || ev === 'play') {
         renderPlayer();
@@ -8255,12 +8267,81 @@ function seekMeasureRecordText() {
     }
   }
 
+  // ---------------- WS70: news autoplay ----------------
+  // One icon-only toggle beside the NYHETER header switches between the
+  // existing manual news playback and autoplay of a FINITE sequence of news
+  // clips. The preference is persisted with the same namespaced-localStorage
+  // pattern as NEWS_COUNT_KEY; default is manual, so existing users see no
+  // behaviour change until they opt in.
+  const NEWS_AUTOPLAY_KEY = 'minradio.newsautoplay.v1';
+  function loadNewsAutoplay() {
+    return localStorage.getItem(NEWS_AUTOPLAY_KEY) === 'on';
+  }
+  function saveNewsAutoplay(on) {
+    try { localStorage.setItem(NEWS_AUTOPLAY_KEY, on ? 'on' : 'off'); } catch { /* ignore */ }
+  }
+
+  // The active sequence: a STABLE SNAPSHOT of the news list as it stood when
+  // playback started, sliced from the selected clip forward. A later feed
+  // refresh re-renders the rows but never rewrites an active queue.
+  //
+  // ONE FIELD, ONE WRITER (the WS24 lesson): this array is written by
+  // startNewsSequence() and cleared by clearNewsSequence() — nowhere else.
+  // The `ended` listener below is its only reader. Storing it on the track
+  // object would be wrong: playTrack() builds a fresh track per play, so a
+  // queue that travelled with it would be rebuilt on every advance.
+  let newsAutoplayQueue = null; // null = no active sequence
+
+  function clearNewsSequence() {
+    newsAutoplayQueue = null;
+  }
+
+  // Build the sequence for `item` under the CURRENT mode. Called from the
+  // news-row click path, so selecting another card during playback starts
+  // that selection and rebuilds the sequence from it. In manual mode the
+  // queue is cleared — a stale queue must never outlive the mode that
+  // created it.
+  function startNewsSequence(item) {
+    if (!loadNewsAutoplay()) { clearNewsSequence(); return; }
+    const list = state.news.filter((n) => n.audioUrl);
+    const idx = list.findIndex((n) => n.id === item.id);
+    if (idx === -1) { clearNewsSequence(); return; }
+    // The selected clip counts as item 1; at most the configured number of
+    // clips total. No wrap: the slice simply ends at the list's end.
+    newsAutoplayQueue = list.slice(idx, idx + loadNewsCount());
+  }
+
+  // Advance on a NORMAL finish only. Returns true when the next clip was
+  // started. A missing/invalid source is skipped (playNews routes a
+  // source-less item to the reader, which would be a wrong "advance"); a
+  // failed start clears the queue and leaves the player as it is.
+  function advanceNewsSequence() {
+    const queue = newsAutoplayQueue;
+    if (!queue || !queue.length) { clearNewsSequence(); return false; }
+    const cur = state.current;
+    const pos = cur ? queue.findIndex((n) => n.id === cur.id) : -1;
+    const next = queue.slice(pos + 1).find((n) => n.audioUrl);
+    if (!next) { clearNewsSequence(); return false; }
+    try {
+      playNews(next);
+      return true;
+    } catch {
+      clearNewsSequence();
+      return false;
+    }
+  }
+
   function playNews(item) {
     if (!item.audioUrl) {
       // Text flash → open the in-app article reader
       openArticle(item);
       return;
     }
+    // WS70: the sequence is decided HERE, at the last moment "came from the
+    // Nyheter list" is still knowable — the same reason the news-broadcast
+    // mark below is written here. Podcast and radio playback never reach
+    // this function, so autoplay cannot leak into them.
+    startNewsSequence(item);
     toggleTrack({
       kind: 'episode',
       id: item.id,
