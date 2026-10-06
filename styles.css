@@ -514,15 +514,23 @@ a:focus-visible {
    items visible, no peek — the peek behavior was explicitly rejected).
    Collapsed (during playback) = header only, zero item visibility. The
    player stays on top (fixed, higher z-index). */
+/* WS70: the header row carries the fold toggle AND the autoplay toggle as
+   siblings. The fold button takes flex: 1 so the chevron stays at the right
+   edge and the loop icon sits immediately right of NYHETER. */
+.news-header-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 12px;
+}
 .news-toggle {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   background: none;
   border: none;
   padding: 0;
-  margin-bottom: 12px;
   color: inherit;
   font: inherit;
   cursor: pointer;
@@ -550,6 +558,29 @@ a:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   .news-toggle-chevron { transition: none; }
 }
+
+/* WS70: the news autoplay toggle. Icon-only, styled after .fresh-btn (44px
+   target, 22px glyph) so the two header controls read as the same family.
+   The accent colour marks the ACTIVE (autoplay) mode; manual mode is the
+   dim secondary text colour. No visible text anywhere. */
+.news-autoplay-btn {
+  width: 44px;
+  height: 44px;
+  flex: none;
+  align-self: center;
+  border-radius: 50%;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.news-autoplay-btn.active { color: var(--accent); }
+.news-autoplay-btn:active { opacity: 0.6; }
+.news-autoplay-btn svg { display: block; width: 22px; height: 22px; }
 
 .news-item {
   display: flex;

@@ -8820,7 +8820,14 @@ function seekMeasureRecordText() {
     // starts the section auto-collapses (header only); the user can expand
     // it manually during playback and it stays expanded. When playback
     // stops it returns to fully expanded.
+    //
+    // WS70: the header row now also carries the autoplay toggle, as a
+    // SIBLING of the fold button — a button inside a button is invalid HTML
+    // and would break the fold toggle's hit target. The row is a flex
+    // container; the fold button takes flex: 1 so the chevron stays at the
+    // right edge and the loop icon sits immediately right of NYHETER.
     const newsSection = el('section', { class: 'section news-section' });
+    const newsHeaderRow = el('div', { class: 'news-header-row' });
     const newsToggle = el('button', {
       class: 'news-toggle', type: 'button',
       'aria-expanded': String(newsExpanded),
@@ -8835,7 +8842,44 @@ function seekMeasureRecordText() {
     },
       el('h2', { class: 'section-title', text: 'Nyheter' }),
       el('span', { class: 'news-toggle-chevron', 'aria-hidden': 'true' }));
-    newsSection.appendChild(newsToggle);
+    newsHeaderRow.appendChild(newsToggle);
+    // WS70: the autoplay toggle. Icon-only, no visible text. The icon shows
+    // the SELECTED MODE, not whether a queue is currently playing. Same
+    // inline-SVG Material paths the player buttons already use — no new
+    // icon package. aria-pressed carries the toggle state for assistive
+    // tech; the app-wide button:focus-visible outline covers keyboard use.
+    const newsAutoplayBtn = el('button', {
+      class: `news-autoplay-btn${loadNewsAutoplay() ? ' active' : ''}`,
+      type: 'button',
+      'aria-pressed': String(loadNewsAutoplay()),
+      'aria-label': loadNewsAutoplay()
+        ? 'Spela nyheter i följd: på'
+        : 'Spela nyheter i följd: av',
+      html: loadNewsAutoplay()
+        // repeat (loop) — autoplay mode
+        ? '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>'
+        // repeat-off — manual mode
+        : '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M21 7h-2.3l1.8-1.8-1.4-1.4L2.4 20.6l1.4 1.4L6.8 19H17v3l4-4-4-4v3H8.8l2-2H17v-3l4-4-4-4v3h2.6L21 7zM7 17H5v-4H3v6h4v-2z"/></svg>',
+      onclick: () => {
+        // Toggling OFF mid-playback: the current clip continues, but the
+        // queue is cleared so nothing starts automatically afterwards.
+        // Toggling ON does not start anything by itself — the next card
+        // the user taps builds the sequence.
+        const on = !loadNewsAutoplay();
+        saveNewsAutoplay(on);
+        if (!on) clearNewsSequence();
+        newsAutoplayBtn.classList.toggle('active', on);
+        newsAutoplayBtn.setAttribute('aria-pressed', String(on));
+        newsAutoplayBtn.setAttribute('aria-label', on
+          ? 'Spela nyheter i följd: på'
+          : 'Spela nyheter i följd: av');
+        newsAutoplayBtn.innerHTML = on
+          ? '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>'
+          : '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M21 7h-2.3l1.8-1.8-1.4-1.4L2.4 20.6l1.4 1.4L6.8 19H17v3l4-4-4-4v3H8.8l2-2H17v-3l4-4-4-4v3h2.6L21 7zM7 17H5v-4H3v6h4v-2z"/></svg>';
+      },
+    });
+    newsHeaderRow.appendChild(newsAutoplayBtn);
+    newsSection.appendChild(newsHeaderRow);
     if (!state.news.length) {
       newsSection.appendChild(el('div', { class: 'state-msg', text: 'Inga nyheter just nu.' }));
     } else {

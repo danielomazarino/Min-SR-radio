@@ -9898,3 +9898,76 @@ not a WS67 defect — but it does mean SR playback from the new card is
   choose for you.
 - The freshness card probes on open only — no background refresh, no badge count.
 - Not touched: episode list, favourites, player, transport.
+
+## WS70 — 2026-10-06 — news autoplay toggle: a loop icon beside NYHETER
+
+**Owner brief:** one icon-only toggle beside the NYHETER header. Loop icon =
+autoplay of the news clips; loop-off = the existing manual behaviour. No other
+visible change. Persisted, default manual.
+
+### Design — one field, one writer, and the existing player does the work
+
+The sequence is a **module-level snapshot** (`newsAutoplayQueue`), built ONCE
+when a news clip starts in autoplay mode, from the list as it stood at that
+moment. A later feed refresh re-renders the rows but never rewrites an active
+queue — that is the "stable snapshot" requirement, and it is also the reason the
+queue is NOT stored on the track object: `playTrack()` builds a fresh track per
+play, and a queue that travelled with it would be rebuilt on every advance.
+
+**One writer.** `newsAutoplayQueue` is written by exactly one function
+(`startNewsSequence`) and cleared by exactly one function
+(`clearNewsSequence`). The `ended` handler reads it. No other site touches it —
+the same discipline that closed the WS24 cover race.
+
+**The player is reused, not duplicated.** Advancing calls the same
+`playNews(next)` the row's own click handler calls, so the sequence rides the
+existing `toggleTrack` → `playTrack` path, the existing playing-marks, the
+existing news fold. The manual next/forward control stays in sync because it
+never needed to know about the queue: it plays whatever is current, and the
+queue only decides what becomes current next.
+
+**Stop ends the sequence.** `stopAndClosePlayer()` calls `clearNewsSequence()`.
+Stopping must not silently change the saved preference — the preference lives in
+localStorage under its own key and stop never writes it.
+
+### The toggle
+
+Placed inside the existing `.news-toggle` header button's row, as a SIBLING of
+the header button (not a child — a button inside a button is invalid HTML and
+would break the fold toggle's hit target). The header row becomes a flex
+container; the fold button keeps `flex: 1` so the chevron stays at the right
+edge and the loop icon sits immediately right of the word NYHETER.
+
+Icons are the same inline-SVG Material paths the player buttons already use
+(`repeat` / `repeat_off` style), `currentColor`, no new package. Styling mirrors
+`.fresh-btn` (44px target, 22px glyph) with the accent colour when active and
+`--text-secondary` when not, so the mode is readable without any text.
+
+Accessibility: `aria-pressed` carries the toggle state, the label swaps between
+"Spela nyheter i följd: på/av", and the app-wide `button:focus-visible` outline
+applies unchanged.
+
+### Behaviour rules, as implemented
+
+| rule | mechanism |
+|---|---|
+| manual mode = today's behaviour exactly | `playNews` only consults the queue when the preference is on |
+| autoplay = selected clip + following clips, in list order | snapshot sliced from the selected index forward |
+| limit = the configured news count (4–20) | `loadNewsCount()` read at sequence start; no new setting |
+| no wrap | the slice simply ends at the list's end |
+| advance only on normal finish | the `ended` listener; `pause`/`error` never advance |
+| manual next stays in sync | next/forward play the current track; the queue follows whatever is current |
+| stop ends the sequence | `stopAndClosePlayer` clears the queue; the saved preference is untouched |
+| toggle off mid-playback | current clip continues; the queue is cleared so nothing starts next |
+| new card during playback | the click path rebuilds the sequence from that card under the current mode |
+| limit or end reached | the player is left in its normal finished state — no loop, no new UI |
+| missing/invalid sources | `playNews` already routes a source-less item to the reader; a failed advance clears the queue and leaves the player as it is |
+
+### NOT DONE / not verified
+
+- **Device behaviour is unverified.** SR `.m4a` clips abort in headless
+  Chromium (known limit, control-confirmed in WS67), so the advance-on-`ended`
+  path is code-proven and mutation-proven, never observed playing end-to-end.
+  The owner's iPhone is the only rig that can settle it.
+- The toggle's visual placement is code-proven in the built bundle; the owner
+  should confirm it reads correctly beside NYHETER on the iPhone.
