@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '16fe812';
+  const APP_BUILD = '815d98a';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -351,23 +351,37 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     if (!Number.isInteger(s.id) || s.id < 900000) return null;
     const name = safeStr(s.name, 80);
     if (!name) return null;
+    // WS69 FIX (found in the browser, not by reading): a stored favourite is
+    // ALREADY in the mapped shape -- it carries `liveaudioUrl` and
+    // `candidates`, not the raw `mp3`/`aacp` keys. Re-mapping it through the
+    // raw-key path produced liveaudioUrl: null and candidates: [], so the
+    // home row rendered (name resolves) but playTrack crashed on
+    // srcUrl.slice with srcUrl null. Accept EITHER shape: raw catalogue
+    // entries (mp3/aacp) and stored favourites (liveaudioUrl/candidates).
+    const mp3 = safeStr(s.mp3, 500) || safeStr(s.liveaudioUrl, 500) || null;
+    const aacp = safeStr(s.aacp, 500) || null;
+    // A stored favourite's candidates are already descriptors; keep them when
+    // present so the round-trip never loses the verified URLs.
+    const candidates = (Array.isArray(s.candidates) && s.candidates.length
+      ? s.candidates.filter((c) => c && safeStr(c.url, 500))
+      : [
+        { url: mp3, codec: 'mp3', bitrate: 128,
+          transport: 'direct', dvr: false, priority: 90 },
+        { url: aacp, codec: 'aac', bitrate: 56,
+          transport: 'direct', dvr: false, priority: 40 },
+      ].filter((c) => c.url));
     return {
       id: s.id,
       name,
       tagline: 'Bauer Media · Direkt',
       image: null, // no verified station artwork; the letter placeholder renders
       siteurl: safeStr(s.siteurl, 300) || null,
-      liveaudioUrl: safeStr(s.mp3, 500) || null,
+      liveaudioUrl: mp3,
       channeltype: 'Commercial',
       provider: 'bauer',
       // The candidate chain, highest priority first. MP3 128 kbps beats AAC+
       // 56 kbps; both verified. Same descriptor shape as resolveStreams().
-      candidates: [
-        { url: safeStr(s.mp3, 500), codec: 'mp3', bitrate: 128,
-          transport: 'direct', dvr: false, priority: 90 },
-        { url: safeStr(s.aacp, 500), codec: 'aac', bitrate: 56,
-          transport: 'direct', dvr: false, priority: 40 },
-      ].filter((c) => c.url),
+      candidates,
     };
   }
 

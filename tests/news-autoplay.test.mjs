@@ -107,9 +107,12 @@ test('stopping the player clears the sequence but never writes the preference', 
 
 test('newsAutoplayQueue has exactly one writer and one clearer', () => {
   const src = stripComments(APP_JS);
+  // Three assignment sites, no more: the `let` declaration, the snapshot in
+  // startNewsSequence, and the null in clearNewsSequence. A fourth site would
+  // be a second writer racing the first (the WS24 lesson).
   const writes = [...src.matchAll(/newsAutoplayQueue\s*=(?!=)/g)].length;
-  assert.equal(writes, 2,
-    'exactly two assignments: the initial null and the snapshot in startNewsSequence');
+  assert.equal(writes, 3,
+    'exactly three assignments: declaration, snapshot, and the clear');
   const clearSites = [...src.matchAll(/newsAutoplayQueue = null/g)].length;
   assert.equal(clearSites, 2,
     'the null must be written only at declaration and inside clearNewsSequence');
@@ -117,6 +120,11 @@ test('newsAutoplayQueue has exactly one writer and one clearer', () => {
   const clearer = grab('clearNewsSequence');
   assert.ok(clearer.includes('newsAutoplayQueue = null'),
     'clearNewsSequence must be the clearing function');
+  // The snapshot must be the only OTHER assignment, and it must live in
+  // startNewsSequence.
+  const starter = grab('startNewsSequence');
+  assert.match(starter, /newsAutoplayQueue = list\.slice\(/,
+    'startNewsSequence must be the only writer of a real queue');
 });
 
 // ---------------------------------------------------------------------------
@@ -140,18 +148,25 @@ function loadSequenceHarness({ autoplay, count, news, current, playNews }) {
       advance() { canary.advance++; return advanceNewsSequence(); },
       get queue() { return newsAutoplayQueue; },
       set queue(v) { newsAutoplayQueue = v; },
+      canary, state,
     };
   `);
   const state = { news, current: current ?? null };
   const play = (item) => { canary.played.push(item.id); playNews(item); };
+  // canary and state are attached INSIDE the factory so the returned object
+  // keeps its queue accessor. Spreading the factory result ({...h}) would
+  // evaluate `h.queue` once and copy it as a plain data property — writes to
+  // h.queue would then never reach the closure variable, and every test that
+  // seeded or cleared the queue through the accessor would silently test
+  // nothing. (This exact bug produced 6 false failures on the first run.)
   const h = factory(
-    () => { canary.start += 0; return autoplay; },
+    () => autoplay,
     () => count,
     state,
     play,
     canary,
   );
-  return { ...h, canary, state };
+  return h;
 }
 
 const NEWS_FIXTURE = [
@@ -189,9 +204,13 @@ test('the selected clip counts as item 1 and the configured limit is honoured', 
 
 test('the sequence never wraps from the end back to the beginning', () => {
   const h = loadSequenceHarness({ autoplay: true, count: 20, news: NEWS_FIXTURE });
-  const q = h.start(NEWS_FIXTURE[6]); // near the end of the list
-  assert.ok(q.every((n) => n.id > 6), 'no clip before the selection may appear');
-  assert.ok(q.length <= 2, 'the slice must simply end at the list end');
+  // The LAST playable clip: id 8 (id 7 is text-only and is filtered out
+  // BEFORE slicing, so the playable list ends at 8). Selecting it must yield
+  // a sequence of exactly itself — nothing wrapped around from the start.
+  const q = h.start(NEWS_FIXTURE[7]);
+  assert.ok(q, 'a playable selection must build a sequence');
+  assert.deepEqual(q.map((n) => n.id), [8],
+    'the last clip must not wrap back to the beginning of the list');
 });
 
 test('text-only flashes are excluded from the sequence', () => {
@@ -233,8 +252,12 @@ test('advance plays the next clip in order and only on a normal finish', () => {
     playNews: () => { /* stub: the real one goes through toggleTrack */ },
   });
   h.start(NEWS_FIXTURE[0]);
+  // In the real app the `ended` event fires while the clip is still
+  // state.current, so the harness must model that before advancing.
+  h.state.current = NEWS_FIXTURE[0];
   assert.ok(h.advance(), 'the first advance must start clip 2');
   assert.deepEqual(h.canary.played, [2]);
+  h.state.current = NEWS_FIXTURE[1];
   assert.ok(h.advance(), 'the second advance must start clip 3');
   assert.deepEqual(h.canary.played, [2, 3]);
 });
@@ -273,9 +296,12 @@ test('a failed advance clears the queue and starts nothing', () => {
     playNews: () => { throw new Error('playback rejected'); },
   });
   h.start(NEWS_FIXTURE[0]);
+  h.state.current = NEWS_FIXTURE[0];
   assert.equal(h.advance(), false, 'a rejected start must not count as advanced');
   assert.equal(h.queue, null, 'the queue must be cleared on failure');
-  assert.deepEqual(h.canary.played, []);
+  // The harness records the ATTEMPT before the stub throws, so exactly one
+  // attempt is expected — the point is that nothing further was tried.
+  assert.deepEqual(h.canary.played, [2]);
 });
 
 test('a queue-less advance is a no-op (autoplay turned off mid-playback)', () => {
