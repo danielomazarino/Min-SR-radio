@@ -10564,8 +10564,16 @@ function seekMeasureRecordText() {
       // fit on a screen); the owner has now decided consistency wins, so both
       // tabs are identical in shape and differ only in wording. That EXEMPTION
       // comment above is therefore now false and must not be left to mislead.
-      if (!searchQuery && (tab === 'podcasts' || tab === 'channels')) {
-        const isPod = tab === 'podcasts';
+      //
+      // OWNER, 2026-10-06, REVERSED for channels: "i thought i was clear about
+      // that i wanted the bauer api to be open and not limit channels ... can't
+      // you make a global search for all its channels by removing a filter you
+      // now built that i said you shouldn't build." The channels tab shows the
+      // FULL list again -- all SR channels AND all Bauer stations -- the moment
+      // the sheet opens, no search needed. The gate below now applies to the
+      // podcasts tab only. The search box stays: it filters the open list.
+      if (!searchQuery && tab === 'podcasts') {
+        const isPod = true;
         listWrap.appendChild(el('div', { class: 'pick-empty' },
           el('p', { class: 'pick-empty-title', text: isPod
             ? 'Poddar från Sveriges Radio och iTunes'

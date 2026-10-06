@@ -1314,19 +1314,23 @@ test('WS44c: the unsearched podcast list shows a prompt, not 371 rows', () => {
   // verbatim: "Secondly for consistence remove the radio channel list when
   // Kanaler is clicked and implement a similar search box as for Poddar".
   //
-  // WHAT CHANGED: the gate used to be podcasts-ONLY, on the reasoning that
-  // "~52 channels fit on a screen or two and a channel is picked by
-  // recognition". The owner weighed that and decided consistency wins, so
-  // channels are now gated too. The old assertion -- 'channels must stay
-  // browsable' -- asserted the OPPOSITE of the current requirement.
+  // SUPERSEDED AGAIN (2026-10-06), owner verbatim: "i thought i was clear
+  // about that i wanted the bauer api to be open and not limit channels ...
+  // can't you make a global search for all its channels by removing a filter
+  // you now built that i said you shouldn't build." The channels gate is
+  // REVERSED: the channels tab shows the FULL list (all SR channels AND all
+  // Bauer stations) the moment the sheet opens. The gate below is
+  // podcasts-only again.
   //
   // WHAT DID NOT CHANGE, restated as the property rather than the constant so
-  // the next wording change cannot lose it: BOTH tabs are gated on an empty
-  // query, and NEITHER shows its rows before a search.
+  // the next wording change cannot lose it: the PODCASTS tab is gated on an
+  // empty query and shows no rows before a search; the CHANNELS tab is open.
   assert.match(renderList,
-    /if \(!searchQuery && \(tab === 'podcasts' \|\| tab === 'channels'\)\) \{/,
-    'both tabs must be gated on an empty query -- the owner asked for the '
-    + 'channel list to be removed as well, "for consistence"');
+    /if \(!searchQuery && tab === 'podcasts'\) \{/,
+    'the podcasts tab must be gated on an empty query');
+  assert.doesNotMatch(renderList,
+    /!searchQuery && \(tab === 'podcasts' \|\| tab === 'channels'\)/,
+    'the channels gate must stay removed -- the owner reversed it explicitly');
   assert.match(renderList, /class: 'pick-empty'/,
     'an empty state must be rendered in place of the rows');
   // SUPERSEDED (2026-10-03, second pass) -- a correction of a MISREAD
