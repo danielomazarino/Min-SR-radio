@@ -156,7 +156,8 @@ body {
   height: 44px;
   border-radius: 50%;
   color: var(--accent);
-  background: var(--accent-soft);
+  /* OWNER, 2026-10-06: circle background removed, matching .info-btn. */
+  background: none;   /* was var(--accent-soft) */
   border: none;
   cursor: pointer;
   display: flex;
@@ -544,7 +545,11 @@ a:focus-visible {
   border-bottom: 2px solid var(--text-secondary);
   transform: rotate(-135deg); /* pointing up = expanded (default) */
   transition: transform 0.2s ease;
-  margin-right: 4px;
+  /* OWNER, 2026-10-06: the chevron is part of the right-hand icon column.
+     The 4px margin pushed it out of line with the autoplay glyph's right
+     edge; 0 puts the pair on one visual line, and the 44px autoplay button
+     keeps the column's right edge identical to the cog and flash. */
+  margin-right: 0;
   flex: none;
 }
 .news-section:not(.expanded) .news-toggle-chevron {
@@ -3188,8 +3193,10 @@ body.player-gesture-lock {
   padding: 0;
   border: none;
   border-radius: 50%;
-  background: var(--accent-soft);   /* was transparent */
-  color: var(--accent);             /* was --text-secondary */
+  /* OWNER, 2026-10-06: the circle background is removed from both topbar
+     buttons. The glyph alone carries the control now. */
+  background: none;               /* was var(--accent-soft) */
+  color: var(--accent);
   cursor: pointer;
   flex: none;
   -webkit-tap-highlight-color: transparent;
