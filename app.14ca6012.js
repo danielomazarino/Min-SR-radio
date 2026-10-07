@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = 'fcf5ec3';
+  const APP_BUILD = 'e1e2b94';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -352,6 +352,80 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       image: 'https://media.bauerradio.com/image/upload/c_crop,g_custom/v1737034118/brand_manager/stations/op6ypjaehhe7gbxelsha.jpg',
     },
   ];
+
+  // ---- WS71: INTERNATIONAL RADIO ----
+  //
+  // OWNER, 2026-10-07: "i also want international radio for example bbc".
+  //
+  // Same pattern as Bauer: a small VERIFIED catalogue, ids in their own
+  // space (800000+, below Bauer's 900000+ and above SR's 132..5283), one
+  // entry per station. Every URL below was measured 2026-10-07:
+  //   - HTTP 200 with audio content-type,
+  //   - CORS `*` or echoing (tested with the deployed Pages origin),
+  //   - reached `canplay` in a real <audio> element in the browser.
+  // BBC's UK stations (Radio 1-4 etc.) geo-redirect to bbc.co.uk from
+  // outside the UK -- only the World Service is globally open. That is a
+  // fact of BBC's licensing, not a missing URL.
+  const INTL_STATIONS = [
+    {
+      id: 800001,
+      name: 'BBC World Service',
+      mp3: 'https://stream.live.vc.bbcmedia.co.uk/bbc_world_service',
+      siteurl: 'https://www.bbc.co.uk/worldserviceradio',
+      tagline: 'International news · BBC',
+      image: null,
+    },
+    {
+      id: 800002,
+      name: 'FIP (France)',
+      mp3: 'https://icecast.radiofrance.fr/fip-midfi.mp3',
+      siteurl: 'https://www.radiofrance.fr/fip',
+      tagline: 'Eclectic music · Radio France',
+      image: null,
+    },
+    {
+      id: 800003,
+      name: 'NPR News',
+      mp3: 'https://npr-ice.streamguys1.com/live.mp3',
+      siteurl: 'https://www.npr.org',
+      tagline: 'US news and talk · NPR',
+      image: null,
+    },
+  ];
+
+  /** Normalise an international station into the SAME shape Bauer rows use. */
+  function mapIntlStation(s) {
+    if (!s || typeof s !== 'object') return null;
+    if (!Number.isInteger(s.id) || s.id < 800000 || s.id >= 900000) return null;
+    const name = safeStr(s.name, 80);
+    if (!name) return null;
+    const mp3 = safeStr(s.mp3, 500) || safeStr(s.liveaudioUrl, 500) || null;
+    return {
+      id: s.id,
+      name,
+      tagline: safeStr(s.tagline, 80) || 'International · Direkt',
+      image: safeStr(s.image, 500) || null,
+      siteurl: safeStr(s.siteurl, 300) || null,
+      liveaudioUrl: mp3,
+      channeltype: 'International',
+      provider: 'intl',
+      candidates: [
+        { url: mp3, codec: 'mp3', bitrate: 128,
+          transport: 'direct', dvr: false, priority: 90 },
+      ].filter((c) => c.url),
+    };
+  }
+
+  // The full international catalogue, mapped once. Pure and static, like
+  // Bauer's: no fetch, no throw, no timeout needed.
+  const INTL_ROWS = INTL_STATIONS.map(mapIntlStation).filter(Boolean);
+
+  /** Search the international catalogue. Same contract as bauerSearch. */
+  function intlSearch(query) {
+    const q = (query || '').trim().toLowerCase();
+    if (!q) return INTL_ROWS;
+    return INTL_ROWS.filter((s) => s && s.name.toLowerCase().includes(q));
+  }
 
   /** Normalise a Bauer station into the SAME shape the SR channel rows read. */
   function mapBauerStation(s) {
@@ -745,15 +819,65 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     return true;
   }
 
+  // ---- WS71: international channel favourites. SAME pattern, own store. ----
+  // Ids 800000..899999 can never collide with SR (132..5283) or Bauer
+  // (900000+), but they still get their own storage for the same reason
+  // Bauer does: they must resolve against their OWN catalogue on load.
+  const INTL_FAV_KEY = 'minradio.channels.intl.v1';
+
+  function loadIntlFavorites() {
+    try {
+      const raw = localStorage.getItem(INTL_FAV_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map(mapIntlStation)
+        .filter(Boolean)
+        .slice(0, HARD_CAP);
+    } catch (err) {
+      console.warn('International favourites storage corrupted, resetting:', err);
+      return [];
+    }
+  }
+
+  function saveIntlFavorites(list) {
+    try {
+      localStorage.setItem(INTL_FAV_KEY, JSON.stringify(
+        (Array.isArray(list) ? list : []).slice(0, HARD_CAP)
+      ));
+      return true;
+    } catch (err) {
+      console.warn('Could not save international favourites:', err);
+      return false;
+    }
+  }
+
+  /** Toggle one international station in/out of the favourites. */
+  function toggleIntlFavorite(station) {
+    const list = loadIntlFavorites();
+    const idx = list.findIndex((p) => p.id === station.id);
+    if (idx >= 0) {
+      list.splice(idx, 1);
+      saveIntlFavorites(list);
+      return false;
+    }
+    if (list.length >= HARD_CAP) return false;
+    list.push(station);
+    saveIntlFavorites(list);
+    return true;
+  }
+
   /**
-   * The channel row's visible order across BOTH providers.
+   * The channel row's visible order across ALL providers.
    * Same contract as podcastRowOrder(): stored order wins for ids it contains,
    * anything unmentioned is appended in its own storage's order. A partial or
    * stale order key can therefore never drop a favourite.
    */
-  function channelRowOrder(srIds, bauerList) {
+  function channelRowOrder(srIds, bauerList, intlList) {
     const bauerIds = bauerList.map((p) => p.id);
-    const all = [...srIds, ...bauerIds];
+    const intlIds = (intlList || []).map((p) => p.id);
+    const all = [...srIds, ...bauerIds, ...intlIds];
     const stored = loadChannelOrder().filter((id) => all.includes(id));
     const missing = all.filter((id) => !stored.includes(id));
     return [...stored, ...missing];
@@ -817,10 +941,22 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       // The order key must follow, or the removed id would sit in it and the
       // next reorder would write a stale sequence.
       persistChannelRowOrder(
-        channelRowOrder(loadFavorites().channels, loadBauerFavorites())
+        channelRowOrder(loadFavorites().channels, loadBauerFavorites(), loadIntlFavorites())
           .filter((x) => x !== id)
       );
       return { ...removed, kind, provider: 'bauer' };
+    }
+    // ---- WS71: an international channel removes from the intl store. ----
+    if (kind === 'channels' && loadIntlFavorites().some((p) => p.id === id)) {
+      const list = loadIntlFavorites();
+      const idx = list.findIndex((p) => p.id === id);
+      const [removed] = list.splice(idx, 1);
+      saveIntlFavorites(list);
+      persistChannelRowOrder(
+        channelRowOrder(loadFavorites().channels, loadBauerFavorites(), loadIntlFavorites())
+          .filter((x) => x !== id)
+      );
+      return { ...removed, kind, provider: 'intl' };
     }
     // `name` is passed IN by the caller, because an SR favourite is stored as
     // a bare integer -- loadFavorites() returns ids only, with no name to
@@ -866,6 +1002,15 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       const at = Number.isInteger(index) ? Math.min(index, list.length) : list.length;
       list.splice(at, 0, row);
       saveBauerFavorites(list);
+      return true;
+    }
+    // WS71: an international row restores into the international store.
+    if (row.provider === 'intl') {
+      const list = loadIntlFavorites();
+      if (list.some((p) => p.id === row.id)) return false;
+      const at = Number.isInteger(index) ? Math.min(index, list.length) : list.length;
+      list.splice(at, 0, row);
+      saveIntlFavorites(list);
       return true;
     }
     if (row.provider === 'itunes') {
@@ -2576,7 +2721,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // request the stream with `Icy-MetaData: 1` and it serves a title block
     // every 1024 bytes), which is parsed by the Bauer metadata reader, not by
     // this poll. So for Bauer the SR poll simply does not run.
-    if (cur.provider === 'bauer') {
+    if (cur.provider === 'bauer' || cur.provider === 'intl') {
       stopNowPlayingPoll();
       return;
     }
@@ -3701,7 +3846,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       // The poll gate alone was not enough: resolveProgramTitle still fired
       // and asked SR's scheduledepisodes about channelid=900001 — an id that
       // is not SR's. Bauer metadata comes from the stream's own ICY blocks.
-      if (track.provider === 'bauer') {
+      if (track.provider === 'bauer' || track.provider === 'intl') {
         startSeekRateSampling();
       } else {
         startNowPlayingPoll();
@@ -8748,7 +8893,7 @@ function seekMeasureRecordText() {
       // sorting of channels regardless of source is a must".
       const list = isPod
         ? podcastRowOrder(favs[kind], extList)
-        : channelRowOrder(favs[kind], loadBauerFavorites());
+        : channelRowOrder(favs[kind], loadBauerFavorites(), loadIntlFavorites());
 
       const heading = isPod
         ? buildPodcastSectionHeading(title)
@@ -8771,9 +8916,11 @@ function seekMeasureRecordText() {
         // provider is still checked explicitly rather than by range -- a range
         // check is a guess about data this app does not own.
         const bauerList = isPod ? [] : loadBauerFavorites();
+        const intlList = isPod ? [] : loadIntlFavorites();
         const item = isPod
           ? resolvePodcastRow(catalogue, id, extList.some((p) => p.id === id) ? 'itunes' : 'sr')
           : (bauerList.find((p) => p.id === id)
+            || intlList.find((p) => p.id === id)
             || resolvePodcastRow(catalogue, id, 'sr'));
         if (!item) continue; // unknown id — skip silently
         const isExtPod = isPod && item.provider === 'itunes';
@@ -8787,7 +8934,8 @@ function seekMeasureRecordText() {
           // its id must never be read as an SR channel id.
           'data-stream-key': isExtPod ? `xpod:${item.id}`
             : (isPod ? `pod:${item.id}`
-              : (item.provider === 'bauer' ? `bauer:${item.id}` : `live:${item.id}`)),
+              : (item.provider === 'bauer' ? `bauer:${item.id}`
+                : (item.provider === 'intl' ? `intl:${item.id}` : `live:${item.id}`))),
           'data-stream-title': item.name,
           ...(isPod ? { 'data-stream-label': `Spela senaste avsnittet av ${item.name}` } : {}),
           'aria-pressed': 'false',
@@ -8801,23 +8949,35 @@ function seekMeasureRecordText() {
           // prefixed `bauer:` so a Bauer id can never be mistaken for an SR
           // channel in the playing-mark lookup, the same reason the podcast
           // key is prefixed `xpod:`.
-          onclick: () => (isPod
-            ? (isExtPod ? playExternalPodcast(item) : playPodcast(item.id))
-            : (item.provider === 'bauer'
-              ? toggleTrack({
+          onclick: () => {
+            if (isPod) {
+              if (isExtPod) playExternalPodcast(item);
+              else playPodcast(item.id);
+              return;
+            }
+            // WS69/WS71: Bauer and international channels play through the
+            // SAME toggleTrack with the SAME track shape -- only the
+            // candidates and the provider differ. The provider gates the SR
+            // poll and the schedule lookup; the prefixed stream key keeps
+            // the id spaces apart in the playing-mark lookup.
+            if (item.provider === 'bauer' || item.provider === 'intl') {
+              toggleTrack({
                 kind: 'live', id: item.id, title: item.name,
-                subtitle: 'Bauer Media · Direkt',
+                subtitle: item.tagline || 'Direkt',
                 audioUrl: item.liveaudioUrl, artwork: item.image,
                 description: item.tagline || null,
                 candidates: item.candidates || [],
-                provider: 'bauer',
-              })
-              : toggleTrack({
-                kind: 'live', id: item.id, title: item.name, subtitle: 'Direkt',
-                audioUrl: item.liveaudioUrl, artwork: item.image,
-                description: item.tagline || null,
-                candidates: liveCandidates(item),
-              }))),
+                provider: item.provider,
+              });
+              return;
+            }
+            toggleTrack({
+              kind: 'live', id: item.id, title: item.name, subtitle: 'Direkt',
+              audioUrl: item.liveaudioUrl, artwork: item.image,
+              description: item.tagline || null,
+              candidates: liveCandidates(item),
+            });
+          },
         });
         // Fas 5: long-press opens the context card (tablå for channels,
         // episode list for podcasts). Tap still plays.
@@ -9105,9 +9265,10 @@ function seekMeasureRecordText() {
     // original brief asked for ("håll tekniska detaljer borta från den
     // primära användarförklaringen") and what the old page never did.
     body.appendChild(el('p', { class: 'about-para',
-      text: 'Min Radio är en enkel radio-spelare för Sveriges Radio. Den körs '
-        + 'precis som en webbsida, men den går att lägga till på din phones '
-        + 'startskärm och då beter den sig som en vanlig app.' }));
+      text: 'Min Radio är en enkel radio-spelare för Sveriges Radio och '
+        + 'internationella kanaler. Den körs precis som en webbsida, men den '
+        + 'går att lägga till på din phones startskärm och då beter den sig '
+        + 'som en vanlig app.' }));
 
     body.appendChild(el('h3', { class: 'about-heading', text: 'Vad du kan göra' }));
     const items = [
@@ -9123,6 +9284,14 @@ function seekMeasureRecordText() {
         + 'när som helst, du behöver aldrig börja om.'],
       ['Se vädret', 'Temperaturen och platsen visas bredvid namnet. Appen frågar '
         + 'en gång, och kommer ihåg var du är.'],
+      ['Lyssna på kommersiella kanaler', 'Mix Megapol, Rockklassiker, NRJ och '
+        + 'Radio Nostalgi finns i kanalsökningen, tillsammans med SR:s kanaler.'],
+      ['Lyssna internationellt', 'BBC World Service, FIP (Frankrike) och NPR '
+        + 'News (USA) finns också i kanalsökningen — sök på namnet.'],
+      ['Nyheter i följd', 'Blinka-ikonen bredvid Nyheter spelar nyheterna i '
+        + 'följd automatiskt. Tryck på den för att slå på eller av.'],
+      ['Favoriter i valfri ordning', 'Håll inne och dra för att sortera dina '
+        + 'kanaler och poddar — ordningen gäller både i listan och på hemskärmen.'],
     ];
     for (const [t, d] of items) {
       body.appendChild(el('div', { class: 'about-card' },
@@ -9174,6 +9343,10 @@ function seekMeasureRecordText() {
     body.appendChild(el('h3', { class: 'about-heading', text: 'Datakällor & villkor' }));
     body.appendChild(el('ul', { class: 'about-list' },
       el('li', {}, 'Kanaler, poddar, ljud och nyheter: Sveriges Radios öppna API v2'),
+      el('li', {}, 'Kommersiella kanaler: Bauers öppna strömmar (Mix Megapol, '
+        + 'Rockklassiker, NRJ, Radio Nostalgi)'),
+      el('li', {}, 'Internationellt: BBC World Service, FIP (Radio France), '
+        + 'NPR News — öppna, offentliga strömmar'),
       el('li', {}, 'Väder: Open-Meteo (gratis, utan konto)'),
       el('li', {}, 'Data från ',
         el('a', { href: 'https://www.sverigesradio.se', target: '_blank', rel: 'noopener', text: 'Sveriges Radio' }),
@@ -10444,7 +10617,8 @@ function seekMeasureRecordText() {
       // stays disabled. Exactly the defect the podcast fix describes.
       const n = picks[tab].length
         + (tab === 'podcasts' ? loadExternalPodcasts().length : 0)
-        + (tab === 'channels' ? loadBauerFavorites().length : 0);
+        + (tab === 'channels' ? loadBauerFavorites().length : 0)
+        + (tab === 'channels' ? loadIntlFavorites().length : 0);
       counter.textContent = tab === 'channels'
         ? `Kanaler (${n} valda)`
         : `Poddar (${n} valda)`;
@@ -10456,7 +10630,8 @@ function seekMeasureRecordText() {
       // this function was already fixed for.
       const total = picks.channels.length + picks.podcasts.length
         + loadExternalPodcasts().length
-        + loadBauerFavorites().length;
+        + loadBauerFavorites().length
+        + loadIntlFavorites().length;
       doneBtn.disabled = total === 0;
       doneBtn.textContent = 'Spara';
       doneBtn.title = total === 0 ? 'Välj minst en kanal eller podd först' : '';
@@ -10480,6 +10655,21 @@ function seekMeasureRecordText() {
           if (bauerRow) {
             persistChannelRowOrder(
               channelRowOrder(loadFavorites().channels, loadBauerFavorites())
+            );
+          }
+          updateCounter();
+          doneBtnState();
+          renderList();
+          rebuildSelected();
+          return;
+        }
+        // WS71: international rows route to their OWN storage, same shape.
+        const intlRow = items.channels?.find((i) => i.id === id && i.provider === 'intl');
+        if (intlRow || loadIntlFavorites().some((p) => p.id === id)) {
+          toggleIntlFavorite(intlRow || INTL_STATIONS.map(mapIntlStation).find((s) => s.id === id));
+          if (intlRow) {
+            persistChannelRowOrder(
+              channelRowOrder(loadFavorites().channels, loadBauerFavorites(), loadIntlFavorites())
             );
           }
           updateCounter();
@@ -10569,15 +10759,14 @@ function seekMeasureRecordText() {
       // tabs are identical in shape and differ only in wording. That EXEMPTION
       // comment above is therefore now false and must not be left to mislead.
       //
-      // OWNER, 2026-10-06, REVERSED for channels: "i thought i was clear about
-      // that i wanted the bauer api to be open and not limit channels ... can't
-      // you make a global search for all its channels by removing a filter you
-      // now built that i said you shouldn't build." The channels tab shows the
-      // FULL list again -- all SR channels AND all Bauer stations -- the moment
-      // the sheet opens, no search needed. The gate below now applies to the
-      // podcasts tab only. The search box stays: it filters the open list.
-      if (!searchQuery && tab === 'podcasts') {
-        const isPod = true;
+      // OWNER, 2026-10-07, FINAL: the open list was restored by mistake and
+      // is now removed again. The owner's 2026-10-06 message was about the
+      // BAUER CATALOGUE being complete (no stations filtered out), not about
+      // re-showing the long list. The gate below is back to BOTH tabs: no
+      // rows before a search, on channels or podcasts. The Bauer stations
+      // remain reachable through the search box, which searches everything.
+      if (!searchQuery && (tab === 'podcasts' || tab === 'channels')) {
+        const isPod = tab === 'podcasts';
         listWrap.appendChild(el('div', { class: 'pick-empty' },
           el('p', { class: 'pick-empty-title', text: isPod
             ? 'Poddar från Sveriges Radio och iTunes'
@@ -10660,7 +10849,9 @@ function seekMeasureRecordText() {
           // WS69: a Bauer row says who it is -- "Commercial" would read as a
           // category label with no source, exactly the ambiguity the owner
           // asked to remove for podcasts.
-          sub = item.provider === 'bauer' ? (item.tagline || 'Bauer Media') : item.channeltype;
+          sub = item.provider === 'bauer' ? (item.tagline || 'Bauer Media')
+            : item.provider === 'intl' ? (item.tagline || 'International')
+            : item.channeltype;
         } else if (isExt) {
           // The provider's OWN text, unchanged. For iTunes this is
           // `primaryGenreName` -- "Teknologi" -- which the owner explicitly wants
@@ -10774,14 +10965,16 @@ function seekMeasureRecordText() {
           const srChans = cq
             ? chans.filter((c) => (c.name || '').toLowerCase().includes(cq))
             : chans;
-          // OWNER, 2026-10-06: the Bauer stations must be in the OPEN list
-          // too, not only behind a search -- "i wanted the bauer api to be
-          // open and not limit channels". bauerSearch('') returns the whole
-          // catalogue (its empty-query guard returns []), so pass the query
-          // through and let the function decide; for an empty query the
-          // full station list is appended after the full SR list.
+          // The Bauer stations are reachable through the SEARCH (the list
+          // itself is gated again, owner 2026-10-07). bauerSearch('') now
+          // returns the whole catalogue, but with the gate restored an empty
+          // query never reaches this line -- so this stays query-driven and
+          // the empty-catalogue branch in bauerSearch is harmless here.
           const bauerRows = bauerSearch(cq);
-          items.channels = [...srChans, ...bauerRows];
+          // WS71: international stations appended after Bauer -- SR first,
+          // then Bauer, then international. Each source can only add rows.
+          const intlRows = intlSearch(cq);
+          items.channels = [...srChans, ...bauerRows, ...intlRows];
         } else {
           const all = await fetchPodcasts();
           // client-side search (SR's server-side name filter is broken)
@@ -11015,9 +11208,10 @@ function seekMeasureRecordText() {
       // channelRowOrder the home row uses -- so the arrangement made here IS
       // the arrangement on the home screen, for both providers.
       const bauerList = kind === 'channels' ? loadBauerFavorites() : [];
+      const intlList = kind === 'channels' ? loadIntlFavorites() : [];
       const list = kind === 'podcasts'
         ? podcastRowOrder(srIds, extList)
-        : channelRowOrder(srIds, bauerList);
+        : channelRowOrder(srIds, bauerList, intlList);
       if (!list.length) {
         group.appendChild(el('div', { class: 'selected-empty', text: 'Inga valda ännu.' }));
         return group;
@@ -11035,6 +11229,8 @@ function seekMeasureRecordText() {
         // place.
         const before = provider === 'bauer'
           ? loadBauerFavorites().findIndex((p) => p.id === id)
+          : provider === 'intl'
+          ? loadIntlFavorites().findIndex((p) => p.id === id)
           : provider === 'itunes'
           ? loadExternalPodcasts().findIndex((p) => p.id === id)
           : loadFavorites()[kind].indexOf(id);
@@ -11050,9 +11246,9 @@ function seekMeasureRecordText() {
         // the order key and reappear if the same podcast were re-added.
         // WS69: a Bauer removal persists the CHANNEL order key, not the
         // podcast one -- the two keys are separate stores.
-        if (removed.provider === 'bauer') {
+        if (removed.provider === 'bauer' || removed.provider === 'intl') {
           persistChannelRowOrder(
-            channelRowOrder(loadFavorites().channels, loadBauerFavorites())
+            channelRowOrder(loadFavorites().channels, loadBauerFavorites(), loadIntlFavorites())
               .filter((x) => x !== id)
           );
         } else if (kind === 'podcasts') {
@@ -11076,9 +11272,9 @@ function seekMeasureRecordText() {
           // Put it back where it was, in the ORDER too -- otherwise undo
           // would restore the podcast but lose its position. WS69: a Bauer
           // undo restores the CHANNEL order key.
-          if (removed.provider === 'bauer') {
+          if (removed.provider === 'bauer' || removed.provider === 'intl') {
             persistChannelRowOrder(
-              channelRowOrder(loadFavorites().channels, loadBauerFavorites())
+              channelRowOrder(loadFavorites().channels, loadBauerFavorites(), loadIntlFavorites())
             );
           } else if (kind === 'podcasts') {
             persistPodcastRowOrder(
@@ -11097,11 +11293,14 @@ function seekMeasureRecordText() {
         // WS69: a Bauer row resolves against the Bauer favourites, and its
         // provider is passed through so remove/move route to the right store.
         const isBauer = bauerList.some((p) => p.id === id);
+        const isIntl = intlList.some((p) => p.id === id);
         const item = isBauer
           ? bauerList.find((p) => p.id === id)
+          : isIntl
+          ? intlList.find((p) => p.id === id)
           : resolvePodcastRow(catalogue, id, isExt ? 'itunes' : 'sr');
         if (!item) return;
-        const rowProvider = isBauer ? 'bauer' : (isExt ? 'itunes' : 'sr');
+        const rowProvider = isBauer ? 'bauer' : isIntl ? 'intl' : (isExt ? 'itunes' : 'sr');
         const rowEl = el('div', {
           class: 'selected-item', draggable: 'true', 'data-id': String(id),
           // Marks the row for persistExternalOrder(), which selects on it.
@@ -11110,7 +11309,7 @@ function seekMeasureRecordText() {
           // no closure over isBauer/isExt, so the row must carry the truth.
           // Without this a Bauer swipe would be routed to 'sr' and undo
           // would restore at the wrong index in the wrong store.
-          ...(isBauer ? { 'data-provider': 'bauer' } : {}),
+          ...(isBauer || isIntl ? { 'data-provider': rowProvider } : {}),
         },
           // The delete action revealed BEHIND the row as it slides left, in the
           // iOS Mail / WhatsApp idiom: a plain coloured panel with an ICON and
@@ -11161,8 +11360,11 @@ function seekMeasureRecordText() {
           // WS69: a Bauer row swaps within the unified CHANNEL order, then
           // each provider's slice is written back to its own store -- the
           // same contract as the podcasts branch below.
-          if (bauerList.some((p) => p.id === id)) {
-            const current = channelRowOrder(loadFavorites().channels, bauerList);
+          if (bauerList.some((p) => p.id === id) || intlList.some((p) => p.id === id)) {
+            // WS69/WS71: an external-provider row swaps within the unified
+            // CHANNEL order, then each provider's slice is written back to
+            // its own store -- the same contract as the podcasts branch.
+            const current = channelRowOrder(loadFavorites().channels, bauerList, intlList);
             const from = current.indexOf(id);
             if (from === -1) return;
             const to = direction === 'up' ? from - 1 : from + 1;
@@ -11170,12 +11372,16 @@ function seekMeasureRecordText() {
             const next = [...current];
             [next[from], next[to]] = [next[to], next[from]];
             const bauerIds = new Set(bauerList.map((p) => p.id));
+            const intlIds = new Set(intlList.map((p) => p.id));
             const favs = loadFavorites();
-            favs.channels = next.filter((x) => !bauerIds.has(x));
+            favs.channels = next.filter((x) => !bauerIds.has(x) && !intlIds.has(x));
             saveFavorites(favs);
             saveBauerFavorites(next
               .filter((x) => bauerIds.has(x))
               .map((x) => bauerList.find((p) => p.id === x)));
+            saveIntlFavorites(next
+              .filter((x) => intlIds.has(x))
+              .map((x) => intlList.find((p) => p.id === x)));
             persistChannelRowOrder(next);
             rebuildSelected();
             return;
@@ -11288,6 +11494,12 @@ function seekMeasureRecordText() {
           saveBauerFavorites(order
             .filter((id) => bauerIds.has(id))
             .map((id) => bauerList.find((p) => p.id === id)));
+          // WS71: the intl slice is written back the same way.
+          const intlList = loadIntlFavorites();
+          const intlIds = new Set(intlList.map((p) => p.id));
+          saveIntlFavorites(order
+            .filter((id) => intlIds.has(id))
+            .map((id) => intlList.find((p) => p.id === id)));
           persistChannelRowOrder(order);
         }
       };
