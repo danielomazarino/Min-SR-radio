@@ -743,6 +743,13 @@ function removalHarness({ sr = { channels: [], podcasts: [164] }, ext = [], baue
       mapBauerStation: makeFn('mapBauerStation', { ...deps, BAUER_STREAM_BASE: 'https://live-bauerse-fm.sharp-stream.com' }),
     }),
     saveBauerFavorites: makeFn('saveBauerFavorites', { ...deps, BAUER_FAV_KEY: 'minradio.channels.bauer.v1', HARD_CAP: 16 }),
+    // WS71: the intl branch of removeFavoriteRow/restoreFavoriteRow reads these.
+    loadIntlFavorites: makeFn('loadIntlFavorites', {
+      ...deps,
+      INTL_FAV_KEY: 'minradio.channels.intl.v1',
+      mapIntlStation: makeFn('mapIntlStation', deps),
+    }),
+    saveIntlFavorites: makeFn('saveIntlFavorites', { ...deps, INTL_FAV_KEY: 'minradio.channels.intl.v1', HARD_CAP: 16 }),
     loadChannelOrder: () => JSON.parse(store['minradio.channels.order.v1'] || '[]'),
     saveChannelOrder: (ids) => { store['minradio.channels.order.v1'] = JSON.stringify(ids); },
     channelRowOrder: makeFn('channelRowOrder', { loadChannelOrder: () => JSON.parse(store['minradio.channels.order.v1'] || '[]') }),
@@ -895,8 +902,8 @@ test('the ✕ button and the swipe share ONE removal implementation', () => {
   // WS69: the swipe has no closure over the row's provider, so the row must
   // CARRY it. A Bauer row without data-provider would be routed to 'sr' and
   // undo would restore at the wrong index in the wrong store.
-  assert.match(grp, /\.\.\.\(isBauer \? \{ 'data-provider': 'bauer' \} : \{\}\)/,
-    'a Bauer row must carry its provider for the gesture to read');
+  assert.match(grp, /\.\.\.\(isBauer \|\| isIntl \? \{ 'data-provider': rowProvider \} : \{\}\)/,
+    'an external row must carry its provider for the gesture to read');
 });
 
 test('removal is reversible and the undo toast is a real button', () => {
@@ -1315,22 +1322,21 @@ test('WS44c: the unsearched podcast list shows a prompt, not 371 rows', () => {
   // Kanaler is clicked and implement a similar search box as for Poddar".
   //
   // SUPERSEDED AGAIN (2026-10-06), owner verbatim: "i thought i was clear
-  // about that i wanted the bauer api to be open and not limit channels ...
-  // can't you make a global search for all its channels by removing a filter
-  // you now built that i said you shouldn't build." The channels gate is
-  // REVERSED: the channels tab shows the FULL list (all SR channels AND all
-  // Bauer stations) the moment the sheet opens. The gate below is
-  // podcasts-only again.
+  // about that i wanted the bauer api to be open and not limit channels".
+  // That message was about the BAUER CATALOGUE being complete (no stations
+  // filtered out) -- it was misread as a request to re-show the long list.
+  //
+  // FINAL (2026-10-07), owner verbatim: "Complete drift from my prompt. the
+  // list we took away and it should go." The gate is back on BOTH tabs: no
+  // rows before a search, on channels or podcasts. The Bauer stations stay
+  // reachable through the search box, which searches everything.
   //
   // WHAT DID NOT CHANGE, restated as the property rather than the constant so
-  // the next wording change cannot lose it: the PODCASTS tab is gated on an
-  // empty query and shows no rows before a search; the CHANNELS tab is open.
+  // the next wording change cannot lose it: BOTH tabs are gated on an empty
+  // query, and NEITHER shows its rows before a search.
   assert.match(renderList,
-    /if \(!searchQuery && tab === 'podcasts'\) \{/,
-    'the podcasts tab must be gated on an empty query');
-  assert.doesNotMatch(renderList,
-    /!searchQuery && \(tab === 'podcasts' \|\| tab === 'channels'\)/,
-    'the channels gate must stay removed -- the owner reversed it explicitly');
+    /if \(!searchQuery && \(tab === 'podcasts' \|\| tab === 'channels'\)\) \{/,
+    'both tabs must be gated on an empty query -- the list stays hidden until a search');
   assert.match(renderList, /class: 'pick-empty'/,
     'an empty state must be rendered in place of the rows');
   // SUPERSEDED (2026-10-03, second pass) -- a correction of a MISREAD
@@ -5200,9 +5206,11 @@ test('bauerSearch is a pure filter: empty query, no match, case-insensitive', ()
      ];
      ${grab('bauerSearch')}
      return bauerSearch;`)();
-  // WS69 OWNER REVERSAL 2026-10-06: an empty query returns the WHOLE
-  // catalogue -- the channels list is open, so the Bauer stations appear
-  // without the user typing anything.
+  // WS69 (2026-10-07): an empty query still returns the WHOLE catalogue.
+  // The list gate is back (owner 2026-10-07: "the list we took away and it
+  // should go"), but the search box must reach every Bauer station with
+  // zero characters typed being irrelevant -- a query filters, an empty
+  // query lists everything. This is what makes the stations searchable.
   assert.equal(searchWithList('').length, 2, 'empty query -> whole catalogue');
   assert.equal(searchWithList('   ').length, 2, 'whitespace-only -> whole catalogue');
   assert.deepEqual(searchWithList('zzzz'), [], 'no match -> empty, never a throw');
@@ -5225,8 +5233,8 @@ test('search merges BOTH providers with SR first and Bauer appended', () => {
   // Bauer stations too.
   assert.match(load, /const bauerRows = bauerSearch\(cq\)/,
     'Bauer rows are appended unconditionally -- the list is open');
-  assert.match(load, /items\.channels = \[\.\.\.srChans, \.\.\.bauerRows\]/,
-    'SR first, Bauer after -- never interleaved or prepended');
+  assert.match(load, /items\.channels = \[\.\.\.srChans, \.\.\.bauerRows, \.\.\.intlRows\]/,
+    'SR first, then Bauer, then international -- never interleaved or prepended');
 });
 
 test('a Bauer search failure cannot break SR search', () => {
@@ -5327,11 +5335,11 @@ test('the home channels row and the sheet share ONE order function', () => {
   // longer exists in app.js -- the next function after buildIconSection is now
   // openUserHelp. The region still covers the whole icon section.
   const home = region('function buildIconSection', 'function openUserHelp', src);
-  assert.match(home, /channelRowOrder\(favs\[kind\], loadBauerFavorites\(\)\)/,
+  assert.match(home, /channelRowOrder\(favs\[kind\], loadBauerFavorites\(\), loadIntlFavorites\(\)\)/,
     'the home row must interleave through the shared order function');
   // The sheet:
   const sheet = region('function buildSelectedGroup', 'function enableDragSort', src);
-  assert.match(sheet, /channelRowOrder\(srIds, bauerList\)/,
+  assert.match(sheet, /channelRowOrder\(srIds, bauerList, intlList\)/,
     'the sheet must use the same order function');
 });
 
@@ -5340,14 +5348,17 @@ test('a Bauer channel plays through toggleTrack with the bauer: stream key', () 
   // WS69 MARKER CORRECTION: end marker is openUserHelp now (see the order
   // test above for why).
   const home = region('function buildIconSection', 'function openUserHelp', src);
-  assert.match(home, /provider: 'bauer'/,
-    'the track must carry provider:bauer so the SR poll is gated off');
+  // WS71: the bauer and intl branches share one toggleTrack call; the
+  // provider is passed through from the item, so the SR poll is gated for both.
+  assert.match(home, /provider: item\.provider/,
+    'the track must carry the item provider so the SR poll is gated off');
   assert.match(home, /bauer:\$\{item\.id\}/,
     'the stream key must be prefixed so a Bauer id is never read as SR');
   // And the poll gate:
   const poll = stripComments(grab('pollNowPlaying'));
-  assert.match(poll, /if \(cur\.provider === 'bauer'\) \{\s*stopNowPlayingPoll\(\);\s*return;/,
-    'the SR rightnow poll must not run for a Bauer channel');
+  // WS71: the poll gate covers Bauer AND international channels.
+  assert.match(poll, /if \(cur\.provider === 'bauer' \|\| cur\.provider === 'intl'\) \{\s*stopNowPlayingPoll\(\);\s*return;/,
+    'the SR rightnow poll must not run for a Bauer or international channel');
 });
 
 test('the search row names the Bauer source, not a bare category', () => {
@@ -5356,6 +5367,8 @@ test('the search row names the Bauer source, not a bare category', () => {
   // first consumer of the value -- the old 'const btn = el(' marker matched an
   // EARLIER button in the same function and cut the region short.
   const list = region('let sub;', "if (sub) textWrap.appendChild(el('div', { class: 'pick-sub'", src);
-  assert.match(list, /item\.provider === 'bauer' \? \(item\.tagline \|\| 'Bauer Media'\) : item\.channeltype/,
+  assert.match(list, /item\.provider === 'bauer' \? \(item\.tagline \|\| 'Bauer Media'\)/,
     'a Bauer row must say Bauer Media, not "Commercial"');
+  assert.match(list, /item\.provider === 'intl' \? \(item\.tagline \|\| 'International'\)/,
+    'an international row must say its source, not a bare category');
 });

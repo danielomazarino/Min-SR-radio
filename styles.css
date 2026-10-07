@@ -545,11 +545,12 @@ a:focus-visible {
   border-bottom: 2px solid var(--text-secondary);
   transform: rotate(-135deg); /* pointing up = expanded (default) */
   transition: transform 0.2s ease;
-  /* OWNER, 2026-10-06: the chevron is part of the right-hand icon column.
-     The 4px margin pushed it out of line with the autoplay glyph's right
-     edge; 0 puts the pair on one visual line, and the 44px autoplay button
-     keeps the column's right edge identical to the cog and flash. */
-  margin-right: 0;
+  /* OWNER, 2026-10-07: "the chevron is too tight to the autoplay toggle".
+     Measured: the chevron's right edge OVERLAPPED the autoplay button's
+     left edge by 2px. 8px of margin restores a clear gap that mirrors the
+     topbar's button spacing, while the autoplay glyph's right edge stays
+     on the shared alignment line with the cog and flash. */
+  margin-right: 8px;
   flex: none;
 }
 .news-section:not(.expanded) .news-toggle-chevron {
@@ -3156,7 +3157,10 @@ body.player-gesture-lock {
 .topbar-right {
   display: flex;
   align-items: center;
-  gap: 4px;
+  /* OWNER, 2026-10-07: "the info icon should move a bit closer to the cog
+     wheel". The gap was 4px; 2px pulls the pair together without them
+     touching. */
+  gap: 2px;
   flex: none;
 }
 /* ---- E4, second pass (2026-10-03): the Info button LOOKS like the cog. ----

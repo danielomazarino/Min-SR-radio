@@ -101,8 +101,26 @@ let onclickCanary = 0;
  * Returns the body including its wrapping parens.
  */
 function extractOnclick(src) {
-  const anchor = src.indexOf('onclick: () => (');
-  assert.notEqual(anchor, -1, 'onclick: () => (...) not found in buildIconSection');
+  // WS71: the onclick is now a BLOCK body `onclick: () => { ... }` (the
+  // bauer/intl branches made the arrow-paren form unreadable). Handle both.
+  const parenAnchor = src.indexOf('onclick: () => (');
+  const blockAnchor = src.indexOf('onclick: () => {');
+  assert.ok(parenAnchor !== -1 || blockAnchor !== -1,
+    'onclick: () => (...) not found in buildIconSection');
+  if (blockAnchor !== -1 && (parenAnchor === -1 || blockAnchor < parenAnchor)) {
+    const open = src.indexOf('{', blockAnchor + 'onclick: () =>'.length);
+    assert.notEqual(open, -1, 'could not find the opening brace of the onclick body');
+    let depth = 0;
+    for (let i = open; i < src.length; i += 1) {
+      if (src[i] === '{') depth += 1;
+      else if (src[i] === '}') {
+        depth -= 1;
+        if (depth === 0) return src.slice(open, i + 1);
+      }
+    }
+    assert.fail('unbalanced braces in onclick block');
+  }
+  const anchor = parenAnchor;
   const open = src.indexOf('(', anchor + 'onclick: ()'.length);
   assert.notEqual(open, -1, 'could not find the opening paren of the onclick body');
   let depth = 0;
@@ -121,19 +139,26 @@ function extractOnclick(src) {
  * Execute an extracted onclick body with the given state and report which
  * playback function it reached.
  */
+// WS71: records WHICH stub fired, since a block body has no return value.
+let onclickFired = '';
 function runOnclick(expr, isPod, isExtPod, item) {
+  // WS71: the onclick may be a BLOCK body (no implicit return value). The
+  // stubs still report through the canary counter, which is the observable
+  // the tests assert on; the return value is surfaced when the body has one.
+  onclickFired = '';
   const fn = new Function(
     'isPod', 'isExtPod', 'item', 'playPodcast', 'playExternalPodcast',
     'toggleTrack', 'liveCandidates',
-    `return () => ${expr};`
+    `return () => { const __r = (() => ${expr})(); return __r === undefined ? 'block' : __r; };`
   );
-  return fn(
+  const out = fn(
     isPod, isExtPod, item,
-    (id) => { onclickCanary += 1; return `playPodcast(${id})`; },
-    (pod) => { onclickCanary += 1; return `playExternalPodcast(${pod.id})`; },
-    () => { onclickCanary += 1; return 'toggleTrack'; },
+    (id) => { onclickCanary += 1; onclickFired = `playPodcast(${id})`; return `playPodcast(${id})`; },
+    (pod) => { onclickCanary += 1; onclickFired = `playExternalPodcast(${pod.id})`; return `playExternalPodcast(${pod.id})`; },
+    () => { onclickCanary += 1; onclickFired = 'toggleTrack'; return 'toggleTrack'; },
     () => []
   )();
+  return out === 'block' ? onclickFired : out;
 }
 
 test('CANARY: the executed-branch harness really runs app.js code', () => {
@@ -147,6 +172,8 @@ test('CANARY: the executed-branch harness really runs app.js code', () => {
   assert.equal(onclickCanary, before + 1,
     'the extracted code must actually execute -- a counter that does not move '
     + 'means the harness proved nothing');
+  // WS71: the stub now reports WHICH function fired, so the assertion is
+  // stronger than before -- it names the call, not just the return value.
   assert.equal(got, 'playPodcast(1)');
 });
 
