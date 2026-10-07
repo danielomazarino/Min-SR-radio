@@ -3740,9 +3740,13 @@ test('E4: every diagnostics button sits ABOVE every result', () => {
   assert.equal(pad[2], '16',
     'ITEM 4: the player inline padding must stay 16px -- ITEM 4 adds vertical '
     + 'space only, and changing the inline value moves the whole text column');
-  assert.match(playerBlock, /padding:\s*11px 16px calc\(/,
-    'ITEM 4: the player padding must be the +1px block variant of the original '
-    + '`10px 16px ...`, i.e. vertical-only growth');
+  // WS73 (owner, 2026-10-07): "the rows still feel a bit too tight ... increase
+  // the rows a bit more vertically". The block value is therefore SUPERSEDED --
+  // it grew 11 -> 13px top. Asserted as a PROPERTY (block-only growth, inline
+  // still 16) rather than the literal 11px, which the new instruction changed.
+  assert.match(playerBlock, /padding:\s*1[0-9]px 16px calc\(/,
+    'ITEM 4: the player padding must be block-variant only of the original '
+    + '`10px 16px ...` -- the inline 16px must not move, the block value may');
   // The header row's own padding: vertical only, inline values stay 0.
   const headerBlock = cssI4.slice(cssI4.indexOf('.player-header {'),
     cssI4.indexOf('}', cssI4.indexOf('.player-header {')));
@@ -5113,10 +5117,21 @@ test('WS67: the news scroller has room for the outset ring on left and top', () 
 test('WS68: the player rows gain vertical room without any horizontal change', () => {
   const css = stripComments(fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8'));
   // The container's horizontal padding must be byte-identical: 16px inline.
+  // WS73 (owner, 2026-10-07): the BLOCK padding legitimately grew 11 -> 13px
+  // top ("the rows still feel a bit too tight ... increase the rows a bit more
+  // vertically"), so anchoring the whole shorthand would fail on the very
+  // change the owner asked for. The guard's stated purpose is the HORIZONTAL
+  // value, so it now pins that exactly and checks the block values separately:
+  // the inline 16px cannot move, which is the property that keeps every row on
+  // the artwork's edge.
   const player = css.match(/\.player\s*\{([^}]*)\}/);
   assert.ok(player, '.player must exist');
-  assert.match(player[1], /padding:\s*11px 16px /,
+  const padMatch = player[1].match(/padding:\s*(\d+)px\s+(\d+)px/);
+  assert.ok(padMatch, '.player must declare a vertical/horizontal padding pair');
+  assert.equal(padMatch[2], '16',
     'the player\'s horizontal padding must stay 16px -- the owner asked for VERTICAL space only');
+  assert.ok(Number(padMatch[1]) >= 11,
+    `the block padding must not shrink below the WS68 value of 11px; got ${padMatch[1]}px`);
   // The rows breathe via line-height, not padding.
   // The regex is anchored to LINE START (`^` + `m` flag). Unanchored, it matched
   // `.player-mini .player-title` first -- the substring `.player-title` occurs
@@ -5126,15 +5141,31 @@ test('WS68: the player rows gain vertical room without any horizontal change', (
   for (const sel of ['.player-title', '.player-sub']) {
     const rule = css.match(new RegExp(`^${sel.replace(/\./g, '\\.')}\\s*\\{([^}]*)\\}`, 'm'));
     assert.ok(rule, `${sel} must exist as its own top-level rule`);
-    assert.match(rule[1], /line-height:\s*1\.45/,
+    assert.match(rule[1], /line-height:\s*1\.55/,
       `${sel} must carry the vertical breathing room`);
     assert.ok(!/padding/.test(rule[1]),
       `${sel} must NOT use padding for the extra room -- that would grow the player's total height`);
   }
   // The meta row has a floor so the taller line boxes have something to sit in.
+  // WS73 (owner, 2026-10-07): "the rows still feel a bit too tight" -- floor
+  // raised 22 -> 26px and the line-heights 1.45 -> 1.55, both restated here.
   const metaRow = css.match(/^\.player-meta-row\s*\{([^}]*)\}/m);
   assert.ok(metaRow, '.player-meta-row must exist');
-  assert.match(metaRow[1], /min-height:\s*22px/, '.player-meta-row needs its floor');
+  assert.match(metaRow[1], /min-height:\s*26px/, '.player-meta-row needs its floor');
+  // WS73: the gap between the identity row and the quality pill must actually
+  // be consumed -- WS68 declared --player-row-gap but the pill's own 3px
+  // margin-top absorbed it in a block container, so the value separated
+  // nothing. .player-meta is now a flex column and the pill margin is gone.
+  const meta = css.match(/^\.player-meta\s*\{([^}]*)\}/m);
+  assert.ok(meta, '.player-meta must exist');
+  assert.match(meta[1], /flex-direction:\s*column/,
+    '.player-meta must be a flex column for row-gap to separate the two rows');
+  assert.match(meta[1], /row-gap:\s*var\(--player-row-gap\)/,
+    '.player-meta must consume --player-row-gap');
+  const quality = css.match(/^\.player-quality\s*\{([^}]*)\}/m);
+  assert.ok(quality, '.player-quality must exist');
+  assert.ok(!/margin-top/.test(quality[1]),
+    'the pill must not add its own top margin now that row-gap separates the rows');
   // The song-links row must be tall enough for the 24px glyphs.
   const links = css.match(/^\.song-links\s*\{([^}]*)\}/m);
   assert.ok(links, '.song-links must exist');
@@ -5411,4 +5442,30 @@ test('WS72: every international station carries a verified logo URL', () => {
     assert.match(src, /image:\s*safeStr\(s\.image, 500\) \|\| null/,
       'mapIntlStation must pass the image through to the row');
   }
+});
+
+test('WS73: the transport gap widens without squeezing the text column', () => {
+  const css = stripComments(fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8'));
+  // OWNER, 2026-10-07: "the +- 15 seconds arrows would benefit from moving a bit
+  // from the play button horizontally ... give some more room for the arrows".
+  // The controls row shares .player-row with the text column and the controls
+  // are flex:none, so every pixel of gap comes out of the title and the quality
+  // pill. MEASURED with the widest (five-button, DVR) row at 390px:
+  //   gap 4  -> controls 220px, text column 70.1px, pill fits (57.9px)
+  //   gap 12 -> controls 252px, text column 38.1px, pill SPILLS
+  // 8px is the largest value that keeps the pill intact at 375/390/430px, and
+  // the programme-skip buttons narrow to 36px so the row's total width is
+  // unchanged -- without that, even 8px would squeeze the column.
+  const controls = css.match(/^\.player-controls\s*\{([^}]*)\}/m);
+  assert.ok(controls, '.player-controls must exist');
+  const gap = controls[1].match(/gap:\s*(\d+)px/);
+  assert.ok(gap, '.player-controls must declare an explicit gap');
+  assert.ok(Number(gap[1]) >= 8,
+    `the arrow-to-play gap must grow past the old 4px; got ${gap[1]}px`);
+  assert.ok(Number(gap[1]) <= 8,
+    `the gap must not exceed 8px -- the measured pill-spill threshold on a five-button DVR row; got ${gap[1]}px`);
+  const prog = css.match(/^\.dvr-program-btn\s*\{([^}]*)\}/m);
+  assert.ok(prog, '.dvr-program-btn must have a rule of its own');
+  assert.match(prog[1], /width:\s*36px/,
+    'the programme-skip buttons must match the 36px step buttons, which is what pays for the wider gap');
 });

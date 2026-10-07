@@ -3348,8 +3348,18 @@ test('WS12 Part B: the controls row carries the TRANSPORT only', () => {
   // window.innerWidth` is FALSE in every broken case, because flex items
   // shrink rather than overflow the document -- measuring the row itself is
   // the only way to see this.
-  assert.ok(/\.player-meta \{ min-width: 0; flex: 1; \}/.test(stripComments(STYLES_WS5)),
-    '.player-meta must keep min-width:0 + flex:1, the cause of the 0px squeeze');
+  // WS73 (2026-10-07): the rule gained `display: flex; flex-direction: column;
+  // row-gap` for the owner's "rows still feel too tight", so a one-line literal
+  // no longer matches. The guard's REQUIREMENT is unchanged -- min-width:0 and
+  // flex:1 are what let .player-meta absorb the deficit instead of overflowing
+  // -- so it now asserts those two declarations from the rule itself.
+  const metaRule = stripComments(STYLES_WS5)
+    .match(/^\.player-meta\s*\{([^}]*)\}/m);
+  assert.ok(metaRule, '.player-meta must have a rule of its own');
+  assert.match(metaRule[1], /min-width:\s*0/,
+    '.player-meta must keep min-width:0, the cause of the 0px squeeze');
+  assert.match(metaRule[1], /flex:\s*1/,
+    '.player-meta must keep flex:1, the cause of the 0px squeeze');
 });
 
 test('WS12 Part B: the pills degrade by clipping, never by wrapping', () => {
