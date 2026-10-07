@@ -83,11 +83,21 @@ const hashed = new Map();
 // `0e6e89b0` while HEAD was `16fa6ba`.
 //
 // The id must therefore name the commit whose SOURCE produced this bundle,
-// which is the last commit that touched app.js. That commit exists before the
-// build runs, it is exactly what an owner can `git log` to, and it is stable
-// across rebuilds of an unchanged tree. Artifact-only commits (which touch no
-// source) do not move it, so re-committing a rebuilt bundle does not
-// invalidate the id on screen.
+// which is the last commit that touched the authored source. That commit
+// exists before the build runs, it is exactly what an owner can `git log` to,
+// and it is stable across rebuilds of an unchanged tree. Artifact-only commits
+// (which touch no source) do not move it, so re-committing a rebuilt bundle
+// does not invalidate the id on screen.
+//
+// ---- WHY styles.css IS INCLUDED (WS73, 2026-10-07) ----
+// The original command asked for `-- app.js` ONLY. That is correct for an
+// app.js change and WRONG for a CSS-only one: two consecutive deploys then
+// carry the SAME id on screen, so the owner checking "is this the new build?"
+// sees the old number and cannot tell renewed code from stale code -- the exact
+// confusion the id exists to prevent (AGENTS.md §1). Observed in WS73: the
+// fix was styles.css only, and the build printed the previous deploy's id.
+// The tracked source that ships to Pages is exactly app.js + styles.css, so
+// both are named. Artifact-only commits still do not move the id.
 //
 // The repo-root app.js keeps the `__APP_BUILD_ID__` placeholder; only the
 // generated dist/app.js (which is what Pages serves) gets the real value.
@@ -95,8 +105,11 @@ function resolveBuildId() {
   try {
     // The last commit that touched the authored source, not HEAD. Falls back to
     // HEAD only when the file has no history at all (fresh repo).
+    // WS73: BOTH shipped sources are named. `-- app.js` alone left a CSS-only
+    // deploy showing the previous deploy's id, so the owner could not tell new
+    // code from old (AGENTS.md §1). styles.css ships to Pages too.
     let sha = execFileSync('git', [
-      'log', '-1', '--format=%h', '--', 'app.js',
+      'log', '-1', '--format=%h', '--', 'app.js', 'styles.css',
     ], {
       cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();

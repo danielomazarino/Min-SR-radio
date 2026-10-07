@@ -2778,11 +2778,13 @@ test('WS10: the id names the SOURCE commit, not the artifact commit', () => {
   // cannot be the id inside it -- a first version used HEAD and therefore
   // always showed the PARENT's SHA (observed: bundle app.c4d7f88e.js carried
   // 0e6e89b0 while HEAD was 16fa6ba). The id must therefore be the last commit
-  // that touched app.js, which exists before the build runs and is what an
-  // owner can actually `git log` to.
+  // that touched the authored SOURCE, which exists before the build runs and is
+  // what an owner can actually `git log` to. WS73: BOTH shipped sources are
+  // named -- `-- app.js` alone left a CSS-only deploy showing the previous
+  // deploy's id, so the owner could not tell new code from old (AGENTS.md §1).
   const BS = stripComments(region('function resolveBuildId()', 'const build = resolveBuildId()', BUILD_SCRIPT));
-  assert.ok(/'log', '-1', '--format=%h', '--', 'app\.js'/.test(BS),
-    'the id must come from the last commit that touched app.js');
+  assert.ok(/'log', '-1', '--format=%h', '--', 'app\.js', 'styles\.css'/.test(BS),
+    'the id must come from the last commit that touched app.js OR styles.css');
   // A fallback to HEAD is allowed ONLY when the file has no history, and the
   // result must be validated as a SHA either way.
   assert.ok(/rev-parse/.test(BS), 'a HEAD fallback is permitted for a history-less repo');
