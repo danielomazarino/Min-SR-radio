@@ -1122,9 +1122,12 @@ a:focus-visible {
   z-index: 30;
   background: var(--surface);
   box-shadow: 0 -4px 20px rgba(28, 28, 30, 0.12);
-  /* Was `10px 16px ...`. Only the BLOCK values change (+1px top, +1px bottom);
-     the 16px inline padding is byte-identical so nothing moves sideways. */
-  padding: 11px 16px calc(var(--safe-bottom) + 13px);
+  /* Was `10px 16px ...`. Only the BLOCK values change; the 16px inline padding
+     is byte-identical so nothing moves sideways.
+     WS73 (owner, 2026-10-07): "the rows still feel a bit too tight ... increase
+     the rows a bit more vertically". Block padding 11 -> 13 top and +13 -> +15
+     bottom. Vertical-only, same discipline as WS68. */
+  padding: 13px 16px calc(var(--safe-bottom) + 15px);
   /* ---- WS68: more vertical room in the player rows ----
    *
    * OWNER: "the player where i have also asked for some more space vertically".
@@ -1134,7 +1137,16 @@ a:focus-visible {
    * the rows would push the transport down and change the player's total height
    * in a way the owner did not ask for.
    */
-  --player-row-gap: 4px;
+  /* ---- WS73: the rows get more room, and the gap becomes real ----
+   *
+   * OWNER, 2026-10-07: "the rows still feel a bit too tight ... increase the
+   * rows a bit more vertically". WS68 introduced this constant and the
+   * compaction reset below (`.player-meta { margin-top: 3px }` on the pill)
+   * absorbed it, so the "gap" was never consumed. WS73 makes .player-meta a
+   * flex COLUMN so the value actually separates the identity row from the
+   * quality pill, and the pill's compensation margin is removed.
+   */
+  --player-row-gap: 8px;
   transform: translateY(110%);
   transition: transform 0.25s ease;
   max-width: 480px;
@@ -1182,6 +1194,14 @@ body.player-gesture-lock {
 }
 .player-mini .player-thumb { width: 40px; height: 40px; flex: none; }
 .player-mini .player-meta { cursor: pointer; }
+/* ---- WS73: the mini bar keeps its own, tighter geometry. ----
+   The owner's "the rows still feel a bit too tight" was about the FULL player.
+   The mini bar renders the SAME `.player-meta` class with three children
+   (title, sub, now-playing-line), so the flex column + row-gap added for the
+   full player would have grown it from 40px to 46.8px -- a 17% taller compact
+   bar nobody asked for. Measured in the driven DOM both ways. Reset to the
+   block layout so the mini bar is byte-identical to before. */
+.player-mini .player-meta { display: block; row-gap: normal; }
 .player-mini .player-title {
   font-size: 13.5px;
   white-space: nowrap;
@@ -1343,7 +1363,21 @@ body.player-gesture-lock {
 .player-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .player-thumb-letter { color: var(--accent); font-weight: 700; font-size: 18px; }
 
-.player-meta { min-width: 0; flex: 1; }
+.player-meta {
+  min-width: 0;
+  flex: 1;
+  /* ---- WS73: the two rows are separated by the gap ----
+     `.player-meta` was a block container whose children stacked with only the
+     quality pill's own margin between them. The owner asked for more vertical
+     room; making this a flex column lets --player-row-gap do the separating,
+     which is the mechanism WS68 introduced the constant for. Kept in ONE rule
+     on purpose -- a second `.player-meta {` block would split the styling for
+     any reader or guard scanning from the first occurrence (the same trap the
+     quality-pill comment below describes). */
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--player-row-gap);
+}
 
 /* ---- WS15: the podcast name, above the quality pill ----
    Owner (2026-09-27): "the podcast name in the player should move to the
@@ -1403,9 +1437,11 @@ body.player-gesture-lock {
   min-width: 0;
   /* WS68: vertical-only. The row's height comes from its line boxes, so the
    * extra room the owner asked for is line-height, not padding -- padding here
-   * would grow the player's total height and push the transport down. */
-  min-height: 22px;
-  line-height: 1.45;
+   * would grow the player's total height and push the transport down.
+   * WS73 (owner, 2026-10-07): "the rows still feel a bit too tight". Floor
+   * 22 -> 26px, line-height 1.45 -> 1.55. Vertical-only, same reasoning. */
+  min-height: 26px;
+  line-height: 1.55;
 }
 .player-meta-row > .player-podcast-name { min-width: 0; }
 /* Compound selector on purpose. A bare base-selector block placed earlier in
@@ -1427,8 +1463,9 @@ body.player-gesture-lock {
   /* WS68: vertical-only breathing room. 1.3 -> 1.45 adds ~2px per line without
    * moving anything horizontally, and the nowrap/ellipsis guards below are
    * untouched so a long title still clips rather than wrapping to a second
-   * line -- a wrap would raise the row height and defeat the point. */
-  line-height: 1.45;
+   * line -- a wrap would raise the row height and defeat the point.
+   * WS73 (owner, 2026-10-07): 1.45 -> 1.55, same vertical-only reasoning. */
+  line-height: 1.55;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1437,8 +1474,9 @@ body.player-gesture-lock {
 .player-sub {
   font-size: 12px;
   color: var(--text-secondary);
-  /* WS68: vertical-only, same reasoning as .player-title. */
-  line-height: 1.45;
+  /* WS68: vertical-only, same reasoning as .player-title.
+     WS73 (owner, 2026-10-07): 1.45 -> 1.55. */
+  line-height: 1.55;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1453,7 +1491,10 @@ body.player-gesture-lock {
   display: block;
   width: max-content;
   max-width: 100%;
-  margin-top: 3px;
+  /* WS73: the 3px compensation margin is REMOVED. It existed to top up the
+     spacing in a block container; with .player-meta now a flex column carrying
+     `row-gap: var(--player-row-gap)`, the gap is the only separator and the
+     pill's own margin would double it. */
   margin-right: 5px;
   padding: 1px 7px;
   border-radius: 999px;
@@ -1507,7 +1548,23 @@ body.player-gesture-lock {
 .player-controls {
   display: flex;
   align-items: center;
-  gap: 4px;
+  /* OWNER, 2026-10-07: "the +- 15 seconds arrows would benefit from moving a
+     bit from the play button horizontally. so ... give some more room for the
+     arrows". 4px -> 8px, doubling the arrow-to-play room.
+
+     WHY NOT MORE, MEASURED. `.player-controls` shares `.player-row` with the
+     text column (thumb 44 + gap 12 + meta + gap 12 + controls = 358px at a
+     390px viewport), and the controls are `flex: none` -- so every pixel the
+     gap takes comes out of the title and the quality pill. A DVR channel adds
+     TWO programme-skip buttons, making a five-button row. Measured in the
+     driven DOM with that widest row:
+         gap 4  -> controls 220px, text column 70.1px, pill "MP3 96" (57.9px) fits
+         gap 12 -> controls 252px, text column 38.1px, pill SPILLS past its box
+     12px therefore reintroduces the WS12 squeezed-column defect ("the pill
+     wrapped onto two lines ... 17px -> 32px") on any DVR channel. 8px is the
+     largest value that keeps the pill intact at 375, 390 and 430px -- all
+     three measured, none spilling, no overlap with the first transport button. */
+  gap: 8px;
   flex: none;
 }
 
@@ -1681,7 +1738,22 @@ body.player-gesture-lock {
 }
 .dvr-step-btn svg { width: 20px; height: 20px; }
 .dvr-step-btn:active { opacity: 0.6; }
-.dvr-program-btn { color: var(--text-secondary); }
+/* WS73 (owner, 2026-10-07): the programme-skip buttons narrow from 44px to the
+   36px the ±15 s buttons already use, which pays for the wider transport gap
+   above. MEASURED with the five-button DVR row: at a 390px viewport the row's
+   total width is unchanged (220px) while the gap between every pair of arrows
+   doubles from 4px to 8px, and the quality pill keeps its full 50.8px box.
+   Before this, the five-button row was the only case where the gap could not
+   grow without squeezing the text column into the pill-spill defect WS12
+   documents. The glyph is untouched, so the visual weight of the skip icons is
+   unchanged; only the transparent padding around them shrinks.
+   Kept in ONE rule with the colour for the reason the quality-pill comment
+   gives: a second block would split the styling for any reader or guard that
+   scans from the first occurrence. */
+.dvr-program-btn {
+  color: var(--text-secondary);
+  width: 36px;
+}
 .dvr-program-btn[style*="display: none"] { display: none !important; }
 
 /* The DVR row now carries more controls — tighten the time label so the bar
