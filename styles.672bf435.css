@@ -545,12 +545,13 @@ a:focus-visible {
   border-bottom: 2px solid var(--text-secondary);
   transform: rotate(-135deg); /* pointing up = expanded (default) */
   transition: transform 0.2s ease;
-  /* OWNER, 2026-10-07: "the chevron is too tight to the autoplay toggle".
-     Measured: the chevron's right edge OVERLAPPED the autoplay button's
-     left edge by 2px. 8px of margin restores a clear gap that mirrors the
-     topbar's button spacing, while the autoplay glyph's right edge stays
+  /* OWNER, 2026-10-07: "the chevron is too tight to the autoplay toggle" and
+     "align the chevron ... with the horizontal position of the information
+     icon". Measured at 390px: info cx 302.1; the chevron sat at cx 313.1.
+     19px of margin moves its centre onto the info column exactly (driven in
+     the browser, not inferred), while the autoplay glyph's right edge stays
      on the shared alignment line with the cog and flash. */
-  margin-right: 8px;
+  margin-right: 19px;
   flex: none;
 }
 .news-section:not(.expanded) .news-toggle-chevron {
@@ -3104,9 +3105,18 @@ body.player-gesture-lock {
   display: flex;
   flex: none;
   align-items: center;
-  gap: 14px;
+  gap: 4px;
   margin-left: auto;   /* the right-alignment mechanism */
-  padding-left: 12px;  /* a visible floor between a long title and the icons */
+  /* OWNER, 2026-10-07: "align the youtube icon with the cog wheel, flash and
+     autoplay icons horisontally. also align the chevron and spotify icons with
+     the horizontal position of the information icon." Measured at 390px:
+     info cx 302.1, cog/autoplay cx 348.1. With gap 4px + padding-left 11px +
+     margin-right 1px the rendered glyph centres land exactly on those columns
+     (Spotify 302.1, YouTube 348.1) — driven in the browser, not inferred.
+     The 1px margin-right exists because the 42px link box is 2px narrower
+     than the 44px topbar buttons; without it both centres sit 1px right. */
+  margin-right: 1px;
+  padding-left: 11px;  /* a visible floor between a long title and the icons */
   /* WS68: vertical-only. The icons grew to 24px, so the row they sit in needs
    * a floor or the taller glyphs would crowd the title above them. min-height
    * grows DOWNWARD only in a flex column context; here it guarantees the row
