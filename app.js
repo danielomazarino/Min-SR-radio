@@ -373,7 +373,9 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       mp3: 'https://stream.live.vc.bbcmedia.co.uk/bbc_world_service',
       siteurl: 'https://www.bbc.co.uk/worldserviceradio',
       tagline: 'International news · BBC',
-      image: null,
+      // BBC Sounds apple-touch icon. Verified 2026-10-07: HTTP 200,
+      // image/png, 180x180, access-control-allow-origin: *.
+      image: 'https://static.files.bbci.co.uk/sounds/web/sounds-web/img/sounds-apple-touch-icon.ead169771d.png',
     },
     {
       id: 800002,
@@ -381,7 +383,9 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       mp3: 'https://icecast.radiofrance.fr/fip-midfi.mp3',
       siteurl: 'https://www.radiofrance.fr/fip',
       tagline: 'Eclectic music · Radio France',
-      image: null,
+      // FIP's own favicon. Verified 2026-10-07: HTTP 200, image/png, 48x48
+      // (the only square FIP logo Radio France serves; og:image is 1200x680).
+      image: 'https://www.radiofrance.fr/external/favicons/fip/favicon.png',
     },
     {
       id: 800003,
@@ -389,7 +393,9 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       mp3: 'https://npr-ice.streamguys1.com/live.mp3',
       siteurl: 'https://www.npr.org',
       tagline: 'US news and talk · NPR',
-      image: null,
+      // NPR's own apple-touch icon. Verified 2026-10-07: HTTP 200,
+      // image/png, 180x180.
+      image: 'https://media.npr.org/chrome/favicon/favicon-180x180.png',
     },
   ];
 

@@ -3167,7 +3167,25 @@ test('E2: the icon pair is right-aligned at EVERY title length', () => {
   // The owner's thumb complaint: 6px let a thumb aiming at YouTube hit Spotify.
   const gap = body.match(/gap:\s*(\d+)px/);
   assert.ok(gap, '.song-links must declare an explicit gap');
-  assert.ok(Number(gap[1]) >= 12, `the gap must grow past the old 6px; got ${gap[1]}px`);
+  // SUPERSEDED 2026-10-07 (WS72): the owner then asked the pair to sit on the
+  // topbar's columns — "align the youtube icon with the cog wheel, flash and
+  // autoplay icons horisontally. also align the chevron and spotify icons with
+  // the horizontal position of the information icon." That fixes the glyph
+  // centres to info cx 302.1 / cog cx 348.1 at 390px, which is only achievable
+  // at gap 4px (11px floor + 42 + 4 + 42 + 1px margin-right pins both centres
+  // exactly). The old >= 12px assertion contradicts the new requirement, so it
+  // is restated — not weakened: the new assertions pin the geometry the owner
+  // asked for AND keep the right-alignment mechanism above.
+  assert.equal(Number(gap[1]), 4,
+    `the gap must be exactly 4px so the glyph centres land on the info/cog columns; got ${gap[1]}px`);
+  // The 1px margin-right compensates the 42px link box being 2px narrower than
+  // the 44px topbar buttons; without it both centres sit 1px right of target.
+  const mr = body.match(/margin-right:\s*(\d+)px/);
+  assert.ok(mr, '.song-links must declare the 1px compensating margin-right');
+  assert.equal(Number(mr[1]), 1, `margin-right must be 1px; got ${mr[1]}px`);
+  const pl = body.match(/padding-left:\s*(\d+)px/);
+  assert.ok(pl, '.song-links must declare the 11px floor');
+  assert.equal(Number(pl[1]), 11, `padding-left must be 11px; got ${pl[1]}px`);
 });
 
 test('E3: a news broadcast does not auto-fold the chevron', () => {
@@ -5371,4 +5389,26 @@ test('the search row names the Bauer source, not a bare category', () => {
     'a Bauer row must say Bauer Media, not "Commercial"');
   assert.match(list, /item\.provider === 'intl' \? \(item\.tagline \|\| 'International'\)/,
     'an international row must say its source, not a bare category');
+});
+
+test('WS72: every international station carries a verified logo URL', () => {
+  const src = stripComments(APP_JS);
+  const m = src.match(/const INTL_STATIONS = \[([\s\S]*?)\n  \];/);
+  assert.ok(m, 'INTL_STATIONS must exist');
+  const block = m[1];
+  // The owner: "i miss the channel icons for the three international stations."
+  // Each station must carry an https image URL — a null image renders the
+  // letter placeholder the owner reported as missing.
+  const stations = block.split(/\{\s*id:/).slice(1);
+  assert.ok(stations.length >= 3, `three international stations expected; got ${stations.length}`);
+  for (const s of stations) {
+    const idm = s.match(/\s(\d{6}),/);
+    assert.ok(idm, 'each station has an id');
+    const img = s.match(/image:\s*'([^']+)'/);
+    assert.ok(img, `station ${idm[1]} must carry an image URL, not null`);
+    assert.match(img[1], /^https:\/\//, `station ${idm[1]} image must be https`);
+    // The map must carry the image through to the rendered row.
+    assert.match(src, /image:\s*safeStr\(s\.image, 500\) \|\| null/,
+      'mapIntlStation must pass the image through to the row');
+  }
 });
