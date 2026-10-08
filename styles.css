@@ -16,6 +16,25 @@
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --shadow: 0 1px 3px rgba(28, 28, 30, 0.06), 0 4px 14px rgba(28, 28, 30, 0.05);
 
+  /* ---- WS75: ONE icon size, shared by the home icons AND the player cover ----
+   * OWNER, 2026-10-08: "the album covers could get exactly the same pixel width
+   * and height as the channel and podcast icons".
+   *
+   * The only way they cannot drift apart is for BOTH to read the SAME value, so
+   * the arithmetic lives here once. A literal in either place would satisfy a
+   * screenshot today and silently disagree at the next width or the next tweak.
+   *
+   * Derivation: the icon row is four squares plus three 14px gaps inside the
+   * content's inline padding. `.content` is this app's only scroller, and at
+   * <=340px its inline padding drops to 12px (see the media block at the
+   * bottom), so the constant differs either side of that breakpoint -- which is
+   * why there is a matching override below rather than one formula claiming to
+   * cover both.
+   *
+   * MEASURED at 390px (the owner's iPhone 13): 77.03px, and the cover equals it
+   * to 0.00px at 320/340/360/375/390/430/768px. */
+  --icon: calc((min(100vw, 480px) - 82px) / 4);
+
   /* ITEM 1, FOURTH PASS (correction). Where the settings sheet's band and the
    * Info page's band both START.
    *
@@ -208,13 +227,23 @@ a:focus-visible {
 }
 .icon-scroller::-webkit-scrollbar { display: none; }
 
-/* 3 gaps (14px × 3) are subtracted so 4 icons + gaps = exactly the visible width */
+/* 3 gaps (14px × 3) are subtracted so 4 icons + gaps = exactly the visible width.
+   WS75: the value is now the shared --icon (see :root), which the player cover
+   also reads, so the two are the same square by construction. */
 .icon-scroller .stream-icon,
 .icon-scroller .icon-empty {
   scroll-snap-align: start;
-  flex: 0 0 calc((100% - 42px) / 4);
+  flex: 0 0 var(--icon);
   width: auto;
   aspect-ratio: 1;
+}
+
+/* WS75: the <=340px viewport halves `.content`'s inline padding (20 -> 12px, see
+   the media block at the bottom of this file), so the icon arithmetic changes
+   with it. This override must move IN STEP with that padding rule, or the cover
+   and the icons disagree below 340px. */
+@media (max-width: 340px) {
+  :root { --icon: calc((100vw - 66px) / 4); }
 }
 
 /* ---------- selected favorites (settings view, with custom sorting) ---------- */
@@ -1128,8 +1157,11 @@ a:focus-visible {
      the rows a bit more vertically". Block padding 11 -> 13 top and +13 -> +15
      bottom. Vertical-only, same discipline as WS68.
      WS74 (owner, 2026-10-08): the owner then reported the change was not
-     VISIBLE (+7% on a tall panel). 13 -> 16 top and +15 -> +18 bottom. */
-  padding: 16px 16px calc(var(--safe-bottom) + 18px);
+     VISIBLE (+7% on a tall panel). 13 -> 16 top and +15 -> +18 bottom.
+     WS75 (owner, 2026-10-08): 16 -> 20 top and +18 -> +22 bottom. The dominant
+     visible change this pass is the icon-sized cover (below) and the hidden
+     build number; this is the matching vertical step, still padding-block only. */
+  padding: 20px 16px calc(var(--safe-bottom) + 22px);
   /* ---- WS68: more vertical room in the player rows ----
    *
    * OWNER: "the player where i have also asked for some more space vertically".
@@ -1169,11 +1201,17 @@ a:focus-visible {
      variables instead of repeating a pixel literal. Change --player-art or
      --player-gap and the header, the pills and the song line move together;
      a duplicated literal would have let them drift apart silently. */
-  --player-art: 44px;
+  /* ---- WS75: the cover is the SAME square as the home icons ----
+   * OWNER, 2026-10-08: the album cover must be the same pixel size as the
+   * channel/podcast icons. It therefore reads the SAME `--icon` those icons
+   * read (see :root) rather than a 44px literal of its own -- one source of
+   * truth, so they cannot drift. 44px -> 77px at 390px, which is what makes
+   * this pass VISIBLE after WS73/WS74's padding-only steps were not. */
+  --player-art: var(--icon);
   --player-gap: 12px;
   /* Where the text column starts, measured from the player's own left padding
-     edge. The header achieves it structurally: the close button occupies the
-     artwork's width, so flexbox puts the text exactly here. */
+     edge. The header achieves it structurally: the spacer occupies the
+     artwork's width, and the grid's column 2 starts exactly here. */
   --player-col: calc(var(--player-art) + var(--player-gap));
 }
 
@@ -1256,6 +1294,24 @@ body.player-gesture-lock {
   font-variant-numeric: tabular-nums;
   word-break: break-all;
 }
+
+/* ---- WS75: the build number must NOT be readable while the player is open ----
+ * OWNER, 2026-10-08: "the new vertical border for the extended player could
+ * become to the build number ... so the build number is not seen when playing."
+ *
+ * The player is a fixed overlay and the build line is the last element in the
+ * content flow. Relying on the player being taller than the distance to the
+ * line is exactly why the owner kept seeing it -- the line is just below the
+ * border at the owner's scroll position. Hiding it while a visible player is
+ * present is deterministic and independent of how tall the player happens to
+ * be, so it cannot regress the next time the panel grows or shrinks.
+ *
+ * `:has()` is supported on the owner's iOS 15.4+ Safari and by Chromium, where
+ * the driven test asserts it. Where it is unsupported the selector is simply
+ * dropped and the previous covering behaviour remains -- fail-safe, never
+ * fail-worse. The build id is load-bearing (WS73b), so it is HIDDEN, never
+ * removed or changed. */
+body:has(.player.visible) .build-line { display: none; }
 
 /* ---------- WS5b: header row with the corner buttons ---------- */
 /* ONE row carries the close button (top-left corner), the channel and
@@ -1346,10 +1402,34 @@ body.player-gesture-lock {
 .player-header .player-sub { flex: 1 1 auto; min-width: 0; }
 
 .player-row {
-  display: flex;
+  /* ---- WS75: a GRID, because the cover is now icon-sized (77px at 390px) ----
+   * It used to be a flex row: cover . meta . controls, all on one line. At a
+   * 44px cover the text column still had room beside the transport even with a
+   * five-button DVR row, but at 77px it does not -- MEASURED at 390px with the
+   * widest row: the column falls from 54.1px to 21.1px and the quality pill
+   * CLIPS. The owner's own screenshot already shows the pill reading "AAC …"
+   * on a full-width cover, so leaving it as a flex row would have traded one
+   * visible defect for another.
+   *
+   * Two columns, two rows: the cover spans both rows in column 1; the meta
+   * (identity + quality pill) takes row 1 and the transport row 2, both in
+   * column 2, one under the other. Nothing competes for width, so the text
+   * column is the full 269px at 390px and the pill never clips -- five-button
+   * DVR row included. `minmax(0, 1fr)` is what keeps the column shrinkable so
+   * its nowrap children ellipsise instead of overflowing. */
+  display: grid;
+  grid-template-columns: var(--player-art) minmax(0, 1fr);
   align-items: center;
-  gap: var(--player-gap);
+  column-gap: var(--player-gap);
+  row-gap: var(--player-row-gap);
 }
+/* The cover occupies the whole left column, its centre on the two-row block's
+   centre. */
+.player-row > .player-thumb { grid-column: 1; grid-row: 1 / -1; align-self: center; }
+.player-row > .player-meta { grid-column: 2; grid-row: 1; }
+/* The transport centres under the identity/quality block. It is the widest
+   child, so it also defines the column the meta sits in. */
+.player-row > .player-controls { grid-column: 2; grid-row: 2; justify-content: center; }
 
 .player-close {
   margin-left: auto;
@@ -1447,8 +1527,9 @@ body.player-gesture-lock {
    * WS73 (owner, 2026-10-07): "the rows still feel a bit too tight". Floor
    * 22 -> 26px, line-height 1.45 -> 1.55. Vertical-only, same reasoning.
    * WS74 (owner, 2026-10-08): the owner reported the WS73 step was not
-   * visible. Floor 26 -> 30px, line-height 1.55 -> 1.65. */
-  min-height: 30px;
+   * visible. Floor 26 -> 30px, line-height 1.55 -> 1.65.
+   * WS75 (owner, 2026-10-08): floor 30 -> 34px, matching the taller cover. */
+  min-height: 34px;
   line-height: 1.65;
 }
 .player-meta-row > .player-podcast-name { min-width: 0; }

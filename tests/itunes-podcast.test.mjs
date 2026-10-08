@@ -3744,7 +3744,10 @@ test('E4: every diagnostics button sits ABOVE every result', () => {
   // the rows a bit more vertically". The block value is therefore SUPERSEDED --
   // it grew 11 -> 13px top. Asserted as a PROPERTY (block-only growth, inline
   // still 16) rather than the literal 11px, which the new instruction changed.
-  assert.match(playerBlock, /padding:\s*1[0-9]px 16px calc\(/,
+  // WS75 (owner, 2026-10-08): the block value grew again (16/18 -> 20/22). The
+  // first block value is now two digits, so the pattern accepts any digit run;
+  // the REQUIREMENT (inline 16, block may grow) is unchanged.
+  assert.match(playerBlock, /padding:\s*\d+px 16px calc\(/,
     'ITEM 4: the player padding must be block-variant only of the original '
     + '`10px 16px ...` -- the inline 16px must not move, the block value may');
   // The header row's own padding: vertical only, inline values stay 0.
