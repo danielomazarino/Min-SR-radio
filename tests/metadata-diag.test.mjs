@@ -2040,17 +2040,12 @@ test('WS5b Item 1: the header, the pills and the song line share ONE left edge',
   // guard is on the SHARED CUSTOM PROPERTY, not on any pixel value.
   const playerBlock = stripComments(region('.player {', '/* While a vertical gesture',
     STYLES_WS5));
-  // WS75 (owner, 2026-10-08): SUPERSEDED IN FORM, NOT IN REQUIREMENT. The
-  // requirement this guard has always held is "the artwork width is a single
-  // named custom property on .player, and the text column is derived from it,
-  // never a duplicated pixel literal". The owner's new instruction is that the
-  // cover be the SAME square as the channel/podcast icons, so the value is no
-  // longer the literal 44px -- it is the shared `--icon` (see :root) that the
-  // icons themselves read. Asserting the literal 44px would now FAIL on correct
-  // code. The guard is restated to assert the STRONGER property: the cover is
-  // derived from `--icon`, which is exactly what makes the two squares equal.
-  assert.ok(/--player-art:\s*var\(--icon\)/.test(playerBlock),
-    'the artwork width must be the shared --icon, so the cover is the same square as the home icons');
+  // WS75 (owner, 2026-10-08) briefly made this `var(--icon)`; the owner's
+  // CORRECTION (2026-10-09) restored the NORMAL player's cover to the 44px
+  // literal -- the icon-sized cover belongs to the EXTENDED player instead. So
+  // the original assertion is correct again and is restored unchanged.
+  assert.ok(/--player-art: 44px/.test(playerBlock),
+    'the artwork width must be a single named custom property on .player');
   assert.ok(/--player-gap: 12px/.test(playerBlock),
     'the row gap must be a single named custom property on .player');
   assert.ok(/--player-col: calc\(var\(--player-art\) \+ var\(--player-gap\)\)/.test(playerBlock),

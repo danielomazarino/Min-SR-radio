@@ -15,7 +15,7 @@ const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '');
 const STYLES = stripComments(STYLES_RAW);
 
 // ---------------------------------------------------------------------------
-// WS75 — the cover square, the build number, and more vertical room.
+// WS75 — the EXTENDED player's cover square, the build number, vertical room.
 // ---------------------------------------------------------------------------
 //
 // OWNER, 2026-10-08, verbatim:
@@ -24,14 +24,24 @@ const STYLES = stripComments(STYLES_RAW);
 //    heigt as the channel and podcast icons, and the extended player could
 //    cover the build number exactly ... keep everything else the same."
 //
-// These guards assert the SHAPE the change must hold. They deliberately do NOT
-// assert a pixel number for the cover, because the icon size is derived from
-// the viewport (`calc((min(100vw,480px) - 82px) / 4)`), and a guard that pinned
-// "77px" would be the classic trap AGENTS.md warns about -- a number that is
-// not the thing under test, going green for the wrong reason. The property that
-// actually makes the two squares equal is that BOTH read the SAME variable.
+// OWNER CORRECTION, 2026-10-09, verbatim:
+//   "it is the album cover icon in the extended player that should be in the
+//    size of the channels and podcasts ... and the icon in the 'normal player'
+//    to be as it was."
+//
+// So the icon-sized cover belongs to the EXTENDED player (`.expand-img` /
+// `.expand-img-song`), and the NORMAL player's cover (`.player-thumb`) stays
+// 44px. WS75 first applied it to the normal player -- the opposite -- and these
+// guards now assert the corrected arrangement.
+//
+// They deliberately do NOT assert a pixel number for the extended cover,
+// because the icon size is derived from the viewport
+// (`calc((min(100vw,480px) - 82px) / 4)`), and a guard that pinned "77px" would
+// be the classic trap AGENTS.md warns about -- a number that is not the thing
+// under test, going green for the wrong reason. The property that actually
+// makes the two squares equal is that BOTH read the SAME variable.
 
-test('WS75 C1: the home icons and the player cover read ONE shared --icon', () => {
+test('WS75 C1: the home icons and the EXTENDED player cover read ONE shared --icon', () => {
   // The shared value, defined once on :root.
   assert.match(STYLES, /--icon:\s*calc\([^)]*\)/,
     'the shared --icon value must be defined (on :root)');
@@ -43,24 +53,42 @@ test('WS75 C1: the home icons and the player cover read ONE shared --icon', () =
   assert.match(iconRule[1], /flex:\s*0 0 var\(--icon\)/,
     'the home icons must be sized from the shared --icon');
 
-  // The player cover reads the SAME variable, via --player-art. This identity is
-  // the whole requirement: one value, two consumers, so they cannot drift.
+  // The EXTENDED player's cover reads the SAME variable. This identity is the
+  // whole requirement: one value, two consumers, so they cannot drift.
+  const expandImg = STYLES.match(/^\.expand-img\s*\{([^}]*)\}/m);
+  assert.ok(expandImg, 'the .expand-img rule must exist');
+  assert.match(expandImg[1], /width:\s*var\(--icon\)/,
+    'the extended player cover width must be the shared --icon');
+  assert.match(expandImg[1], /height:\s*var\(--icon\)/,
+    'the extended player cover height must be the shared --icon (a square)');
+
+  // The song album cover in the extended player is the same square, so a song
+  // and a talk programme show the same-sized cover.
+  const songImg = STYLES.match(/^\.expand-img-song\s*\{([^}]*)\}/m);
+  assert.ok(songImg, 'the .expand-img-song rule must exist');
+  assert.match(songImg[1], /width:\s*var\(--icon\)/,
+    'the extended player song cover must be the shared --icon');
+  assert.match(songImg[1], /height:\s*var\(--icon\)/,
+    'the extended player song cover must be the shared --icon (a square)');
+});
+
+test('WS75 C1: the NORMAL player cover stays 44px, as it was', () => {
+  // The owner's correction: the normal player's cover is NOT the icon-sized one.
+  // It must stay the 44px literal it has always been.
   const playerBlock = STYLES.slice(STYLES.indexOf('.player {'),
     STYLES.indexOf('}', STYLES.indexOf('.player {')));
-  assert.match(playerBlock, /--player-art:\s*var\(--icon\)/,
-    'the cover must be the shared --icon, so it equals the home icons exactly');
+  assert.match(playerBlock, /--player-art:\s*44px/,
+    'the normal player cover must stay 44px, not the icon size');
 
-  // And the cover element itself is sized from --player-art on BOTH axes, or the
-  // "square" claim is only half true. Anchored to LINE START: the first
-  // `.player-thumb {` in the file is the mini-bar's 40px rule, and an unanchored
-  // slice would read that instead -- the same wrong-rule trap the existing
-  // guards document.
+  // And the cover element is sized from --player-art on BOTH axes.
+  // Anchored to LINE START: the first `.player-thumb {` in the file is the
+  // mini-bar's 40px rule, and an unanchored slice would read that instead.
   const thumb = STYLES.match(/^\.player-thumb\s*\{([^}]*)\}/m);
   assert.ok(thumb, 'the top-level .player-thumb rule must exist');
   assert.match(thumb[1], /width:\s*var\(--player-art\)/,
-    'the cover width must come from --player-art');
+    'the normal cover width must come from --player-art');
   assert.match(thumb[1], /height:\s*var\(--player-art\)/,
-    'the cover height must come from --player-art (a square, not a rectangle)');
+    'the normal cover height must come from --player-art (a square)');
 });
 
 test('WS75 C1: the <=340px breakpoint moves --icon in step with the content padding', () => {
@@ -87,24 +115,20 @@ test('WS75 C2: the build number is hidden exactly while the player is visible', 
     'the bare .build-line rule must not hide the build id at rest');
 });
 
-test('WS75 C4: the player row is a grid so a large cover cannot squeeze the pill', () => {
-  // The cover is now icon-sized (~77px at 390px). In the old flex row that
-  // collapsed the text column to 21.1px and clipped the quality pill. The grid
-  // is what prevents the regression, so it is the guard.
+test('WS75 C4: the normal player row is a flex row again (cover is 44px)', () => {
+  // The owner's correction restores the normal cover to 44px, so the original
+  // single-row flex layout fits again. WS75's grid restructure was only needed
+  // for the (wrong) 77px normal cover and is reverted.
   const row = STYLES.slice(STYLES.indexOf('.player-row {'),
     STYLES.indexOf('}', STYLES.indexOf('.player-row {')));
-  assert.match(row, /display:\s*grid/,
-    '.player-row must be a grid, not a flex row, now the cover is icon-sized');
-  assert.match(row, /grid-template-columns:\s*var\(--player-art\)\s+minmax\(0,\s*1fr\)/,
-    'the grid must be cover-column + a shrinkable text column');
-  // The cover spans both rows; meta and controls stack in column 2, so the
-  // transport no longer competes with the text for width.
-  assert.match(STYLES, /\.player-row > \.player-thumb\s*\{[^}]*grid-row:\s*1 \/ -1/,
-    'the cover must span both grid rows');
-  assert.match(STYLES, /\.player-row > \.player-meta\s*\{[^}]*grid-column:\s*2/,
-    'the meta must sit in column 2, row 1');
-  assert.match(STYLES, /\.player-row > \.player-controls\s*\{[^}]*grid-column:\s*2/,
-    'the transport must sit in column 2, row 2 -- below the meta, not beside it');
+  assert.match(row, /display:\s*flex/,
+    '.player-row must be a flex row again, now the normal cover is 44px');
+  assert.ok(!/display:\s*grid/.test(row),
+    '.player-row must NOT be a grid -- the grid was for the wrong 77px cover');
+  // The grid child rules must be gone too, or they would be dead selectors
+  // telling a future reader the row is still a grid.
+  assert.ok(!/\.player-row > \.player-thumb\s*\{[^}]*grid-row/.test(STYLES),
+    'the grid child rules must be removed with the grid');
 });
 
 test('WS75 C3: the base player keeps growing vertically, inline padding frozen', () => {
