@@ -16,9 +16,14 @@
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --shadow: 0 1px 3px rgba(28, 28, 30, 0.06), 0 4px 14px rgba(28, 28, 30, 0.05);
 
-  /* ---- WS75: ONE icon size, shared by the home icons AND the player cover ----
+  /* ---- WS75: ONE icon size, shared by the home icons AND the EXTENDED
+   * player's album cover ----
    * OWNER, 2026-10-08: "the album covers could get exactly the same pixel width
    * and height as the channel and podcast icons".
+   * OWNER CORRECTION, 2026-10-09: it is the album cover in the EXTENDED player
+   * that must be icon-sized; the NORMAL player's cover stays 44px "as it was".
+   * (WS75 first applied it to the normal player's cover -- the opposite of the
+   * instruction -- and that is corrected here.)
    *
    * The only way they cannot drift apart is for BOTH to read the SAME value, so
    * the arithmetic lives here once. A literal in either place would satisfy a
@@ -31,8 +36,8 @@
    * why there is a matching override below rather than one formula claiming to
    * cover both.
    *
-   * MEASURED at 390px (the owner's iPhone 13): 77.03px, and the cover equals it
-   * to 0.00px at 320/340/360/375/390/430/768px. */
+   * MEASURED at 390px (the owner's iPhone 13): 77.03px, and the extended
+   * player's cover equals it to 0.00px at 320/340/360/375/390/430/768px. */
   --icon: calc((min(100vw, 480px) - 82px) / 4);
 
   /* ITEM 1, FOURTH PASS (correction). Where the settings sheet's band and the
@@ -1201,17 +1206,16 @@ a:focus-visible {
      variables instead of repeating a pixel literal. Change --player-art or
      --player-gap and the header, the pills and the song line move together;
      a duplicated literal would have let them drift apart silently. */
-  /* ---- WS75: the cover is the SAME square as the home icons ----
-   * OWNER, 2026-10-08: the album cover must be the same pixel size as the
-   * channel/podcast icons. It therefore reads the SAME `--icon` those icons
-   * read (see :root) rather than a 44px literal of its own -- one source of
-   * truth, so they cannot drift. 44px -> 77px at 390px, which is what makes
-   * this pass VISIBLE after WS73/WS74's padding-only steps were not. */
-  --player-art: var(--icon);
+  /* ---- WS75 CORRECTION (owner, 2026-10-09): the NORMAL player's cover stays
+   * 44px "as it was". WS75 first made it icon-sized (var(--icon), 77px), which
+   * was the OPPOSITE of the instruction -- the icon-sized cover belongs to the
+   * EXTENDED player (see .expand-img below), not this one. Reverted to the
+   * literal 44px. */
+  --player-art: 44px;
   --player-gap: 12px;
   /* Where the text column starts, measured from the player's own left padding
      edge. The header achieves it structurally: the spacer occupies the
-     artwork's width, and the grid's column 2 starts exactly here. */
+     artwork's width, so flexbox puts the text exactly here. */
   --player-col: calc(var(--player-art) + var(--player-gap));
 }
 
@@ -1402,34 +1406,17 @@ body:has(.player.visible) .build-line { display: none; }
 .player-header .player-sub { flex: 1 1 auto; min-width: 0; }
 
 .player-row {
-  /* ---- WS75: a GRID, because the cover is now icon-sized (77px at 390px) ----
-   * It used to be a flex row: cover . meta . controls, all on one line. At a
-   * 44px cover the text column still had room beside the transport even with a
-   * five-button DVR row, but at 77px it does not -- MEASURED at 390px with the
-   * widest row: the column falls from 54.1px to 21.1px and the quality pill
-   * CLIPS. The owner's own screenshot already shows the pill reading "AAC …"
-   * on a full-width cover, so leaving it as a flex row would have traded one
-   * visible defect for another.
-   *
-   * Two columns, two rows: the cover spans both rows in column 1; the meta
-   * (identity + quality pill) takes row 1 and the transport row 2, both in
-   * column 2, one under the other. Nothing competes for width, so the text
-   * column is the full 269px at 390px and the pill never clips -- five-button
-   * DVR row included. `minmax(0, 1fr)` is what keeps the column shrinkable so
-   * its nowrap children ellipsise instead of overflowing. */
-  display: grid;
-  grid-template-columns: var(--player-art) minmax(0, 1fr);
+  /* ---- WS75 CORRECTION (owner, 2026-10-09): back to the flex row ----
+   * WS75 briefly made this a 2-column grid, because it had (wrongly) made the
+   * NORMAL player's cover icon-sized (77px), which squeezed the text column to
+   * 21px and clipped the quality pill. The owner's correction puts the
+   * icon-sized cover in the EXTENDED player instead and restores this cover to
+   * 44px, so the original single-row flex layout fits again and is restored
+   * exactly as it was. */
+  display: flex;
   align-items: center;
-  column-gap: var(--player-gap);
-  row-gap: var(--player-row-gap);
+  gap: var(--player-gap);
 }
-/* The cover occupies the whole left column, its centre on the two-row block's
-   centre. */
-.player-row > .player-thumb { grid-column: 1; grid-row: 1 / -1; align-self: center; }
-.player-row > .player-meta { grid-column: 2; grid-row: 1; }
-/* The transport centres under the identity/quality block. It is the widest
-   child, so it also defines the column the meta sits in. */
-.player-row > .player-controls { grid-column: 2; grid-row: 2; justify-content: center; }
 
 .player-close {
   margin-left: auto;
@@ -1906,8 +1893,13 @@ body:has(.player.visible) .build-line { display: none; }
   align-items: flex-start;
 }
 .expand-img {
-  width: 56px;
-  height: 56px;
+  /* ---- WS75 CORRECTION (owner, 2026-10-09): the EXTENDED player's cover is
+   * the icon-sized one. It reads the SAME --icon the home channel/podcast icons
+   * read, so the two are the same square by construction. 56px -> 77px at
+   * 390px. This is the image the owner meant; the NORMAL player's cover stays
+   * 44px (see --player-art). */
+  width: var(--icon);
+  height: var(--icon);
   border-radius: 8px;
   object-fit: cover;
   flex: none;
@@ -2116,7 +2108,10 @@ body:has(.player.visible) .build-line { display: none; }
 
 /* Song artwork in the expanded player (iTunes Search, verified from
    GitHub Pages). Placeholder when artwork is missing/unavailable. */
-.expand-img-song { width: 72px; height: 72px; border-radius: 10px; }
+/* The song's album cover in the extended player: the same icon-sized square as
+   the programme image above, so a song and a talk programme show the same-sized
+   cover. WS75 correction (owner, 2026-10-09). */
+.expand-img-song { width: var(--icon); height: var(--icon); border-radius: 10px; }
 .expand-img-placeholder {
   display: flex;
   align-items: center;
