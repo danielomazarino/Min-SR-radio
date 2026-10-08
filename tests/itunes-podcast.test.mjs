@@ -3750,9 +3750,14 @@ test('E4: every diagnostics button sits ABOVE every result', () => {
   // The header row's own padding: vertical only, inline values stay 0.
   const headerBlock = cssI4.slice(cssI4.indexOf('.player-header {'),
     cssI4.indexOf('}', cssI4.indexOf('.player-header {')));
-  assert.match(headerBlock, /padding:\s*0 0 6px;/,
-    'ITEM 4: the header row grows downward only (was `0 0 4px`); any inline '
-    + 'value here would shift the title sideways');
+  // WS74 (owner, 2026-10-08): the bottom value grew 6 -> 9px as part of the
+  // second, visible pass at the roomier rows. The guard's REQUIREMENT is the
+  // inline values (0 0), which is what keeps the title from shifting sideways,
+  // so that is what it asserts -- the bottom value may grow further.
+  const hpad = headerBlock.match(/padding:\s*0 0 (\d+)px;/);
+  assert.ok(hpad, 'ITEM 4: the header padding must be vertical-only, inline 0');
+  assert.ok(Number(hpad[1]) >= 6,
+    `the header must keep at least the ITEM 4 downward room; got ${hpad[1]}px`);
 
   // ITEM 2: the controls are rendered as `.diag-action` rows, so each one
   // carries its explanation. Asserted as a structural property -- every entry
@@ -5141,8 +5146,15 @@ test('WS68: the player rows gain vertical room without any horizontal change', (
   for (const sel of ['.player-title', '.player-sub']) {
     const rule = css.match(new RegExp(`^${sel.replace(/\./g, '\\.')}\\s*\\{([^}]*)\\}`, 'm'));
     assert.ok(rule, `${sel} must exist as its own top-level rule`);
-    assert.match(rule[1], /line-height:\s*1\.55/,
-      `${sel} must carry the vertical breathing room`);
+    // WS74 (owner, 2026-10-08): the owner reported the WS73 step (1.55) was not
+    // visible, so the value is 1.65. Asserted as "at least 1.55" so a further
+    // increase for the same reason does not require another restatement, while
+    // a DECREASE -- the only way this guard's requirement can actually fail --
+    // still goes red.
+    const lh = rule[1].match(/line-height:\s*([\d.]+)/);
+    assert.ok(lh, `${sel} must declare a line-height`);
+    assert.ok(Number(lh[1]) >= 1.55,
+      `${sel} must carry the vertical breathing room (>= 1.55); got ${lh[1]}`);
     assert.ok(!/padding/.test(rule[1]),
       `${sel} must NOT use padding for the extra room -- that would grow the player's total height`);
   }
@@ -5151,7 +5163,12 @@ test('WS68: the player rows gain vertical room without any horizontal change', (
   // raised 22 -> 26px and the line-heights 1.45 -> 1.55, both restated here.
   const metaRow = css.match(/^\.player-meta-row\s*\{([^}]*)\}/m);
   assert.ok(metaRow, '.player-meta-row must exist');
-  assert.match(metaRow[1], /min-height:\s*26px/, '.player-meta-row needs its floor');
+  // WS74: floor raised 26 -> 30px. Asserted with a documented MINIMUM so a
+  // further increase does not restate the guard, while a shrink still fails.
+  const floor = metaRow[1].match(/min-height:\s*(\d+)px/);
+  assert.ok(floor, '.player-meta-row must declare a min-height floor');
+  assert.ok(Number(floor[1]) >= 26,
+    `.player-meta-row needs its floor (>= 26px); got ${floor[1]}px`);
   // WS73: the gap between the identity row and the quality pill must actually
   // be consumed -- WS68 declared --player-row-gap but the pill's own 3px
   // margin-top absorbed it in a block container, so the value separated
@@ -5460,10 +5477,15 @@ test('WS73: the transport gap widens without squeezing the text column', () => {
   assert.ok(controls, '.player-controls must exist');
   const gap = controls[1].match(/gap:\s*(\d+)px/);
   assert.ok(gap, '.player-controls must declare an explicit gap');
-  assert.ok(Number(gap[1]) >= 8,
+  // WS74 (owner, 2026-10-08, iPhone 13): the owner reported the 8px step was
+  // not visible, so the gap is 12px. MEASURED at 390px (the iPhone 13 width)
+  // with the widest row -- five-button DVR + the 50.8px "MP3 96" pill: the text
+  // column gets 54.1px and the pill still fits. 12 is the ceiling that holds at
+  // that width; above it the column falls under 50.8px and the pill clips.
+  assert.ok(Number(gap[1]) >= 12,
     `the arrow-to-play gap must grow past the old 4px; got ${gap[1]}px`);
-  assert.ok(Number(gap[1]) <= 8,
-    `the gap must not exceed 8px -- the measured pill-spill threshold on a five-button DVR row; got ${gap[1]}px`);
+  assert.ok(Number(gap[1]) <= 12,
+    `the gap must not exceed 12px -- the measured pill-clip threshold on a five-button DVR row at 390px; got ${gap[1]}px`);
   const prog = css.match(/^\.dvr-program-btn\s*\{([^}]*)\}/m);
   assert.ok(prog, '.dvr-program-btn must have a rule of its own');
   assert.match(prog[1], /width:\s*36px/,

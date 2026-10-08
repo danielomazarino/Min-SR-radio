@@ -1126,8 +1126,10 @@ a:focus-visible {
      is byte-identical so nothing moves sideways.
      WS73 (owner, 2026-10-07): "the rows still feel a bit too tight ... increase
      the rows a bit more vertically". Block padding 11 -> 13 top and +13 -> +15
-     bottom. Vertical-only, same discipline as WS68. */
-  padding: 13px 16px calc(var(--safe-bottom) + 15px);
+     bottom. Vertical-only, same discipline as WS68.
+     WS74 (owner, 2026-10-08): the owner then reported the change was not
+     VISIBLE (+7% on a tall panel). 13 -> 16 top and +15 -> +18 bottom. */
+  padding: 16px 16px calc(var(--safe-bottom) + 18px);
   /* ---- WS68: more vertical room in the player rows ----
    *
    * OWNER: "the player where i have also asked for some more space vertically".
@@ -1145,8 +1147,10 @@ a:focus-visible {
    * absorbed it, so the "gap" was never consumed. WS73 makes .player-meta a
    * flex COLUMN so the value actually separates the identity row from the
    * quality pill, and the pill's compensation margin is removed.
+   * WS74 (owner, 2026-10-08): 8 -> 11px. The owner reported the WS73 step was
+   * not visible on the device.
    */
-  --player-row-gap: 8px;
+  --player-row-gap: 11px;
   transform: translateY(110%);
   transition: transform 0.25s ease;
   max-width: 480px;
@@ -1274,8 +1278,10 @@ body.player-gesture-lock {
   min-width: 0;
   /* ITEM 4: was `0 0 4px` (measured 36px tall). +2px below the header text, so
      the title block is less likely to be read as belonging to the row under it.
-     Vertical only; the inline values stay 0. */
-  padding: 0 0 6px;
+     Vertical only; the inline values stay 0.
+     WS74 (owner, 2026-10-08): 6 -> 9px, part of the second, visible pass at
+     "increase the rows a bit more vertically". */
+  padding: 0 0 9px;
 }
 /* ---- WS13 Part A: the header holds a WIDTH-ONLY SPACER ----
    The close button moved to the transport row, at the owner's request, to
@@ -1439,9 +1445,11 @@ body.player-gesture-lock {
    * extra room the owner asked for is line-height, not padding -- padding here
    * would grow the player's total height and push the transport down.
    * WS73 (owner, 2026-10-07): "the rows still feel a bit too tight". Floor
-   * 22 -> 26px, line-height 1.45 -> 1.55. Vertical-only, same reasoning. */
-  min-height: 26px;
-  line-height: 1.55;
+   * 22 -> 26px, line-height 1.45 -> 1.55. Vertical-only, same reasoning.
+   * WS74 (owner, 2026-10-08): the owner reported the WS73 step was not
+   * visible. Floor 26 -> 30px, line-height 1.55 -> 1.65. */
+  min-height: 30px;
+  line-height: 1.65;
 }
 .player-meta-row > .player-podcast-name { min-width: 0; }
 /* Compound selector on purpose. A bare base-selector block placed earlier in
@@ -1464,8 +1472,10 @@ body.player-gesture-lock {
    * moving anything horizontally, and the nowrap/ellipsis guards below are
    * untouched so a long title still clips rather than wrapping to a second
    * line -- a wrap would raise the row height and defeat the point.
-   * WS73 (owner, 2026-10-07): 1.45 -> 1.55, same vertical-only reasoning. */
-  line-height: 1.55;
+   * WS73 (owner, 2026-10-07): 1.45 -> 1.55, same vertical-only reasoning.
+   * WS74 (owner, 2026-10-08): 1.55 -> 1.65 — the previous step was not
+   * visible to the owner. */
+  line-height: 1.65;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1475,8 +1485,9 @@ body.player-gesture-lock {
   font-size: 12px;
   color: var(--text-secondary);
   /* WS68: vertical-only, same reasoning as .player-title.
-     WS73 (owner, 2026-10-07): 1.45 -> 1.55. */
-  line-height: 1.55;
+     WS73 (owner, 2026-10-07): 1.45 -> 1.55.
+     WS74 (owner, 2026-10-08): 1.55 -> 1.65, same as the title above. */
+  line-height: 1.65;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1563,8 +1574,16 @@ body.player-gesture-lock {
      12px therefore reintroduces the WS12 squeezed-column defect ("the pill
      wrapped onto two lines ... 17px -> 32px") on any DVR channel. 8px is the
      largest value that keeps the pill intact at 375, 390 and 430px -- all
-     three measured, none spilling, no overlap with the first transport button. */
-  gap: 8px;
+     three measured, none spilling, no overlap with the first transport button.
+
+     WS74 (owner, 2026-10-08, iPhone 13): the owner reported 8px was still not
+     visible. 8 -> 12px. MEASURED at 390px (the iPhone 13 width) with the widest
+     row -- five-button DVR plus the 50.8px "MP3 96" pill: the text column gets
+     54.1px, so the pill still fits with room to spare. At 375px the column is
+     47.2px and the pill CLIPS to one ellipsised line rather than wrapping (the
+     WS12 degradation), which is the honest ceiling of this layout: five buttons
+     plus gaps plus the 44px artwork leave only ~39px for text at 375px. */
+  gap: 12px;
   flex: none;
 }
 
