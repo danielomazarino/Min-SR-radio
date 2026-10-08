@@ -9971,3 +9971,74 @@ applies unchanged.
   The owner's iPhone is the only rig that can settle it.
 - The toggle's visual placement is code-proven in the built bundle; the owner
   should confirm it reads correctly beside NYHETER on the iPhone.
+
+---
+
+## 2026-10-09 (WS75) — player cover size, hidden build number, more vertical room
+
+**Status: DEPLOYED.** Source `ce78e3b`, artifacts `5f17407`, live build id
+**`ce78e3b`**. Suite **642/642**. Live CSS `styles.9ae982fc.css` (md5
+`2989fbef…`), JS `app.7ebaf828.js`.
+
+### The owner's request, and the correction (read this first)
+
+OWNER, 2026-10-08, verbatim:
+> "increase the vertical space more on both the base and the extendended player
+> for a profesional look. the album covers could get excatly the same pixel
+> width and heigt as the channel and podcast icons, and the extended player
+> could cover the build number exactly ... keep everything else the same."
+
+OWNER CORRECTION, 2026-10-09, verbatim:
+> "it is the album cover icon in the extended player that should be in the size
+> of the channels and podcasts ... and the icon in the 'normal player' to be as
+> it was."
+
+**WS75 first applied the icon-sized cover to the NORMAL player — the opposite of
+the instruction.** The correction moved it to the EXTENDED player. If a future
+session reads only the 2026-10-08 quote, it will repeat the mistake: the
+icon-sized cover is the **extended** player's, and the **normal** player's cover
+stays 44px.
+
+### What is in the code now (all in `styles.css`; no `app.js` change)
+
+| surface | class | size | note |
+|---|---|---|---|
+| home channel/podcast icons | `.icon-scroller .stream-icon` | `var(--icon)` | the shared source of truth |
+| **extended** player cover (programme) | `.expand-img` | `var(--icon)` | 56 → 77px at 390px |
+| **extended** player cover (song) | `.expand-img-song` | `var(--icon)` | 72 → 77px at 390px |
+| **normal** player cover | `.player-thumb` via `--player-art` | **44px** | unchanged, "as it was" |
+
+- **`--icon`** is defined once on `:root`:
+  `calc((min(100vw, 480px) - 82px) / 4)`, with a `@media (max-width: 340px)`
+  override `calc((100vw - 66px) / 4)` because `.content`'s inline padding drops
+  20 → 12px there. Both the home icons and the extended cover read it, so they
+  are the same square by construction (verified 0.00px diff at
+  320/340/360/375/390/430/768px).
+- **Build number hidden while playing:** `body:has(.player.visible) .build-line
+  { display: none }`. Scoped, so it reappears at rest. The id is HIDDEN, never
+  removed (WS73b). `:has()` is supported on the owner's iOS 15.4+ Safari.
+- **Vertical room:** `.player` padding `16/18 → 20/22`; `.player-meta-row` floor
+  `30 → 34px`. Padding-block only (the WS68/73/74 discipline).
+- **`.player-row` is a flex row** (restored). WS75 briefly made it a 2-column
+  grid, which was only needed for the wrong 77px normal cover; the correction
+  reverted it.
+
+### Tests
+
+`tests/ws75-player-cover.test.mjs` (new). Guards assert the corrected
+arrangement: extended cover reads `--icon`; normal cover is the 44px literal;
+the `<=340px` override exists; the build line is hidden only while
+`.player.visible`; `.player-row` is flex; the transport gap is untouched. Each
+guard was proven red by mutation (extended cover → 56px; normal cover →
+`var(--icon)`; row → grid), restored by checksum. The metadata-diag guard was
+restored to its original 44px assertion.
+
+### NOT DONE / not verified
+
+- **iPhone rendering is unverified.** All numbers are Chromium measurements of
+  the served bundle. The owner should confirm on the iPhone 13: build id
+  `ce78e3b`; the **extended** player's cover matches the channel icons; the
+  **normal** player's cover is back to its previous size; the build number is
+  not visible while playing.
+- The extended player's cover is now 77px; the panel's own height grows with it.
+  Not measured against a very long programme title on the device.
