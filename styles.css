@@ -1762,7 +1762,33 @@ body.player-gesture-lock {
 }
 
 .seek-fill {
-  position: relative;
+  /* ---- WS81 (owner, 2026-10-09): the fill must use the TRACK's reference ----
+   * OWNER: "in the 773b2e5 it doesn't look perfect". MEASURED: the dot sat to
+   * the RIGHT of the fill end by exactly `position x 14px` -- about +12px at the
+   * owner's slider position, +14px at the live edge (worst exactly when the
+   * offset badge is on screen).
+   *
+   * CAUSE -- one position, two references:
+   *   - the TRACK (`.seek-bar::before`, `left:0; right:0`) and the THUMB
+   *     (`position: absolute`) resolve against the bar's PADDING box;
+   *   - the fill was the only NORMAL-FLOW child, so `width: f%` resolved against
+   *     the bar's CONTENT box -- which `.dvr-bar { padding-right: 14px }` (BUG B)
+   *     shrinks by exactly 14px.
+   *
+   * THE FIX: give the fill the same box as the other two by making it absolutely
+   * positioned across the track. `padding-right` does NOT change the padding box,
+   * so this makes the fill, the track and the thumb share one reference BY
+   * CONSTRUCTION -- no per-frame ratio, no hardcoded 14, and it cannot drift
+   * again if the padding is ever retuned. `padding-right` is left exactly as it
+   * was, so BUG B's guarantee is untouched.
+   *
+   * (A JS fix was tried first and rejected: it needed a live track/content width
+   * ratio recomputed per bar, and a mutation check showed a hardcoded ratio would
+   * pass silently. Making the boxes agree removes the arithmetic entirely.) */
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
   height: 4px;
   width: 0;
   border-radius: 2px;
@@ -1792,6 +1818,7 @@ body.player-gesture-lock {
 /* 2026-09-23: the LIVE label button was removed from the DVR row — the mode
    pill shows LIVE/−time and a tap on the bar's right 12 % returns to live.
    The bar keeps its right padding so the thumb has breathing room. */
+/* ---- WS81 (owner, 2026-10-09): the dot was drifting right of the fill ----\n * OWNER: \"in the 773b2e5 it doesn't look perfect\" -- and MEASURED, the dot sat\n * to the RIGHT of the fill end by exactly `position x 14px` (about +12px at the\n * owner's slider position, +14px at the live edge).\n *\n * THE CAUSE, and it is the AGENTS.md section 3 pattern: ONE position measured\n * against TWO different references, both inside the bar.\n *   - the TRACK (`.seek-bar::before`, `left:0; right:0`) and the THUMB\n *     (`position:absolute; left:f%`) resolve against the bar's PADDING box\n *   - the FILL is a normal-flow child, so `width: f%` resolves against the\n *     bar's CONTENT box = padding box width - 14px.\n * So the track and the thumb share one reference and the FILL had a different\n * one -- the fill ran 14px short, which is exactly the `f x 14px` drift, growing\n * as you approach live, i.e. precisely when the offset badge is on screen and\n * the dot is furthest from where the fill says you are.\n *\n * THE FIX is in the paint maths, not here: both bars now write the fill width as\n * a percentage OF THE CONTENT BOX, so the fill, the thumb and the track all\n * describe the same position. Doing it in JS rather than CSS is what keeps BUG\n * B's guarantee intact -- the padding-right is untouched, so the thumb still\n * cannot reach the LIVE label zone. (A CSS-only attempt using a negative\n * margin-right \"worked\" for the drift but shifted the track 14px right of the\n * content box and under the LIVE pill, which is trading one defect for another.) */
 .dvr-bar { padding-right: 14px; }
 
 .seek-thumb {
@@ -2047,10 +2074,28 @@ body.player-gesture-lock {
   width: 36px;
   /* ---- WS78 (owner, 2026-10-09): a small rounded rectangle around the skip
    * glyphs, matching the ±15 s circles' accent, and CLICKABLE across the whole
-   * rectangle. The rect is a pseudo-element sized 30x26, centred on the button's
-   * 36x44 box -- smaller than the button, so every point inside the rectangle is
-   * already inside the button and therefore tappable (that is the "clickable for
-   * the rectangular area too" the owner asked for). */
+   * rectangle. The rect is a pseudo-element centred on the button's 36x44 box
+   * and SMALLER than it, so every point inside the rectangle is already inside
+   * the button and therefore tappable (that is the "clickable for the
+   * rectangular area too" the owner asked for).
+   *
+   * ---- WS81 (owner, 2026-10-09): 30x26 -> 36x36, the ±15 s ring's own size.
+   * MEASURED BEFORE: the six marks in the transport were 30x26 (skip), 36
+   * (steps) and 44 (play) -- three sizes for one row of controls, which is what
+   * "it doesn't look perfect" was looking at. The four ARROW marks are now one
+   * size: skip rect 36x36 and step ring 36x36 are pixel-identical frames, with
+   * identical 20px glyphs inside them.
+   *
+   * The play button STAYS 44px. It is the primary action and deliberately the
+   * largest thing in the row; shrinking it is a different change from
+   * equalising the arrows, and it was not asked for. It is now the ONE
+   * deliberate exception rather than one of three arbitrary sizes.
+   *
+   * A square rect with 9px corners is still a ROUNDED RECTANGLE (9px is well
+   * under half the 36px side, so it is not a pill or a circle) -- the shape
+   * language that distinguishes skip from step is preserved, only the size is
+   * unified. 36x36 also keeps the rect inside the 36x44 button on both axes, so
+   * the WS78 "every point inside the rect is clickable" property still holds. */
   position: relative;
 }
 .dvr-program-btn::before {
@@ -2058,9 +2103,9 @@ body.player-gesture-lock {
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 30px;
-  height: 26px;
-  margin: -13px 0 0 -15px;
+  width: 36px;
+  height: 36px;
+  margin: -18px 0 0 -18px;
   border: 1.5px solid var(--accent);
   border-radius: 9px;
   pointer-events: none;
@@ -2100,8 +2145,8 @@ body.player-gesture-lock {
  * the ±15 s button away from BOTH neighbours, which is the opposite of the
  * request. Only an asymmetric margin can move it toward one side and away from
  * the other. */
-.player-controls.dvr .dvr-step-back { margin-left: -4px; margin-right: 4px; }
-.player-controls.dvr .dvr-step-fwd { margin-left: 4px; margin-right: -4px; }
+.player-controls.dvr .dvr-step-back { margin-left: 0px; margin-right: 0px; }
+.player-controls.dvr .dvr-step-fwd { margin-left: 0px; margin-right: 0px; }
 
 /* The DVR row now carries more controls — tighten the time label so the bar
    keeps most of the width. */

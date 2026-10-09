@@ -81,31 +81,48 @@ test('WS76: the ±15 s button draws a thin green CIRCLE, whole circle clickable'
     'the glyph must stack above the absolutely-positioned ring');
 });
 
-test('WS76: the ±15 s button moves toward the skip, away from play, net-zero', () => {
-  // Each ±15 s button gets a margin pair: a NEGATIVE inner margin (toward play)
-  // and an equal POSITIVE outer margin (toward the skip). Equal and opposite, so
-  // the row's total width is unchanged; asymmetric, so the button shifts outward.
+test('WS76 (RESTATED WS81): the ±15 s nudge is NEUTRAL — the gaps are equal', () => {
+  // ---- RESTATED (AGENTS.md 7b). WHAT IT USED TO SAY (WS76): "the ±15 s button
+  // moves toward the skip, away from play, net-zero", REQUIRING an asymmetric
+  // margin pair (`-4px / +4px`).
+  //
+  // WHY IT CHANGED -- OWNER, 2026-10-09: "in the 773b2e5 it doesn't look
+  // perfect, so fix 1, 2 and 3". Item 2 was the ±15 s ink gap asymmetry, which
+  // this nudge CAUSED: MEASURED on the built page at 390px with the real `.dvr`
+  // row, the ink-to-ink gaps were 32.33px (skip↔step) and 43.33px (step↔play).
+  //
+  // The WS76 requirement was "balance the ±15 s gap" -- but it balanced the
+  // BUTTON boxes (uniform 12px flex gap before the nudge) rather than the INK,
+  // and the ±15 s button is 36px wide around a 20px glyph. The fix that satisfies
+  // the original AND the new requirement is no displacement at all: the flex gap
+  // is uniform, so all four ink gaps become equal.
+  //
+  // The property is asserted at least as strongly as before: net-zero margins are
+  // still required (the row cannot shift), and the rule is still required to carry
+  // both margins so a future edit cannot silently re-introduce a nudge.
   const back = STYLES.match(/\.player-controls\.dvr \.dvr-step-back\s*\{([^}]*)\}/);
-  assert.ok(back, 'the back ±15 s nudge rule must exist, scoped to the DVR row');
+  assert.ok(back, 'the back ±15 s rule must exist, scoped to the DVR row');
   const backL = back[1].match(/margin-left:\s*(-?\d+)px/);
   const backR = back[1].match(/margin-right:\s*(-?\d+)px/);
-  assert.ok(backL && backR, 'the back nudge must set both margins');
-  assert.ok(Number(backL[1]) < 0 && Number(backR[1]) > 0,
-    'the back button must move toward play-side negative and skip-side positive');
+  assert.ok(backL && backR, 'the back rule must set both margins explicitly');
+  assert.equal(Number(backL[1]), 0,
+    'the back button must not be displaced — a non-zero margin re-opens the 32.3px/43.3px ink-gap asymmetry');
+  assert.equal(Number(backR[1]), 0, 'and the other side must be zero too');
 
   const fwd = STYLES.match(/\.player-controls\.dvr \.dvr-step-fwd\s*\{([^}]*)\}/);
-  assert.ok(fwd, 'the forward ±15 s nudge rule must exist, scoped to the DVR row');
+  assert.ok(fwd, 'the forward ±15 s rule must exist, scoped to the DVR row');
   const fwdL = fwd[1].match(/margin-left:\s*(-?\d+)px/);
   const fwdR = fwd[1].match(/margin-right:\s*(-?\d+)px/);
-  assert.ok(fwdL && fwdR, 'the forward nudge must set both margins');
-  assert.ok(Number(fwdL[1]) > 0 && Number(fwdR[1]) < 0,
-    'the forward button must move toward play-side positive and skip-side negative');
+  assert.ok(fwdL && fwdR, 'the forward rule must set both margins explicitly');
+  assert.equal(Number(fwdL[1]), 0, 'the forward button must not be displaced either');
+  assert.equal(Number(fwdR[1]), 0, 'and the other side must be zero too');
 
-  // NET ZERO: |inner| === |outer| on both, so the row width does not change.
+  // NET ZERO still holds trivially, and is asserted so the original requirement
+  // is not lost: the row's total width must be unchanged by these rules.
   assert.equal(Math.abs(Number(backL[1])), Math.abs(Number(backR[1])),
-    'the back nudge must be net-zero (equal and opposite margins)');
+    'the back margins must remain net-zero, so the row width cannot change');
   assert.equal(Math.abs(Number(fwdL[1])), Math.abs(Number(fwdR[1])),
-    'the forward nudge must be net-zero (equal and opposite margins)');
+    'the forward margins must remain net-zero, so the row width cannot change');
 });
 
 test('WS76: nothing else in the transport moved', () => {

@@ -365,6 +365,99 @@ test('WS78: the podcast slider keeps its own grabbable thumb', () => {
 });
 
 // ---------------------------------------------------------------------------
+// WS81 — the slider dot drift, the ±15 s gap, and the mark sizes
+//          ("in the 773b2e5 it doesn't look perfect")
+// ---------------------------------------------------------------------------
+
+test('WS81: the slider fill, thumb and track all describe ONE position', () => {
+  // OWNER: "in the 773b2e5 it doesn't look perfect" -- the measured defect was
+  // the dot sitting to the RIGHT of the fill end by exactly `position x 14px`.
+  //
+  // CAUSE: the TRACK (`.seek-bar::before`, `left:0; right:0`) and the THUMB
+  // (`position:absolute`) resolve against the bar's PADDING box, while the fill was
+  // the only NORMAL-FLOW child and so resolved `width: f%` against the CONTENT box
+  // -- which `.dvr-bar { padding-right: 14px }` shrinks by exactly 14px.
+  //
+  // THE FIX gives the fill the same box as the other two: `position: absolute`
+  // across the track. `padding-right` does not change the PADDING box, so this
+  // makes all three agree by construction -- no ratio maths, no hardcoded 14, and
+  // it cannot drift again if the padding is retuned.
+  const fill = STYLES.match(/^\.seek-fill\s*\{([^}]*)\}/m);
+  assert.ok(fill, '.seek-fill must exist');
+  assert.match(fill[1], /position:\s*absolute/,
+    'the fill must be positioned, not in normal flow — an in-flow fill measures against the CONTENT box while the track and thumb measure against the PADDING box');
+  assert.match(fill[1], /left:\s*0/,
+    "the fill must start at the track's left edge");
+
+  // The reference the fill must match is the PADDING box, so the bar must NOT
+  // shrink it: `padding-right` must stay (it is BUG B's guarantee), which is only
+  // consistent with an absolutely-positioned fill.
+  const barRules = [...STYLES.matchAll(/^\.dvr-bar\s*\{([^}]*)\}/gm)].map(m => m[1]).join('\n');
+  assert.match(barRules, /padding-right:\s*14px/,
+    "BUG B's padding-right must survive — the fix is to match its box, not to remove the reserve");
+
+  // The paint code still writes a bare percentage for BOTH bars. That is correct
+  // once the fill is positioned: `width: f%` then resolves against the same
+  // padding box as the thumb's `left: f%`.
+  const bare = (APP_JS.match(/fill\.style\.width = `\$\{f \* 100\}%`/g) || []).length;
+  assert.equal(bare, 2,
+    `both sliders must still paint the fill as a bare percentage (it is now the double of the thumb's own reference); found ${bare}`);
+  // And no ratio/constant was introduced to paper over a box mismatch.
+  assert.ok(!/paintSeekPair|_srPairRatio/.test((APP_JS).replace(/\/\*[\s\S]*?\*\//g, '')),
+    'no width-ratio workaround may exist — the boxes agree, so none is needed');
+});
+
+test('WS81: the four arrow marks are all 36x36 (one size, not three)', () => {
+  // MEASURED BEFORE: the transport carried three mark sizes -- 30x26 (skip),
+  // 36 (steps), 44 (play). The four ARROW marks are now one size; the play button
+  // stays 44 deliberately, because it is the primary action and was not asked for.
+  const rect = STYLES.match(/^\.dvr-program-btn::before\s*\{([^}]*)\}/m);
+  assert.ok(rect, 'the skip rectangle must exist');
+  const rw = num(rect[1], 'width');
+  const rh = num(rect[1], 'height');
+  assert.equal(rw, 36, 'the skip rectangle must be 36px wide, matching the ±15 s ring');
+  assert.equal(rh, 36, 'and 36px tall, so the two arrow marks are pixel-identical frames');
+
+  const ring = STYLES.match(/^\.dvr-step-btn::before\s*\{([^}]*)\}/m);
+  const sw = num(ring[1], 'width');
+  const sh = num(ring[1], 'height');
+  assert.equal(sw, rw, 'the step ring and the skip rectangle must be the SAME width');
+  assert.equal(sh, rh, 'and the same height — this is the equalisation');
+
+  // Still a ROUNDED RECTANGLE (the shape language that distinguishes skip from
+  // step must survive the resize) and still inside its 36x44 button on both axes,
+  // so the WS78 "every point in the rect is clickable" property still holds.
+  const radius = rect[1].match(/border-radius:\s*([\d.]+)px/);
+  assert.ok(radius && Number(radius[1]) > 0 && Number(radius[1]) < rw / 2,
+    'the skip mark must stay a rounded rectangle, not a pill or a circle');
+  const btn = STYLES.match(/^\.dvr-program-btn\s*\{([^}]*)\}/m);
+  assert.equal(num(btn[1], 'width'), 36, 'the button must still be 36px wide, so the rect fits inside');
+  assert.ok(rh <= 44, 'the rect must fit within the button\'s 44px height');
+});
+
+test('WS81: the play button stays the single deliberate size exception', () => {
+  // The equalisation is scoped to the ARROWS. The play button is 44px and the
+  // equalisation must not have dragged it to 36 — that is a different change and
+  // was not requested.
+  //
+  // The width comes from the SHARED `.player-btn` rule (44px), which
+  // `.player-btn-main` inherits and does not override — so assert on `.player-btn`,
+  // which is where the value actually lives.
+  const btn = STYLES.match(/^\.player-btn\s*\{([^}]*)\}/m);
+  assert.ok(btn, '.player-btn must exist');
+  const w = btn[1].match(/width:\s*(\d+)px/);
+  assert.ok(w, '.player-btn must declare a width');
+  assert.equal(w[1], '44', 'the play button must stay 44px — it is the one deliberate exception in the row');
+  // And the two ARROW buttons must NOT be 44 — the equalisation is 36, so if any
+  // of the three collapsed to the same size the distinction was lost.
+  const progW = num(STYLES.match(/^\.dvr-program-btn\s*\{([^}]*)\}/m)[1], 'width');
+  const stepW = num(STYLES.match(/^\.dvr-step-btn\s*\{([^}]*)\}/m)[1], 'width');
+  assert.equal(progW, 36, 'the skip button must be 36px, not 44');
+  assert.equal(stepW, 36, 'the step button must be 36px, not 44');
+  assert.notEqual(progW, Number(w[1]), 'the arrows and the play button must remain visibly different sizes');
+});
+
+// ---------------------------------------------------------------------------
 // D. Nothing else moved
 // ---------------------------------------------------------------------------
 

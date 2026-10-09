@@ -149,7 +149,19 @@ test('BUG B: pointercancel + pointerleave + stuck-drag watchdog exist', () => {
 
 test('BUG B: LIVE label has breathing room from the thumb (user note)', () => {
   // The bar gets right padding so the thumb cannot reach the LIVE label zone.
-  const m = STYLES_CSS.match(/\.dvr-bar\s*\{[^}]*padding-right:\s*14px[^}]*\}/);
+  // WS81 kept this intact deliberately: the WS81 slider-drift fix was made in CSS
+  // by matching the FILL's box to the track's, precisely so this padding could
+  // stay, because the alternative (a negative margin instead of padding) shifted
+  // the track under the LIVE pill.
+  //
+  // ASSERTS AGAINST COMMENT-STRIPPED CSS (fixed 2026-10-09 after a mutation
+  // survived): the WS81 note in styles.css QUOTES the declaration
+  // (".dvr-bar { padding-right: 14px }") to explain the drift, so a raw-text
+  // regex was satisfied by that COMMENT even after the real rule was changed to
+  // 0px. A mutation that reports green because it matched prose is worse than no
+  // test -- AGENTS.md section 2 and the WS43b anchor trap in one.
+  const css = STYLES_CSS.replace(/\/\*[\s\S]*?\*\//g, '');
+  const m = css.match(/\.dvr-bar\s*\{[^}]*padding-right:\s*14px[^}]*\}/);
   assert.ok(m, '.dvr-bar must have right padding separating thumb from LIVE');
 });
 
