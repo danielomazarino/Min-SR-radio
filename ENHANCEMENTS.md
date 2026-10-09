@@ -10382,3 +10382,208 @@ and the entry has been left in place with a correction banner rather than
 rewritten, so the next session can see **how** the wrong reasoning was reached.
 The lesson generalises: **when a visual claim can be measured, measure the ink
 the user sees, not a geometric feature of the path that is easy to compute.**
+
+---
+
+## 2026-10-09 (WS80) — slider ring smaller + filled; skip glyph accent; ±15 s bbox centred; build id only in Info; developer renamed
+
+**Status: DEPLOYED.** Source `773b2e5`, artifacts `3b7b49e`, build id **`773b2e5`**.
+Suite **666/666**. CSS `styles.e748a1ad.css` (md5 `9f854b12…`), JS `app.ef8af54f.js`
+(md5 `f8143652…`). Live verified byte-identical to `dist`.
+
+### The owner's request, verbatim
+
+OWNER, 2026-10-09:
+> "the ring around the slider is a little too big and nees the solid background
+>  colour of the player. the circle arrows are still not fully centered, and the
+>  skip button icons are a bit high and left adjusted. make a new pass on this
+>  and record to the enhancements.md that the build id should not be present
+>  under Nyheter anymore as it is not now. it is enough that the build id is
+>  visible under Info. Also change under Info from Daniel Omazarino to Danielo
+>  Mazarino."
+
+**Note on the built-in-browser limit (§14).** Desktop Chromium cannot load SR's
+DVR stream, so `isDvr` is false and the app never builds the five-button row or
+the live slider. Every measurement below was therefore taken on the **built page**
+with the DVR row and the `.dvr-bar` slider **injected using the app's own CSS
+classes** — the element geometry is real, the transport is simulated. The
+five-button numbers were consequently **unverifiable in this rig** (see §3), which
+is flagged rather than glossed.
+
+---
+
+### 1. The slider ring — 26 → 22px, and FILLED with `var(--surface)`
+
+Two of the owner's words map to two separate changes, and they are worth keeping
+separate:
+
+- **"a little too big"** → a SIZE step, 26 → 22px. Not a redesign: 22px still
+  clears the 14px dot by 4px on the radius and is still a comfortable grab target,
+  but it stops reading as a target ring drawn around the slider. It also keeps the
+  slider ring the **smallest** of the app's mark-out shapes (`.dvr-step-btn` 36px,
+  `.dvr-program-btn::before` 30 × 26px).
+- **"needs the solid background colour of the player"** → `background: var(--surface)`.
+  `--surface` **is** the player's background (`.player { background: var(--surface) }`).
+  With the fill the 4px track no longer shows **through** the ring — which is
+  exactly what made the hollow version read as a window rather than a handle.
+
+The DVR thumb box follows 26 → 22px, so the ring remains the grab target, and
+`::after`'s inset goes 6 → 4px so the **visible dot stays exactly 14px**. Growing
+the hit area must not grow the visible thumb.
+
+**Measured on the built page (desktop light theme):** ring `22 × 22`, radius `50%`,
+border `rgb(0,80,78)` (= accent), `background rgb(255,255,255)` (= `--surface`
+`#ffffff` = the player's own background, confirmed by reading
+`getComputedStyle(player).backgroundColor`), `pointer-events: none`. DVR thumb box
+`22 × 22`, `pointer-events: auto`. Visible dot `10.49px` painted.
+
+---
+
+### 2. The ±15 s arrows (THIRD owner report) — the ink **bbox** is the anchor
+
+This is the third pass, so the history matters and all three attempts are
+recorded here rather than only the last.
+
+| attempt | anchor chosen | offset | outcome |
+|---|---|---|---|
+| **WS77** | the path's **arc circle** (viewBox y=13 vs ring y=12) | `translateY(-0.83px)` **up** | owner reported it again |
+| **WS79** | the ink's **mass centroid** (measured 12.15 vs ring centre 12.00) | **none** | owner reported it a **third** time |
+| **WS80** | the ink's **bounding edge** vs the ring's edge | `translateY(+0.83px)` **down** | shipped |
+
+**MEASURED on the built page** (`getBoundingClientRect` of the ink path vs the
+ring's own rect; the glyph is a 24-unit viewBox drawn in a 20px box, so 1 unit =
+0.833px). Identical for both arrows:
+
+```
+ink bbox in viewBox units    y 15.4 .. 35.4
+clearance to the ring        top 8.83px   bottom 10.50px   ->  1.67px UNEQUAL
+after translateY(+0.83px)    top 9.66px   bottom  9.67px   ->  0.01px  (concentric)
+```
+
+**The lesson, and it is the third distinct one from this single arrow.** WS79 was
+*right about the centroid* and still wrong about what the owner sees: an arrow's
+bounding edge is compared against the ring by the eye, and a 1.67px inequality in
+that comparison is visible even when the mass is perfectly centred. Each pass
+measured a real quantity and picked a different one to call "the centre". When a
+visual claim can be measured, the question is not *"is it centred?"* but **"centred
+by which anchor, and is that the anchor the eye uses?"**
+
+---
+
+### 3. The skip icons — measured first; the geometry was NOT the defect
+
+OWNER: *"the skip button icons are a bit high and left adjusted."*
+
+**MEASURED FIRST, and the measurement contradicts the report's cause.** The ink's
+bbox clearance inside the 30 × 26 rectangle is **already symmetric**:
+
+```
+left 9.5px   right  9.5px      top 7.5px   bottom 7.5px
+mass centroid offset from the rect centre:  0.51px
+```
+
+So "high and left" was **not** a geometry error. What actually differed:
+
+| property | before | after |
+|---|---|---|
+| glyph colour | `rgb(110,110,115)` = `--text-secondary` | `var(--accent)` = `rgb(0,80,78)` |
+| glyph size | **22px** (inherited from `.player-btn svg`) | **20px** (explicit) |
+
+**A grey glyph inside an accent rectangle reads as sitting wrong inside it** — the
+box is the only thing marking the shape and the glyph did not answer to it. And
+WS78 explicitly asked these icons to *match* the ±15 s pair, which draws its glyph
+in `var(--accent)`; the colour was the skipped half of that match, and the size
+disagreed by 2px because the skip buttons never overrode the inherited 22px.
+
+**This is the §3 "one rule, two implementations" pattern in its visual form**, and
+the honest conclusion is that the owner's *description* ("high and left") named a
+cause that the measurement did not support — while the underlying complaint (the
+icons look wrong against their boxes) was entirely correct.
+
+**⚠ What is NOT verified here.** I could not measure the *five-button* clearance
+asymmetry on the built page, because the DVR row does not exist in this rig and my
+own injected buttons had no `.dvr` class on the parent, so the ±15 s buttons did
+not carry their WS76 margins. The following is therefore arithmetic, **not**
+observation: with the real `.player-controls.dvr` margins each mark-out shape moves
+2px toward its skip button, so the rectangle-to-circle clearance would fall from
+13px to 11px while the opposite side (circle-to-play) would rise from 12px to 14px.
+If the owner still perceives a horizontal offset, **that** is the measurement to
+take, on the device.
+
+---
+
+### 4. The build id — one surface only
+
+OWNER: *"the build id should not be present under Nyheter anymore as it is not
+now. it is enough that the build id is visible under Info."*
+
+- The paragraph `app.js` built with `class: 'build-line'` (appended to `$main`,
+  which placed it directly under NYHETER) is **deleted outright** — not hidden, not
+  moved.
+- The `.build-line` CSS block **and** the WS75 rule
+  `body:has(.player.visible) .build-line { display: none }` are removed with it.
+  The WS75 hide existed *only* because the line sat under the player's bottom edge;
+  with no element there is nothing to hide, and a rule matching nothing is a trap
+  for the next reader.
+- `APP_BUILD` is **unchanged** and still reaches the gated diagnostics snapshot
+  (`push('APP_BUILD', d.appBuild)`). It is rendered in **exactly one** place now.
+- **This SUPERSEDES** WS10's placement, WS11 Part B's move into `.topbar` (which
+  centred the cog, because `space-between` with three children), and WS12 Part A's
+  move back. The owner has retired the question.
+
+**MEASURED, built page:** `document.querySelector('.build-line')` → **null**;
+the id does not appear anywhere in the home screen's text. Info renders
+`773b2e5 · Utvecklad av Danielo Mazarino`.
+
+⚠ **A whole test file was nearly lost here, and the failure mode is worth
+recording.** `metadata-diag.test.mjs` sliced app.js with
+`region("$main.appendChild(el('p', {", ...)` **at module load**. `region()` throws
+on a missing start marker, so the moment the element was removed the entire file
+failed to load: **27 tests lost, reported as `not ok 1` for the file, with the
+dependency-guard suite silently absent.** That is why the affected file's count
+dropped 663 → 528. Both stale regions were removed with an explanatory note. **A
+`region()` call whose anchor can be deleted is a landmine under the whole file.**
+
+---
+
+### 5. Developer name
+
+`"Daniel Omazarino"` → `"Danielo Mazarino"`, corrected at the single source
+(`app.js` `APP_DEVELOPER`, which the About overlay interpolates) **and** in
+`README.md`, so the two cannot drift.
+
+---
+
+### Tests: 663 → 666
+
+**Four guards RESTATED per AGENTS.md §7b**, each naming what the earlier claim was:
+
+| guard | earlier claim | now |
+|---|---|---|
+| WS77 item 1 | "the glyph **must** carry an upward nudge" | the displacement is DOWNWARD and cancels the measured 1.67px bbox imbalance |
+| WS78 ring | ring is **≥ 24px** | size band `> 14` and `< 26`, and it must be **filled** with `--surface` |
+| WS10 Part B | the id **is** appended under NYHETER | the home-screen line is **gone**; About is the only surface |
+| WS75 C2 | `body:has(.player.visible) .build-line` hides it | no `.build-line` may exist at all |
+
+Three new WS80 guards added: the skip glyph is accent (and its reference, the ±15 s
+glyph, still is); the skip glyph is the same size as the ±15 s glyph; the ±15 s
+displacement is downward and equal to half the measured imbalance.
+
+**Mutation proof: 15 mutants, ALL KILLED, zero survived, zero NO-OPs** — glyph back
+to grey; glyph size remove d (inherits 22px); glyph 24px; nudge removed; nudge
+flipped upward; nudge overshoot 2.5px; ring back to 26px; ring fill removed; ring
+13px; build line re-added; build-line CSS re-added; WS75 hide re-added; developer
+reverted in `app.js`; developer reverted in `README.md`; build id double-rendered.
+All files restored by checksum (`9f854b12…`, `8bc80302…`, `c052c524…`).
+
+---
+
+### NOT DONE / not verified
+
+- **iPhone rendering is unverified.** The owner must confirm the build id reads
+  **`773b2e5`** under Info, that the slider ring now looks right, that the arrows
+  look centred, and that the skip icons look right in their boxes.
+- **The five-button horizontal clearance was not observed** (desktop cannot render
+  the DVR row); the 13px → 11px arithmetic in §3 is a prediction, not a measurement.
+- **Dark theme was not exercised.** The ring fill is `var(--surface)`, so it tracks
+  the theme by construction, but only the light theme was rendered.
