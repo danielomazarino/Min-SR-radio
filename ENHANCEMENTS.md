@@ -10172,3 +10172,102 @@ the header's flex alignment guarded.
 - **The timer was driven on the LIVE site with a 1-second seam** (armed → sheet
   closed → player closed → audio `src` cleared). The real 15/30/60/120-minute
   durations were not waited out; the seam only changes the length.
+
+---
+
+## 2026-10-09 (WS78) — rounded rectangles around the skip icons, and a grabbable ring on the slider thumb
+
+**Status: DEPLOYED** (GitHub Pages propagation confirmed for the commit; live
+HTML was still serving the previous bundle at the time of writing — see the last
+section). Source `ae123e0`, artifacts `33effe5`. Suite **662/662**. CSS
+`styles.3b2f64aa.css` (md5 `923980db…`), JS `app.f751d64e.js`.
+
+### The owner's request, verbatim
+
+OWNER, 2026-10-09:
+> "for the skip icons, can you add small rounded rectangulars around them and
+>  make them clickable for the rectangular area too? Also add for the slider a
+>  ring that is not too big around the current dot in the end and make the ring
+>  area as well possible to grab to make it easier for users."
+
+### What changed (CSS only — no `app.js` change)
+
+Three properties, kept separate because each can fail on its own.
+
+**A. A rounded rectangle around each skip glyph.**
+`.dvr-program-btn::before` draws a **30×26** box, `border-radius: 9px`, a 1.5px
+`var(--accent)` border, centred on the button's own 36×44 box. The radius is
+deliberately **under half the short side**, which is what makes it a *rounded
+rectangle* rather than a pill or a circle — the same relationship the ±15 s ring
+(WS76) uses to be a circle.
+
+**B. "clickable for the rectangular area too".**
+Achieved **structurally**, not with a second hit element. The rectangle is a
+pseudo-element of the button and is **smaller than the button's own box**, so
+every point inside the rectangle is already a point on the button and therefore
+already activates it. This is the honest version of the request: if the rectangle
+were ever enlarged past the button, the overhang would be pixels that *look*
+clickable and are not. A guard exists specifically for that case.
+
+**C. A ring around the slider's dot, and the ring area grabbable.**
+The ring is drawn on the **base** `.seek-thumb::before` — 26px, accent,
+`pointer-events: none`. Putting it on the base class is what makes it appear on
+**both** sliders (the live DVR bar and the podcast episode bar), centred on each
+thumb regardless of that thumb box's own size, so the ring-to-dot gap is
+identical on each.
+
+On the **DVR** slider the thumb box grows **14 → 26px** — the ring's own size, so
+the ring *is* the grab target — with `pointer-events: auto`, while the visible dot
+stays 14px, drawn by `::after` exactly as the podcast slider already did. Before
+this change the DVR thumb was `pointer-events: none`, so the only way to grab the
+live slider was to hit the 4px track. The vertical-swipe disambiguation is
+untouched: a vertical gesture that starts on the thumb is still handed to
+swipe-to-close.
+
+### Why the ring went on the BASE class
+
+The two sliders already diverged on the thumb: the podcast slider had an
+oversized invisible box (32px) with the dot drawn by `::after`, and the DVR
+slider had a bare 14px `pointer-events: none` thumb. The owner asked for **one**
+ring, visually. Drawing it once on the base class means a future change to the
+ring cannot land on one slider and miss the other — the class of "one concept, two
+implementations" defect WS27 documents.
+
+### Measured (built page, driven DOM, 390px)
+
+| what | value |
+|---|---|
+| skip button box | 36 × 44 |
+| skip rectangle (`::before`) | 30 × 26, radius 9px, border `rgb(0,80,78)`, `margin -13px 0 0 -15px` |
+| ring (`.seek-thumb::before`) | 26 × 26, radius 50%, accent, `pointer-events: none` |
+| DVR thumb box | 26 × 26, `pointer-events: auto`, transparent |
+| DVR visible dot (`::after`) | ~10.5px, accent — smaller than its box |
+| ±15 s ring (unchanged) | 36 × 36, radius 50% |
+
+### Tests
+
+`tests/ws78-skip-rect-and-thumb-ring.test.mjs` (new, +10) asserts **shape, never
+pixels**: the rectangle is rounded (`0 < radius < shortSide/2`), accent, centred
+by an exact half-margin pair, and **smaller than the button** so the whole of it
+is clickable; the ring is square-with-50%-radius, accent, centred, bounded
+24–32px ("not too big"), and `pointer-events: none`; the DVR thumb box **covers
+the ring** in both dimensions (the promise "the ring area is grabbable" is only
+true if it does) with a dot smaller than the box; the podcast thumb was not
+shrunk; and the transport geometry (gap 12, step 36, skip 36, ±15 s ring a
+circle) is unchanged.
+
+**Mutation proof: 19 mutants, all killed, zero NO-OPs** — removing each rule;
+enlarging the rect to 44×44; making its radius 50%; de-centring it; making it a
+hit target; the ring as a square / 44px / 12px / non-accent; the DVR thumb back to
+`pointer-events: none` and to 14px; the dot inset to 0 and non-accent; the
+transport gap at 16px; the skip width at 44px; the ±15 s ring as a rectangle; the
+podcast thumb at 14px. Each restored to `923980db…`.
+
+### NOT DONE / not verified
+
+- **iPhone rendering and the *feel* of the grab target are unverified.** 26px is
+  measurably a target; whether it feels easier on the phone is the owner's call.
+- **The touch path was not exercised** — the driven check used a desktop pointer.
+- **At the time of writing the live site was still propagating**, serving
+  `app.148fa749.js` / `styles.11513253.css`. The owner must confirm the build id
+  under NYHETER reads **`ae123e0`** before trusting a device result.
