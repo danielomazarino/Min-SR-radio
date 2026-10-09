@@ -51,8 +51,12 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '567e3a5';
-  const APP_DEVELOPER = 'Daniel Omazarino';
+  const APP_BUILD = '773b2e5';
+  // WS80 (owner, 2026-10-09): "change under Info from Daniel Omazarino to Danielo
+  // Mazarino". Corrected at the single source -- this constant is what the About
+  // overlay's `.about-version` line renders (`${APP_BUILD} · Utvecklad av ...`).
+  // README.md carries the same name and is updated in the same commit.
+  const APP_DEVELOPER = 'Danielo Mazarino';
 
   // ---------------- favorites store ----------------
   // Hard cap: 16 per category (4 swipe pages of 4). The selection UI enforces
@@ -9267,25 +9271,31 @@ function seekMeasureRecordText() {
     // space-between centres whatever sits between its two ends. Moving the
     // line out of the topbar is what returns the cog to the right edge.
     //
-    // #main's children are, in order: channels, podcasts, news -- so
-    // appending here puts the line directly under NYHETER, which is the
-    // position the owner asked for and the one WS10 had.
+    // ---- WS80 (owner, 2026-10-09): the build line is REMOVED from here. ----
     //
-    // The owner's parenthetical is binding: NO "Version 1.5.0 ·" prefix. That
-    // literal never moved, so presenting it as a version was a lie; it stays
-    // banned. The build id alone is what actually identifies a build.
+    // OWNER, verbatim: "record to the enhancements.md that the build id should
+    // not be present under Nyheter anymore as it is not now. it is enough that
+    // the build id is visible under Info."
     //
-    // This is still NOT the WS5 attribution footer: no attribution, no link,
-    // no disclaimer -- those remain in the About overlay only.
-    $main.appendChild(el('p', {
-      class: 'build-line',
-      // OWNER, 2026-10-05: "take away the word bygg and just keep the build
-      // number too in the same work". The number is the whole point of the
-      // line -- it is how the owner tells one build from the next -- so only
-      // the label goes. `APP_BUILD` alone is unambiguous next to a screen that
-      // is otherwise Swedish prose.
-      text: APP_BUILD,
-    }));
+    // The owner is describing what they want, and the second sentence is the
+    // requirement: the build id lives in the About/Info overlay ONLY. So the
+    // paragraph WS10 appended to #main (which put it directly under NYHETER) is
+    // deleted outright -- not hidden, not moved.
+    //
+    // This SUPERSEDES the WS12 Part A placement. The whole history was: WS10 put
+    // it here, WS11 Part B moved it into .topbar (which centred the cog, because
+    // space-between and three children), WS12 Part A put it back here at the
+    // owner's request. The owner has now retired the question: one surface, the
+    // About overlay, which already carries `${APP_BUILD} · Utvecklad av ...`.
+    //
+    // The build id is NOT lost and is still load-bearing -- WS73b is the rule
+    // that the owner reads it to tell one build from the next. It is shown in
+    // exactly one place now, and `APP_BUILD` remains in the gated diagnostics
+    // snapshot (`push('APP_BUILD', d.appBuild)`) for automated checks.
+    //
+    // The `.build-line` CSS (and the WS75 `body:has(.player.visible)` hide that
+    // existed only because the line sat under the player's bottom edge) is
+    // removed with it -- there is no longer an element to hide.
 
     updatePlayingMarks();
   }

@@ -1289,33 +1289,19 @@ body.player-gesture-lock {
    was the reviewer's decision rather than the owner's; the owner saw it and
    asked for it back, and the cog wheel to return to the right edge with it.
    (With three children, `.topbar`'s space-between centred the cog.) */
-.build-line {
-  margin: 18px 0 4px;
-  font-size: 11px;
-  line-height: 1.4;
-  color: var(--text-secondary);
-  opacity: 0.75;
-  font-variant-numeric: tabular-nums;
-  word-break: break-all;
-}
-
-/* ---- WS75: the build number must NOT be readable while the player is open ----
- * OWNER, 2026-10-08: "the new vertical border for the extended player could
- * become to the build number ... so the build number is not seen when playing."
+/* ---- WS80 (owner, 2026-10-09): the .build-line rules are REMOVED with the element.
  *
- * The player is a fixed overlay and the build line is the last element in the
- * content flow. Relying on the player being taller than the distance to the
- * line is exactly why the owner kept seeing it -- the line is just below the
- * border at the owner's scroll position. Hiding it while a visible player is
- * present is deterministic and independent of how tall the player happens to
- * be, so it cannot regress the next time the panel grows or shrinks.
+ * OWNER: "the build id should not be present under Nyheter anymore as it is not
+ * now. it is enough that the build id is visible under Info."
  *
- * `:has()` is supported on the owner's iOS 15.4+ Safari and by Chromium, where
- * the driven test asserts it. Where it is unsupported the selector is simply
- * dropped and the previous covering behaviour remains -- fail-safe, never
- * fail-worse. The build id is load-bearing (WS73b), so it is HIDDEN, never
- * removed or changed. */
-body:has(.player.visible) .build-line { display: none; }
+ * The paragraph that these rules styled is deleted from app.js (see the
+ * renderMain comment), so the block rule and the `body:has(.player.visible)
+ * .build-line { display: none }` rule below it have nothing left to apply to.
+ * Removing dead selectors keeps the "one concept, one implementation" rule: a
+ * rule that matches nothing is a trap for the next reader, who cannot tell
+ * whether the element was renamed or genuinely retired.
+ *
+ * The build id is still shown, in the About overlay only. */
 
 /* ---------- WS5b: header row with the corner buttons ---------- */
 /* ONE row carries the close button (top-left corner), the channel and
@@ -1823,26 +1809,44 @@ body:has(.player.visible) .build-line { display: none; }
   pointer-events: none; /* the bar handles the pointer */
   transition: transform 0.12s ease;
 }
-/* ---- WS78 (owner, 2026-10-09): a ring around the thumb dot ----
- * OWNER: "add for the slider a ring that is not too big around the current dot
- * ... and make the ring area as well possible to grab to make it easier for
- * users."
+/* ---- WS78/WS80 (owner, 2026-10-09): a ring around the thumb dot ----
+ * OWNER (WS78): "add for the slider a ring that is not too big around the
+ * current dot ... and make the ring area as well possible to grab to make it
+ * easier for users."
+ * OWNER (WS80, after seeing it): "the ring around the slider is a little too big
+ * and needs the solid background colour of the player."
  *
- * The ring is 26px -- big enough to read as a grab target, small enough not to
- * dominate the 4px track. It is drawn on the BASE class so BOTH sliders (live
- * DVR and podcast) show it, centred on the thumb regardless of the thumb box's
- * own size, so the ring-to-dot gap is identical on each. `pointer-events: none`
- * on the RING keeps the grab decision on the thumb box below. */
+ * Two corrections from WS78's 26px hollow ring:
+ *
+ * 1. SIZE 26 -> 22px. The owner's words are "a little too big", so this is a
+ *    step, not a redesign: 22px still clears the 14px dot by 4px on the radius
+ *    and is still comfortably grabbable, while reading far less like a target
+ *    ring drawn around the slider. (`--player-art` and `.dvr-step-btn` are 36px
+ *    and `.dvr-program-btn::before` is 30x26, so 22px also keeps the slider
+ *    ring the SMALLEST of the app's mark-out shapes -- which is what it is.)
+ *
+ * 2. FILL with `var(--surface)`. "the solid background colour of the player" is
+ *    exactly `--surface`: that is the token `.player { background: var(--surface) }`
+ *    uses. With the fill the interior is opaque, so the 4px track no longer
+ *    shows THROUGH the ring -- which is what made the hollow version read as a
+ *    window rather than a handle. `border: 1.5px solid var(--accent)` is
+ *    unchanged, so the accent outline the owner asked for is still there.
+ *
+ * Still drawn on the BASE class so BOTH sliders (live DVR and podcast) show it,
+ * centred on each thumb regardless of that thumb box's own size -- so the
+ * ring-to-dot gap is identical on each. `pointer-events: none` on the RING keeps
+ * the grab decision on the thumb box below (see `.dvr-bar .seek-thumb`). */
 .seek-thumb::before {
   content: '';
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 26px;
-  height: 26px;
-  margin: -13px 0 0 -13px;
+  width: 22px;
+  height: 22px;
+  margin: -11px 0 0 -11px;
   border-radius: 50%;
   border: 1.5px solid var(--accent);
+  background: var(--surface);
   pointer-events: none;
 }
 .episode-seek-bar .seek-thumb {
@@ -1882,8 +1886,11 @@ body:has(.player.visible) .build-line { display: none; }
  * to the thumb, as expected). The vertical-swipe disambiguation is unchanged --
  * a vertical gesture that starts on the thumb is still handed to swipe-to-close. */
 .dvr-bar .seek-thumb {
-  width: 26px;
-  height: 26px;
+  /* WS80: the box follows the ring down 26 -> 22px, so the ring IS the grab
+     target (the guard asserts box >= ring in BOTH dimensions -- the promise
+     "the ring area is grabbable" is only true if it does). */
+  width: 22px;
+  height: 22px;
   background: transparent;
   border: 0;
   box-shadow: none;
@@ -1892,7 +1899,9 @@ body:has(.player.visible) .build-line { display: none; }
 .dvr-bar .seek-thumb::after {
   content: '';
   position: absolute;
-  inset: 6px;
+  /* The visible dot stays 14px inside the 22px box (22 - 2*4 = 14), exactly as
+     it was: enlarging the HIT area must not enlarge the visible thumb. */
+  inset: 4px;
   border-radius: 50%;
   background: var(--accent);
   border: 2px solid var(--surface);
@@ -1947,7 +1956,30 @@ body:has(.player.visible) .build-line { display: none; }
   pointer-events: none;
 }
 .dvr-step-btn svg { width: 20px; height: 20px; position: relative; }
-/* ---- WS79 (owner, 2026-10-09): the ±15 s glyph must NOT be nudged ----
+/* ---- WS80 (owner, 2026-10-09): the ±15 s ink is centred in its ring ----
+ * OWNER, third report: "the circle arrows are still not fully centered."
+ *
+ * WS79 removed WS77's UPWARD nudge (-0.83px) after finding the ink's mass
+ * centroid already sat 0.13px below the ring centre. That was right about the
+ * centroid and WRONG about what the owner sees: the salient bounding edge is
+ * still 1.67px out.
+ *
+ * MEASURED on the built page, both arrows identical (`getBoundingClientRect` of
+ * the ink vs the ring's own rect; the glyph is a 24-unit viewBox drawn in 20px,
+ * so 1 unit = 0.833px):
+ *   ink bbox in viewBox units   y 15.4 .. 35.4   (ring spans 13.2 .. 49.2)
+ *   clearance to the ring       top 8.83px, bottom 10.50px   ->  1.67px unequal
+ * The bbox IS what the eye compares against the ring's edge, and the original
+ * WS77 direction was right after all -- just under-corrected and, in WS79,
+ * removed. Nudging the glyph DOWN by half the 0.833px unit (one viewBox unit
+ * = 0.83px) equalises the clearances:
+ *   after   top 9.66px, bottom 9.67px   ->  0.01px (measured), i.e. concentric.
+ *
+ * So the correct answer is +0.83px DOWN, which is neither WS77 (-0.83px up) nor
+ * WS79 (nothing). A transform, so nothing reflows. */
+.player .dvr-step-btn svg { transform: translateY(0.83px); }
+
+/* ---- WS79 (owner, 2026-10-09): the ±15 s glyph was NOT to be nudged UP ----
  * OWNER, second report: "check also again the centering for the circular
  * arrows. as you see attached the visual is not centered."
  *
@@ -1996,7 +2028,22 @@ body:has(.player.visible) .build-line { display: none; }
    gives: a second block would split the styling for any reader or guard that
    scans from the first occurrence. */
 .dvr-program-btn {
-  color: var(--text-secondary);
+  /* ---- WS80 (owner, 2026-10-09): the skip glyph is the ACCENT, like its box ----
+   * OWNER: "the skip button icons are a bit high and left adjusted."
+   *
+   * MEASURED first, because "high and left" had to be a measurement rather than
+   * an impression. The ink's bbox clearance inside the 30x26 rectangle is
+   * ALREADY symmetric -- 9.5px left / 9.5px right and 7.5px top / 7.5px bottom --
+   * and its mass centroid is 0.51px off both axes. So the geometry was not the
+   * defect. What was: the glyph rendered `rgb(110,110,115)` -- `--text-secondary`
+   * -- against a `rgb(0,80,78)` accent rectangle. A grey glyph inside a green
+   * box reads as sitting wrong inside it, because the box is the only thing
+   * marking the shape and the glyph does not answer to it.
+   *
+   * The ±15 s pair -- which the owner asked the skip icons to MATCH in WS78 --
+   * draws its glyph in `var(--accent)` (see `.dvr-step-btn { color: var(--accent) }`).
+   * This is the skipped half of that match. */
+  color: var(--accent);
   width: 36px;
   /* ---- WS78 (owner, 2026-10-09): a small rounded rectangle around the skip
    * glyphs, matching the ±15 s circles' accent, and CLICKABLE across the whole
@@ -2018,7 +2065,13 @@ body:has(.player.visible) .build-line { display: none; }
   border-radius: 9px;
   pointer-events: none;
 }
-.dvr-program-btn svg { position: relative; }
+/* WS80: the skip glyph drops 22px -> 20px, the size the ±15 s glyph already is
+   and the size this pair was asked to match. At 22px the ink spanned 16.7px
+   inside a 26px-tall rectangle (clearance 7.5px); at 20px it spans 16.7 * 20/24
+   = 13.9px with 8.7px clearance, so the glyph-to-box relationship reads the same
+   as the ±15 s glyph-to-circle one. Without an explicit size the button inherits
+   `.player-btn svg { 22px }`, which is why the two pairs disagreed. */
+.dvr-program-btn svg { position: relative; width: 20px; height: 20px; }
 .dvr-program-btn[style*="display: none"] { display: none !important; }
 
 /* ---- WS76 (owner, 2026-10-09): balance the ±15 s gap, and shift it off play ----
