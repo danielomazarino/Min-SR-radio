@@ -10103,3 +10103,72 @@ ring an ellipse).
 - **The nudge is not observable in headless Chromium**, because `isDvr` is false
   without a real DVR stream, so the live row never receives `.dvr` there. The
   margins were verified by the CSS arithmetic and by a driven 5-button probe.
+
+---
+
+## 2026-10-09 (WS77) — ±15 s glyph centering, and a sleep-timer watch
+
+**Status: DEPLOYED.** Source `0390736`, artifacts `b5b2942`, live build id
+**`0390736`**. Suite **653/653**. Live CSS `styles.11513253.css` (md5
+`7752c514…`), JS `app.148fa749.js`.
+
+### The owner's two points, verbatim
+
+OWNER, 2026-10-09:
+> "1. on the iphone the circle arrows are not perfectly centered visually in the
+>  rings. please look in to it, see attached.
+>  2. on the same position as the round cross icon but on the left side of the
+>  player i want you to add an icon for a round watch, and add sleep timer
+>  functionality that stops the player after 15 minutes, 30 minutes, 1 hour or
+>  2 hours if selections are set. the icon design should be the same as for the
+>  close button exactly size and colour wise. only difference on the button is
+>  that the x should be a round watch."
+
+### 1. The ±15 s glyph centering (measured)
+
+The glyph is a 24-unit viewBox drawn in a 20px box. Its **arc** — the C-shape
+the eye reads — is centred at viewBox **y=13**, while the ring is centred at
+**y=12**, so the visible arrow sat ~1 unit (0.83px) low. Fixed with a transform
+on the glyph: `.player .dvr-step-btn svg { transform: translateY(-0.83px) }`.
+(The ink *bbox* centre is at y=11 because the arrowhead bar reaches y=1; the eye
+follows the arc, not the bbox, which is why the nudge is upward.)
+
+### 2. The sleep-timer watch
+
+- **Button design:** identical to the close button — **32×32**, `background:
+  var(--border)`, `color: var(--text)`. Only the glyph differs: a stroke-drawn
+  round watch (`<circle>` + hands), not the ✕.
+- **Placement:** `$player`'s header row's **LEFT**, mirroring the close on the
+  right. It is a child of `.player-header` but **absolutely positioned**, so the
+  width-only `.player-header-spacer` still holds the artwork column and the text
+  does not move. It lands at left 16px — the same left edge as the album artwork
+  below. Vertically it is centred on the close button's line via
+  `top: calc(50% - 4.5px)` (the header's `padding-bottom: 9px` otherwise pulls a
+  plain `top: 50%` 4.5px low — measured).
+- **Behaviour:** opens a sheet (`.sleep-sheet`, title **Viloläge**) with
+  **15 / 30 / 60 / 120 minuter**. Choosing one arms a `setTimeout` whose expiry
+  calls the SAME `stopAndClosePlayer()` the ✕ uses. While armed the button fills
+  **accent** and carries `aria-pressed="true"`; the sheet then offers
+  "Stäng av viloläget". A manual stop cancels the timer.
+- **Test seam:** `window.__srSleepSeconds` overrides the length when a timer is
+  ARMED, so the driven test can watch the whole chain without waiting an hour.
+
+### Tests
+
+`tests/ws77-sleep-timer.test.mjs` (new, +6) asserts: the nudge exists and is
+upward; the watch is 32px in the close's colours with a circle glyph (and NOT
+the ✕); it is an absolute overlay on the header's left AND the spacer still
+holds the column; `SLEEP_OPTIONS` is exactly `[15,30,60,120]`; expiry calls
+`stopAndClosePlayer`; a stop clears the timer; the armed state is visible and
+driven by live state. Each proven red by mutation. One `metadata-diag` guard was
+restated per §7b to allow the single deliberate absolute overlay while keeping
+the header's flex alignment guarded.
+
+### NOT DONE / not verified
+
+- **iPhone rendering is unverified.** Build `0390736` on the iPhone 13: confirm
+  the ±15 s arrows now sit centred in their rings, the watch button at the left
+  matches the close button's look, and the sheet offers the four lengths.
+- **The timer was driven on the LIVE site with a 1-second seam** (armed → sheet
+  closed → player closed → audio `src` cleared). The real 15/30/60/120-minute
+  durations were not waited out; the seam only changes the length.
