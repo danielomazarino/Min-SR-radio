@@ -1947,16 +1947,41 @@ body:has(.player.visible) .build-line { display: none; }
   pointer-events: none;
 }
 .dvr-step-btn svg { width: 20px; height: 20px; position: relative; }
-/* ---- WS77 (owner, 2026-10-09): centre the ±15 s glyph's INK in the ring ----
- * OWNER: "the circle arrows are not perfectly centered visually in the rings".
+/* ---- WS79 (owner, 2026-10-09): the ±15 s glyph must NOT be nudged ----
+ * OWNER, second report: "check also again the centering for the circular
+ * arrows. as you see attached the visual is not centered."
  *
- * MEASURED: the glyph is a 24-unit viewBox drawn in a 20px box. Its ARC -- the
- * C-shape the eye reads -- is centred at y=13 in that viewBox, while the ring
- * is centred at y=12, so the visible arrow sits ~1 unit low (0.83px at a 20px
- * box). Nudged up by exactly that unit. A transform, so nothing reflows.
- * (The ink BBOX centre is at y=11 because the arrowhead bar reaches y=1; the
- * eye follows the arc, not the bbox, which is why the nudge is upward.) */
-.player .dvr-step-btn svg { transform: translateY(-0.83px); }
+ * WS77 HAD ADDED a nudge here (`translateY(-0.83px)`), on the reasoning that the
+ * glyph's ARC circle is centred at viewBox y=13 while the ring is at y=12. That
+ * reasoning picked the WRONG anchor and the nudge made the misalignment WORSE.
+ *
+ * MEASURED, on the built page, by sampling the actual path (isPointInFill at a
+ * 1/20-unit grid) and by reading getBBox -- the same numbers for both arrows:
+ *
+ *   ring centre            viewBox y = 12      (the 36x36 ring is centred on the
+ *                                               36x44 button's own centre)
+ *   ink BBOX            y 1.025 .. 20.975  ->  centre 11.0   = 0.83px ABOVE
+ *   ink MASS centroid                      ->  12.15         = 0.13px BELOW
+ *
+ * The bbox centre is pulled UP by the arrowhead's thin bar reaching y=1. What
+ * the eye reads as the shape's centre is the ink's MASS, not the extreme of one
+ * thin spike -- and the mass sits 0.13px below the ring centre, i.e. already
+ * centred for any practical purpose (0.13px is a tenth of a device pixel).
+ *
+ * WS77's -0.83px then moved the mass to 0.70px ABOVE the ring centre. The owner
+ * saw exactly that: the correction was worse than the original.
+ *
+ * SO: no transform. Measured centroids 12.155 (back) and 12.158 (forward) vs a
+ * ring centre of 12.00 -- a residual of 0.13/0.16px, which is under a fifth of
+ * one device pixel on the owner's 3x iPhone screen and is not perceptible.
+ * The button's own flex centring (align-items:center) puts the 20px box on the
+ * 44px button's centre, which is the ring's centre, so nothing else is needed.
+ *
+ * Guarded by tests/ws78-skip-rect-and-thumb-ring.test.mjs, which now asserts
+ * the glyph carries NO vertical displacement (the property the owner reported).
+ * The WS77 guard that required an upward nudge was restated per AGENTS.md 7b --
+ * it guarded the wrong property, and a red test that means something is worth
+ * more than a green one that means nothing. */
 .dvr-step-btn:active { opacity: 0.6; }
 /* WS73 (owner, 2026-10-07): the programme-skip buttons narrow from 44px to the
    36px the ±15 s buttons already use, which pays for the wider transport gap
