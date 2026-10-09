@@ -92,6 +92,95 @@ test('WS78: the skip button draws a ROUNDED RECTANGLE (not a square, not a circl
     'the glyph must stack above the absolutely-positioned rectangle');
 });
 
+// ---------------------------------------------------------------------------
+// WS80 — "the skip button icons are a bit high and left adjusted"
+// ---------------------------------------------------------------------------
+
+test('WS80: the skip glyph answers to its rectangle (accent), not grey', () => {
+  // OWNER, 2026-10-09: "the skip button icons are a bit high and left adjusted."
+  //
+  // MEASURED FIRST, because "high and left" had to be a measurement and not an
+  // impression. The ink's bbox clearance inside the 30x26 rectangle is ALREADY
+  // symmetric -- 9.5px left/right and 7.5px top/bottom -- and its mass centroid
+  // is 0.51px off. So the geometry was NOT the defect. What was: the glyph
+  // rendered `rgb(110,110,115)` (`--text-secondary`) inside a `rgb(0,80,78)`
+  // accent rectangle. A grey glyph in a green box reads as misplaced inside it.
+  //
+  // The ±15 s pair, which the owner asked these icons to MATCH in WS78, draws
+  // its glyph in `var(--accent)`. This asserts the match is complete.
+  const btn = STYLES.match(/^\.dvr-program-btn\s*\{([^}]*)\}/m);
+  assert.ok(btn, '.dvr-program-btn must exist');
+  assert.match(btn[1], /color:\s*var\(--accent\)/,
+    'the skip glyph must be the ACCENT, matching the rectangle it sits in and the ±15 s pair');
+  assert.ok(!/color:\s*var\(--text-secondary\)/.test(btn[1]),
+    'the muted grey is what made the glyph look misplaced in its accent box (WS80)');
+
+  // The ±15 s button it must match still uses the accent, so the two agree.
+  const step = STYLES.match(/^\.dvr-step-btn\s*\{([^}]*)\}/m);
+  assert.match(step[1], /color:\s*var\(--accent\)/,
+    'the ±15 s glyph is the reference the skip glyph was asked to match -- it must stay accent');
+});
+
+test('WS80: the skip glyph is the same size as the ±15 s glyph it matches', () => {
+  // The skip buttons set no explicit svg size, so they inherited
+  // `.player-btn svg { 22px }` while the ±15 s buttons set 20px -- the two
+  // halves of the "match them" request disagreed on glyph size by 2px, which
+  // changes the glyph-to-marking ratio between the rectangles and the circles.
+  const prog = STYLES.match(/^\.dvr-program-btn svg\s*\{([^}]*)\}/m);
+  assert.ok(prog, 'the skip glyph rule must exist');
+  const pw = prog[1].match(/width:\s*(\d+)px/);
+  assert.ok(pw, 'the skip glyph must declare an explicit width, or it inherits .player-btn svg');
+  const ph = prog[1].match(/height:\s*(\d+)px/);
+  assert.ok(ph, 'and an explicit height');
+
+  const step = STYLES.match(/^\.dvr-step-btn svg\s*\{([^}]*)\}/m);
+  const sw = step[1].match(/width:\s*(\d+)px/);
+  assert.ok(sw, 'the ±15 s glyph must declare a width');
+  const sh = step[1].match(/height:\s*(\d+)px/);
+  assert.ok(sh, 'and a height');
+
+  assert.equal(pw[1], sw[1],
+    `the skip glyph (${pw[1]}px) must be the SAME SIZE as the ±15 s glyph (${sw[1]}px) it was asked to match`);
+  assert.equal(ph[1], sw[1],
+    'and square -- a non-square glyph box would letterbox the icon');
+  assert.ok(pw[1] !== '22',
+    'the glyph must NOT keep the inherited 22px, which is what made the two pairs disagree');
+});
+
+test('WS80: the ±15 s ink bbox is centred in its ring, measured, not eyed', () => {
+  // OWNER (third report): "the circle arrows are still not fully centered."
+  //
+  // MEASURED on the built page, both arrows identical -- the ink's bbox clearance
+  // to the ring was top 8.83px vs bottom 10.50px, i.e. 1.67px UNEQUAL. The ink's
+  // bounding EDGE is what the eye compares against the ring's edge.
+  //
+  // The fix is +0.83px down (half the imbalance, at 0.833px per viewBox unit).
+  // What this guard asserts is the PROPERTY, not the literal: the displacement
+  // is downward, and it equals half the measured imbalance within tolerance. A
+  // pinned "0.83px" would go red for a harmless rounding change and green for a
+  // re-introduced upward nudge of the same magnitude with a flipped sign.
+  const rule = STYLES.match(/\.player \.dvr-step-btn svg\s*\{([^}]*)\}/);
+  assert.ok(rule, 'the ±15 s glyph must carry the centring transform');
+  const t = rule[1].match(/transform:\s*translateY\((-?[\d.]+)px\)/);
+  assert.ok(t, 'the centring must be a translateY');
+  const dy = Number(t[1]);
+
+  assert.ok(dy > 0,
+    `the ink bbox sat 1.67px HIGH, so the correction must move DOWN; got translateY(${dy}px)`);
+  assert.ok(Math.abs(dy - 1.67 / 2) < 0.15,
+    `the correction must cancel the measured 1.67px bbox imbalance (half = 0.83px); got ${dy}px`);
+  assert.ok(Math.abs(dy) < 1.67,
+    'a correction larger than the imbalance would overshoot past centre');
+
+  // And the marking the ink is centred in is still a square circle on the button.
+  const ring = STYLES.match(/^\.dvr-step-btn::before\s*\{([^}]*)\}/m);
+  assert.ok(ring, 'the ring must exist');
+  const w = ring[1].match(/width:\s*(\d+)px/)[1];
+  const h = ring[1].match(/height:\s*(\d+)px/)[1];
+  assert.equal(w, h, 'the ring must be square, so its centre is the button centre');
+  assert.match(ring[1], /border-radius:\s*50%/, 'the ring must be a circle');
+});
+
 test('WS78: the rectangle is centred on the button', () => {
   const rect = STYLES.match(/^\.dvr-program-btn::before\s*\{([^}]*)\}/m);
   assert.ok(rect, 'the .dvr-program-btn::before rectangle must exist');
@@ -160,12 +249,20 @@ test('WS78: the skip buttons are real, focusable <button>s', () => {
 // C. The slider ring — drawn on BOTH sliders, grabbable on the DVR slider
 // ---------------------------------------------------------------------------
 
-test('WS78: the ring is drawn on the base thumb, so both sliders show it', () => {
-  // The app has TWO sliders (the live DVR bar and the podcast episode bar),
-  // built in app.js as `.seek-bar dvr-bar` and `.seek-bar episode-seek-bar`.
-  // Drawing the ring on the BASE `.seek-thumb::before` is what makes the same
-  // ring appear on both, centred on each thumb regardless of that thumb box's
-  // own size -- so the ring-to-dot gap is identical on each.
+test('WS78 (RESTATED WS80): the ring is drawn on the base thumb, so both sliders show it', () => {
+  // ---- RESTATED (AGENTS.md 7b). WHAT IT USED TO SAY (WS78): the ring is 26px and
+  // BOUNDED to >= 24px ("at least 24px to be an easy grab target").
+  //
+  // WHY IT CHANGED (owner, 2026-10-09, after seeing WS78 shipped): "the ring
+  // around the slider is a little too big and needs the solid background colour
+  // of the player." So the 24px FLOOR was the wrong floor — the owner's actual
+  // bound is LOWER — and the ring was also missing a fill (the 4px track showed
+  // through it, which is what made it read as a window rather than a handle).
+  //
+  // The requirement did not change ("a ring that is not too big around the
+  // current dot"); WS78 simply picked a size above what the owner wanted. The
+  // guard is restated to the measured requirement and asserted no less strictly:
+  // a size band, a FILL, an accent border, centring and non-grabbability.
   assert.match(APP_JS, /class: 'seek-bar dvr-bar'/,
     'the DVR slider must exist');
   assert.match(APP_JS, /class: 'seek-bar episode-seek-bar'/,
@@ -182,12 +279,22 @@ test('WS78: the ring is drawn on the base thumb, so both sliders show it', () =>
   assert.match(ring[1], /border:\s*[\d.]+px solid var\(--accent\)/,
     'the ring must be a thin accent-coloured circle, matching the skip outlines');
 
-  // "not too big" — the owner's own bound. The ring must be big enough to be a
-  // real target (a 24px floor is the small-but-comfortable range) and small
-  // enough not to dominate the 4px track. Bounded relatively so a future
-  // resize does not silently become a blob.
-  assert.ok(w >= 24, `the ring (${w}px) must be at least 24px to be an easy grab target`);
-  assert.ok(w <= 32, `the ring (${w}px) must stay at or under 32px — the owner asked for one "not too big"`);
+  // SIZE BAND. The owner has now given a bound from BOTH sides: WS78's 26px was
+  // "a little too big", so the ceiling drops below it; and the ring still has to
+  // be a grab target larger than the 14px dot it circles, so the floor stays
+  // above that. 22px sits inside both.
+  assert.ok(w > 14,
+    `the ring (${w}px) must be larger than the 14px dot it circles, or it is not a ring`);
+  assert.ok(w < 26,
+    `the ring (${w}px) must be SMALLER than the 26px the owner called "a little too big"`);
+  assert.ok(w >= 20,
+    `the ring (${w}px) must stay >= 20px so it remains an easy grab target`);
+
+  // FILL — "needs the solid background colour of the player". `--surface` is
+  // that token (`.player { background: var(--surface) }`). Without it the track
+  // shows through the ring. This is the property that was MISSING in WS78.
+  assert.match(ring[1], /background:\s*var\(--surface\)/,
+    'the ring must be FILLED with --surface (the player\'s own background), so the track does not show through it');
 
   // The ring must be centred on the dot.
   assert.match(ring[1], /top:\s*50%/, 'the ring must be vertically centred on the thumb');

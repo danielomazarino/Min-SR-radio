@@ -2634,18 +2634,20 @@ test('WS68: cache fingerprint updates the service-worker declaration with or wit
     'the build must match the source declaration and emit a valid cache declaration');
 });
 
-// Start at the appendChild call, NOT at `class: 'build-line'`: the class
-// attribute sits INSIDE the el('p', { ... }) call, so a region starting there
-// slices the opening off and an assertion about it can never match. That is
-// the WS10 §5 "sliced the wrong region" trap, in my own new test.
-// WS11 Part B moved the line into .topbar; WS12 Part A moved it back under
-// NYHETER at the owner's request. It is now appended INLINE
-// ($main.appendChild(el('p', {...})), so there is no `const buildLine = el(`
-// declaration left to anchor on. The region starts at the APPEND, which is
-// where the class attribute and the text actually are. Anchoring on the class
-// attribute alone would slice the opening off -- the WS10 §5 trap, again.
-const BUILD_LINE = stripComments(region(
-  '$main.appendChild(el(\'p\', {', 'updatePlayingMarks();', APP_JS));
+// ---- WS80 (owner, 2026-10-09): the home-screen build line is REMOVED. ----
+// OWNER: "the build id should not be present under Nyheter anymore as it is not
+// now. it is enough that the build id is visible under Info."
+//
+// This SUPERSEDES WS10/WS11B/WS12A, whose entire subject was WHERE under the
+// home screen the line sat. There is no such line any more, so the old
+// `$main.appendChild(el('p', {` region is gone -- and region() THROWS on a
+// missing start marker, which is why this comment exists rather than a quietly
+// retargeted anchor. (That failure mode is real: it took this whole FILE down
+// to 0/1 when the element was first removed, because the region is evaluated at
+// module load. Every test in the file is lost, not just the affected one.)
+//
+// The build id is still shown, in the About overlay ONLY. The guards below
+// assert that surface POSITIVELY and the home screen NEGATIVELY.
 const ABOUT_LINE = stripComments(region(
   "class: 'about-version'", 'openAbout', APP_CODE) || APP_CODE.slice(
     APP_CODE.indexOf("class: 'about-version'"),
@@ -2700,67 +2702,91 @@ test('WS10 Part A: the build id is injected at build time, and the root stays a 
     'the build must verify the injection actually took effect');
 });
 
-test('WS10 Part B: the build id is shown on the main screen, without restoring the footer', () => {
-  // The line lives in the slot WS5 left, immediately before updatePlayingMarks().
-  assert.ok(BUILD_LINE.includes("class: 'build-line'"),
-    'the build line must be a dedicated element');
-  assert.ok(/APP_BUILD/.test(BUILD_LINE),
-    'the main-screen line must show the build id');
-  // WS11 Part B: APP_VERSION is GONE, not bumped. A frozen literal presented as
-  // a version is a lie; a hand-bumped one repeats the problem later. The build
-  // id is the only identity shown.
-  assert.ok(!/APP_VERSION/.test(BUILD_LINE),
-    'the frozen version must not be displayed');
+test('WS10 Part B (RESTATED WS80): the build id is NOT on the main screen, and IS in About', () => {
+  // ---- RESTATED (AGENTS.md 7b). WHAT IT USED TO SAY (WS10/WS11B/WS12A): "the
+  // build id is shown on the main screen, without restoring the footer",
+  // asserting the line was appended to `$main` directly under NYHETER.
+  //
+  // WHY IT CHANGED -- OWNER, 2026-10-09, verbatim: "the build id should not be
+  // present under Nyheter anymore as it is not now. it is enough that the build
+  // id is visible under Info." That is an explicit instruction to REMOVE the
+  // home-screen line and to keep the id in the About/Info overlay.
+  //
+  // The requirement this guard has always served is unchanged -- "there is
+  // exactly ONE place the owner can read the build id, and it must be the right
+  // one". Only which place changed. So the assertion is restated, not weakened:
+  // the main-screen line must be GONE (positive assertion on absence, which the
+  // original could not express), and About must still carry the id.
+
+  // 1. The home-screen element is gone, in the code...
+  assert.ok(!/class: 'build-line'/.test(APP_CODE),
+    'the home-screen build line must be REMOVED (WS80) -- the build id now lives under Info only');
+  // Assert against the COMMENT-STRIPPED CSS. The WS80 note in styles.css records
+  // the removal ("the .build-line rules are REMOVED with the element"), and that
+  // is documentation, not a rule -- a raw-text check would fail on the very
+  // comment that explains the change.
+  const CSS_RULES = stripComments(STYLES_WS5);
+  assert.ok(!/\.build-line/.test(CSS_RULES),
+    'the .build-line CSS must be removed with the element -- a rule matching nothing is a trap for the next reader');
+  // ...and specifically NOT merely hidden. WS75 hid it while the player was open;
+  // deleting the element makes that rule dead too.
+  assert.ok(!/body:has\(\.player\.visible\)[^{]*\.build-line/.test(CSS_RULES),
+    'the WS75 while-playing hide must be gone with the element it hid');
+
+  // 2. APP_VERSION stays gone -- no frozen version anywhere.
   assert.ok(!/APP_VERSION/.test(APP_CODE),
     'APP_VERSION must not exist at all -- there is no second version source');
-  // NOT the old attribution footer. WS5 removed it deliberately and the About
-  // overlay still carries the attribution and the disclaimer.
-  assert.ok(!/Data från Sveriges Radio/.test(BUILD_LINE),
-    'the build line must NOT restore the removed attribution');
-  assert.ok(!/oberoende av|Utgivare av|class: 'attribution'/.test(BUILD_LINE),
-    'the build line must NOT restore the disclaimer or the old footer class');
-  // It is a plain paragraph -- no links, no interaction.
-  assert.ok(/el\('p', \{/.test(BUILD_LINE), 'it must be a plain paragraph');
-  assert.ok(!/<a |href:|onclick/.test(BUILD_LINE), 'it must not be interactive');
-  // WS12 Part A: the owner asked for it back under NYHETER. It is appended to
-  // $main, whose children are channels, podcasts, news -- so it lands directly
-  // under the news section, which is the requested position.
-  assert.ok(/\$main\.appendChild/.test(BUILD_LINE),
-    'the build line must be appended to #main, directly under NYHETER');
-  // Assert the NEGATIVE too. WS11 Part B put it in the .topbar and the owner
-  // rejected that; without this the line could drift back and the tests would
-  // still pass, because `bar.appendChild` is a perfectly good statement.
-  assert.ok(!/document\.querySelector\('\.topbar'\)/.test(BUILD_LINE),
-    'the build line must NOT be moved back into the .topbar (WS12)');
-  assert.ok(!/bar\.appendChild\(buildLine\)/.test(APP_CODE),
-    'nothing may append a buildLine to the top bar (WS12)');
-  // And the cog is only right-aligned again because the topbar has two
-  // children: space-between centres whatever sits between its two ends.
+
+  // 3. The old attribution footer must still NOT come back to the main screen.
+  assert.ok(!/Data från Sveriges Radio/.test(APP_CODE),
+    'nothing on the main screen may restore the removed attribution');
+  assert.ok(!/class: 'attribution'/.test(APP_CODE),
+    'the old footer class must not return');
+
+  // 4. The one surface that DOES show the build id is the About overlay.
+  assert.ok(/\$\{APP_BUILD\}/.test(ABOUT_LINE),
+    'About/Info must show the build id -- it is the only surface left (WS80)');
+  assert.ok(/APP_DEVELOPER/.test(APP_CODE),
+    'the developer constant must still exist for the About attribution');
+
+  // 5. The cog is right-aligned because the topbar has two children:
+  // space-between centres whatever sits between its two ends. Now that the line
+  // is gone this is structural, but it is worth keeping asserted -- it is the
+  // reason removing the line cannot move the cog either way.
   const topbarBlock = stripComments(region('.topbar {', '\n}', STYLES_WS5));
   assert.ok(/justify-content: space-between/.test(topbarBlock),
     '.topbar must still use space-between, so two children put the cog right');
-  // CSS: small and dim, reusing the existing muted colour.
-  const CSS = fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8');
-  assert.ok(/\.build-line \{/.test(CSS), 'a .build-line rule must exist');
-  // Bound the CSS block on the next rule that actually exists, NOT on a
-  // '.build-line:empty' that was never written -- region() returns -1 for a
-  // missing end marker and the whole test file fails to load.
-  const cssBlock = stripComments(region(
-    '.build-line {', '/* ---------- WS5b', CSS));
-  // WS12 Part A: back to the WS10 BLOCK form. The topbar-only properties
-  // (nowrap / overflow / text-overflow / flex / min-width / align-self) made
-  // sense for a truncating flex header and are dead weight in a block, so
-  // they are asserted ABSENT rather than merely unused.
-  assert.ok(/font-size: 11px/.test(cssBlock), 'the build line must be small');
-  assert.ok(/color: var\(--text-secondary\)/.test(cssBlock),
-    'it must reuse the existing muted-text colour, not invent one');
-  assert.ok(/margin: 18px 0 4px/.test(cssBlock),
-    'a block under NYHETER needs breathing room above it');
-  ['white-space: nowrap', 'text-overflow: ellipsis', 'flex:', 'align-self:']
-    .forEach((p2) => {
-      assert.ok(!new RegExp(p2).test(cssBlock),
-        `.build-line must NOT carry the topbar-only property ${p2} in a block`);
-    });
+});
+
+test('WS80: the build id has a SINGLE visible surface (About), and no dead CSS', () => {
+  // The positive half of the WS80 instruction. The owner asked for exactly one
+  // place to read it, so assert there is exactly one -- a second surface
+  // reappearing is the defect, not a convenience.
+  const buildSurfaces = (APP_CODE.match(/\$\{APP_BUILD\}/g) || []).length;
+  assert.equal(buildSurfaces, 1,
+    `the build id must be rendered in exactly ONE place; found ${buildSurfaces}`);
+
+  // The About line is the one surface, and it keeps the attribution the owner
+  // asked to be renamed (WS80: "Daniel Omazarino" -> "Danielo Mazarino").
+  const about = stripComments(region("class: 'about-version'", 'openAbout', APP_CODE));
+  assert.ok(/\$\{APP_BUILD\} · Utvecklad av \$\{APP_DEVELOPER\}/.test(about),
+    'About must render the build id AND the developer attribution from the constants');
+
+  // The developer name is spelled the way the owner asked for it.
+  assert.ok(/const APP_DEVELOPER = 'Danielo Mazarino';/.test(APP_CODE),
+    'the developer must be "Danielo Mazarino" (owner, WS80)');
+  // Assert against the COMMENT-STRIPPED source. A comment recording the rename
+  // ("... from Daniel Omazarino to Danielo Mazarino") is documentation, not a
+  // rendered name, and forbidding the string outright would make the change
+  // impossible to explain in place. What must be gone is the old name as a
+  // VALUE -- the literal assigned to APP_DEVELOPER.
+  assert.ok(!/'Daniel Omazarino'/.test(APP_CODE),
+    'the old spelling must not remain as a string VALUE in app.js');
+  const README = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
+  assert.ok(/Danielo Mazarino/.test(README),
+    'README must carry the same corrected name, or the two drift');
+  assert.ok(!/Daniel Omazarino/.test(README),
+    'the old spelling must be gone from README too');
 });
 
 test('WS10: the About overlay shows the real build identity', () => {
@@ -2881,8 +2907,10 @@ const SEEK_ROW_WS11 = stripComments(region(
   "seekRow = el('div', { class: 'seek-row dvr-row' }", '// Drag state', APP_JS));
 const MEDIA_SESSION = stripComments(region(
   'function updateMediaSession() {', '// ---- buffering indicator', APP_JS));
-const BUILD_LINE_WS12 = stripComments(region(
-  '$main.appendChild(el(\'p\', {', 'updatePlayingMarks();', APP_JS));
+// WS80: the `BUILD_LINE_WS12` region is REMOVED with the element it sliced. It
+// anchored on `$main.appendChild(el('p', {`, which no longer exists, and
+// region() THROWS on a missing start marker -- so leaving it here would take
+// the whole file down at module load. See the WS80 note further up.
 
 test('WS11 Part A: the seek row has EXACTLY two children, so the slider is whole',
 () => {
@@ -2947,23 +2975,20 @@ test('WS11 Part B: no frozen version is displayed anywhere', () => {
     `README must state the same version as package.json (${PKG.version})`);
   assert.ok(!/APP_VERSION/.test(APP_JS) || !/\$\{APP_VERSION\}/.test(APP_CODE),
     'no version may be interpolated into any displayed string');
-  // Placement: WS12 Part A reverses the WS11 placement, at the owner's
-  // request. The line goes back under NYHETER in #main, and the cog returns
-  // to the right edge. The WS11 rationale for moving it up -- that the player
-  // covered the line -- was never observed and is false; the owner's
-  // instruction was placement, and that is what this asserts.
-  assert.ok(/\$main\.appendChild/.test(BUILD_LINE_WS12),
-    'the build line must go back under NYHETER in #main');
-  assert.ok(!/document\.querySelector\('\.topbar'\)/.test(BUILD_LINE_WS12),
-    'it must NOT be in the top bar -- the owner rejected that placement');
-  // SUPERSEDED 2026-10-05 (WS67): asserted `text: \`bygg \${APP_BUILD}\`` and
-  // the owner removed the label. Restated to require the id AND forbid the word,
-  // which is strictly stronger than the original: a future edit that dropped the
-  // id entirely would also fail this.
-  assert.ok(/text: APP_BUILD,/.test(BUILD_LINE_WS12),
-    'it must show the build id');
-  assert.ok(!/bygg/.test(BUILD_LINE_WS12),
-    'the word "bygg" must be gone from the home build line -- the owner removed it in WS67');
+  // ---- WS80: placement is no longer a question. The home-screen line was
+  // REMOVED at the owner's instruction ("the build id should not be present under
+  // Nyheter anymore ... it is enough that the build id is visible under Info"),
+  // so the WS12 Part A placement this block used to assert -- "back under NYHETER
+  // in #main" -- describes an element that no longer exists. Restated to the
+  // requirement that replaced it, asserted just as specifically by rule 1
+  // FALSE -- and asserted INVERTED: the line must NOT be anywhere on the main
+  // screen, in #main or in .topbar.
+  assert.ok(!/class: 'build-line'/.test(APP_CODE),
+    'the build line must not exist at all, so it is under neither NYHETER nor the top bar (WS80)');
+  // The About overlay is the one surface that survives, and it must be reachable
+  // -- removing the home line must not have removed the last way to read the id.
+  assert.ok(/function openAbout\(/.test(APP_CODE),
+    'the About/Info overlay must still exist -- it is now the ONLY build-id surface');
   // The WS10 build-id mechanism must NOT regress to the artifact commit.
   const BS = BUILD_SCRIPT;
   assert.ok(/APP_SOURCE_COMMIT|resolveBuildId/.test(BS),

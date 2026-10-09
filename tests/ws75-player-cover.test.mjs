@@ -99,20 +99,40 @@ test('WS75 C1: the <=340px breakpoint moves --icon in step with the content padd
     'the <=340px icon size must be overridden to match the narrower content padding');
 });
 
-test('WS75 C2: the build number is hidden exactly while the player is visible', () => {
-  // The hide must be SCOPED to a visible player. An unconditional
-  // `.build-line { display: none }` would satisfy "not seen while playing" and
-  // break "seen at rest", which is the opposite of the requirement.
-  assert.match(STYLES,
-    /body:has\(\.player\.visible\)\s+\.build-line\s*\{\s*display:\s*none;?\s*\}/,
-    'the build line must be hidden ONLY while .player.visible is present');
-
-  // The build line must NOT be hidden unconditionally -- it is load-bearing
-  // (WS73b): the owner reads it to know which build they are on.
-  const buildRule = STYLES.slice(STYLES.indexOf('.build-line {'),
-    STYLES.indexOf('}', STYLES.indexOf('.build-line {')));
-  assert.ok(!/display:\s*none/.test(buildRule),
-    'the bare .build-line rule must not hide the build id at rest');
+test('WS75 C2 (RESTATED WS80): there is no home-screen build number left to hide', () => {
+  // ---- RESTATED (AGENTS.md 7b). WHAT IT USED TO SAY (WS75): "the build number is
+  // hidden exactly while the player is visible", asserting
+  // `body:has(.player.visible) .build-line { display: none }` AND that the bare
+  // `.build-line` rule did NOT hide it at rest.
+  //
+  // WHY IT CHANGED -- OWNER, 2026-10-09: "the build id should not be present under
+  // Nyheter anymore as it is not now. it is enough that the build id is visible
+  // under Info." The element WS75's hide existed for was REMOVED outright, so the
+  // hide has nothing to hide.
+  //
+  // The requirement WS75 served -- "the build number must not be readable while
+  // the player is open" -- is now satisfied MORE strongly, by there being no
+  // home-screen build number at all. Assert that, which the original could not:
+  // both the element and the hide rule must be gone, and NO rule may reintroduce
+  // a home-screen `.build-line`.
+  assert.ok(!/\.build-line/.test(STYLES),
+    'no .build-line rule may remain -- the element is removed (WS80), so the WS75 hide is dead too');
+  // Read app.js directly: this file has no APP_JS binding (it is a CSS-focused
+  // suite), and a cross-file guard here is cheap insurance against the element
+  // being reintroduced by a later workstream.
+  const APP_SRC = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+  assert.ok(!/class: 'build-line'/.test(APP_SRC),
+    'no element may build a .build-line again');
+  // The requirement behind it still holds: while the player is open, the owner
+  // must not be able to read a build number. The About overlay is a modal the
+  // player sits under, so assert the player still has a higher stacking order
+  // than the About overlay's own layer -- if the player is on top, nothing in
+  // the content flow underneath it can be read.
+  const playerZ = STYLES.slice(STYLES.indexOf('.player {'),
+    STYLES.indexOf('}', STYLES.indexOf('.player {')));
+  const z = playerZ.match(/z-index:\s*(\d+)/);
+  assert.ok(z && Number(z[1]) > 0,
+    'the player must keep a positive z-index, so it still covers the content flow');
 });
 
 test('WS75 C4: the normal player row is a flex row again (cover is 44px)', () => {

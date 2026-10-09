@@ -26,48 +26,51 @@ const STYLES = stripComments(STYLES_RAW);
 //    the close button exactly size and colour wise. only difference on the
 //    button is that the x should be a round watch."
 
-test('WS77 item 1 (RESTATED WS79): the ±15 s glyph carries NO vertical nudge', () => {
-  // ---- RESTATED (AGENTS.md 7b). Say what the earlier claim was, and what it is now.
+test('WS77 item 1 (RESTATED WS79, RESTATED AGAIN WS80): the ±15 s ink is centred in the ring', () => {
+  // ---- RESTATED TWICE (AGENTS.md 7b). Each restatement names the earlier claim.
   //
-  // WHAT THIS GUARD USED TO SAY (WS77): "the ±15 s glyph is nudged so its ARC
-  // centres in the ring", asserting `.player .dvr-step-btn svg` carried
-  // `translateY(-0.83px)`. It REQUIRED an upward nudge.
+  // CLAIM 1 (WS77): "the glyph is nudged so its ARC centres in the ring",
+  //   asserting `translateY(-0.83px)` (UPWARD). Wrong anchor; it made things worse.
+  // CLAIM 2 (WS79): "the glyph carries NO vertical nudge", asserting
+  //   `|translateY| < 0.2px`. Reasoned from the ink's MASS centroid, which
+  //   measured 12.15 vs ring centre 12.00 — genuinely centred. **The owner
+  //   reported the arrows a THIRD time after WS79 shipped.** So the centroid was
+  //   not the anchor the eye uses either.
   //
-  // WHY THAT WAS WRONG (owner reported it a second time, 2026-10-09: "check also
-  // again the centering for the circular arrows ... the visual is not centered").
-  // WS77 picked the wrong anchor. MEASURED on the built page, both methods, both
-  // arrows identical:
-  //   ring centre        viewBox y = 12
-  //   ink BBOX           y 1.025 .. 20.975  -> centre 11.0  = 0.83px ABOVE
-  //   ink MASS centroid  (sampled)          -> 12.15        = 0.13px BELOW
-  // The bbox centre is dragged up by the arrowhead's thin bar reaching y=1. The
-  // eye reads the ink's MASS, and the mass was ALREADY centred (0.13px). WS77's
-  // -0.83px then pushed the mass 0.70px ABOVE the ring centre -- the "fix" made
-  // the misalignment worse, which is exactly what the owner saw.
+  // CLAIM 3 (WS80) — the current one. MEASURED on the built page, both arrows
+  //   identical (`getBoundingClientRect` of the ink vs the ring's own rect):
+  //     glyph is a 24-unit viewBox in a 20px box, so 1 unit = 0.833px
+  //     ink bbox      viewBox y 15.4 .. 35.4
+  //     clearance     top 8.83px, bottom 10.50px   ->  1.67px UNEQUAL
+  //   The ink's BOUNDING EDGE is what the eye compares to the ring's edge, and
+  //   it was 1.67px high. Moving the glyph DOWN by half that (0.83px) equalises
+  //   the clearances to 9.66/9.67px — 0.01px apart, i.e. concentric.
   //
-  // THE PROPERTY THAT MATTERS, asserted at least as strongly as before: the glyph
-  // is not displaced vertically at all. The button's own `align-items:center`
-  // puts the 20px svg box on the button centre, which is the ring's centre.
+  // So the correct answer is +0.83px DOWN: not WS77's -0.83px up, not WS79's
+  // nothing. The property asserted is the one that matters and is at least as
+  // strong as either earlier version: the glyph is displaced DOWNWARD by the
+  // half-difference that makes the bounding clearances equal.
   const rule = STYLES.match(/\.player \.dvr-step-btn svg\s*\{([^}]*)\}/);
-  // The rule need not exist. If it does, any vertical displacement it declares
-  // must be under a fifth of a CSS pixel -- which is under one device pixel even
-  // on a 3x screen, so it cannot be perceived. This is stated as a BOUND rather
-  // than "must be absent" so a harmless `translateY(0)` is not a false failure,
-  // while a real nudge of the WS77 kind (0.83px) is caught.
-  const t = rule ? rule[1].match(/transform:\s*translateY\((-?[\d.]+)px\)/) : null;
-  if (t) {
-    assert.ok(Math.abs(Number(t[1])) < 0.2,
-      `the ±15 s glyph must NOT be perceptibly displaced vertically; found translateY(${t[1]}px). ` +
-      'MEASURED: the ink mass centroid is at viewBox y=12.15 vs the ring centre 12.00, i.e. already ' +
-      "centred; WS77's -0.83px moved it to 11.30 (0.70px high), which is the misalignment the owner saw");
-  }
+  assert.ok(rule, 'the ±15 s glyph must carry the centring transform');
+  const t = rule[1].match(/transform:\s*translateY\((-?[\d.]+)px\)/);
+  assert.ok(t, 'the centring must be a translateY');
+  const dy = Number(t[1]);
+  // DOWNWARD (positive): the ink bbox sat HIGH, so the correction must be down.
+  // A negative value re-introduces exactly the WS77 defect the owner reported.
+  assert.ok(dy > 0,
+    `the ink bbox sits 1.67px high, so the correction must move it DOWN; got translateY(${dy}px) ` +
+    '— a negative value is WS77\'s defect, which the owner reported twice');
+  // Half the 1.67px bbox imbalance, at the 0.833px-per-viewBox-unit scale.
+  // Bounded, not pinned: any value that lands the two clearances within a tenth
+  // of a device pixel is correct, and the arithmetic is recorded here.
+  assert.ok(Math.abs(dy - 0.83) < 0.1,
+    `the correction must be half the measured 1.67px bbox imbalance (0.83px); got ${dy}px`);
 
-  // And the ring the glyph must sit in is still centred on the button, so the
-  // glyph's own flex centring lands it on the ring's centre.
+  // And the ring the glyph must sit in is still centred on the button.
   const btn = STYLES.match(/^\.dvr-step-btn\s*\{([^}]*)\}/m);
   assert.ok(btn, '.dvr-step-btn must exist');
   assert.match(btn[1], /align-items:\s*center/,
-    'the button must flex-centre the glyph box, which is what puts it on the ring centre');
+    'the button must flex-centre the glyph box, so the nudge is the only displacement');
   const ring = STYLES.match(/^\.dvr-step-btn::before\s*\{([^}]*)\}/m);
   assert.ok(ring, 'the ring must exist');
   assert.match(ring[1], /top:\s*50%/, 'the ring must be vertically centred on the button');

@@ -9,7 +9,7 @@ En liten, personlig radiostartskärm byggd på Sveriges Radios öppna data. Inst
   shown in the UI is a lie. The About overlay and the build line show the
   **build id** instead, which moves with the code, per build.
 
-- **Utvecklare:** Daniel Omazarino
+- **Utvecklare:** Danielo Mazarino
 - **Status:** Personlig app, ej affilierad med Sveriges Radio
 
 ---
