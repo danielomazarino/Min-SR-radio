@@ -10126,12 +10126,25 @@ OWNER, 2026-10-09:
 
 ### 1. The ±15 s glyph centering (measured)
 
+> **⚠ CORRECTED 2026-10-09 by WS79 — this section was WRONG. Read WS79 before
+> relying on it.** WS77 asserted the glyph sat ~0.83px low and "fixed" it with
+> `translateY(-0.83px)`. **The nudge pushed the glyph the WRONG way and the
+> owner reported the misalignment a second time.** The anchor WS77 chose was the
+> glyph's **arc circle** (viewBox y=13). The anchor the eye actually uses is the
+> ink's **mass centroid**, which measured at **y=12.15** against a ring centre of
+> **y=12** — i.e. *already centred*. WS77's nudge moved it to **y=11.30**, 0.70px
+> **above** the ring centre. The nudge has been removed. See the WS79 entry at the
+> bottom of this file for the measurements and the corrected guard.
+
 The glyph is a 24-unit viewBox drawn in a 20px box. Its **arc** — the C-shape
 the eye reads — is centred at viewBox **y=13**, while the ring is centred at
 **y=12**, so the visible arrow sat ~1 unit (0.83px) low. Fixed with a transform
 on the glyph: `.player .dvr-step-btn svg { transform: translateY(-0.83px) }`.
 (The ink *bbox* centre is at y=11 because the arrowhead bar reaches y=1; the eye
 follows the arc, not the bbox, which is why the nudge is upward.)
+
+*(The paragraph above is preserved unedited as the record of what WS77 believed.
+It is superseded — see the correction banner above.)*
 
 ### 2. The sleep-timer watch
 
@@ -10271,3 +10284,101 @@ podcast thumb at 14px. Each restored to `923980db…`.
 - **At the time of writing the live site was still propagating**, serving
   `app.148fa749.js` / `styles.11513253.css`. The owner must confirm the build id
   under NYHETER reads **`ae123e0`** before trusting a device result.
+
+---
+
+## 2026-10-09 (WS79) — the ±15 s arrows were nudged the WRONG way (WS77 correction)
+
+**Status: DEPLOYED.** Source `567e3a5`, artifacts `144829e`, build id **`567e3a5`**.
+Suite **662/662**. CSS `styles.41ac3feb.css`, JS `app.7817e4f3.js`.
+
+### The owner's second report, verbatim
+
+OWNER, 2026-10-09 (with a screenshot showing the timer icon present, so the build
+was current):
+> "check also again the centering for the circular arrows. as you see attached the
+>  visual is not centered. the timer icon is there and ste so it is the new
+>  version."
+
+The owner was right, and **WS77 caused it.**
+
+### Root cause: WS77 centred the wrong anchor
+
+WS77 reasoned that the glyph's **arc circle** is centred at viewBox y=13 while the
+ring is at y=12, and added `translateY(-0.83px)`. That is a statement about a
+geometric feature of the path, not about where the **ink** appears to sit.
+
+### The measurement that settles it
+
+Two independent methods on the built page, **identical for both arrows**:
+
+| anchor | value | vs ring centre (y=12) |
+|---|---|---|
+| ink **bbox** (getBBox) | y 1.025 … 20.975 → centre **11.00** | **0.83px ABOVE** |
+| ink **mass centroid** (`isPointInFill` on a 1/20-unit grid, ~36 500 samples) | **12.155** (back) / **12.158** (fwd) | **0.13px BELOW** |
+| after WS77's `-0.83px` | **11.30** | **0.70px ABOVE** |
+
+**The bbox is the trap.** Its centre is dragged upward by the arrowhead's thin
+bar reaching y=1.3. The eye reads the ink's **mass**, and the mass was *already
+centred* — 0.13px is a tenth of a device pixel on the owner's 3× iPhone screen.
+WS77's "correction" moved the mass 0.70px **above** the ring centre, which is the
+misalignment the owner saw.
+
+### The fix
+
+**No transform.** The button's own `align-items: center` already puts the 20px
+glyph box on the 36×44 button's centre, which *is* the ring's centre. The WS77
+rule `.player .dvr-step-btn svg { transform: translateY(-0.83px) }` is deleted.
+
+### The test lesson (this is the load-bearing part)
+
+The WS77 guard asserted the **wrong property**: "the glyph *must* carry an upward
+nudge". A suite that demands a specific correction cannot notice that the
+correction went the wrong way — it stayed green *because* the bug was present.
+**This is §2 of AGENTS.md in its purest form: a test that proves the wrong
+property is worse than no test, because it makes the defect load-bearing.**
+
+The guard is **restated** (AGENTS.md §7b, SUPERSEDED — the requirement did not
+change; the guard did) to assert the property that actually matters: **the glyph
+carries no perceptible vertical displacement** (`|translateY| < 0.2px`), with the
+measured numbers recorded in the test itself.
+
+**Mutation-proven:** re-adding `-0.83px` → **KILLED**; a `-1.66px` nudge →
+**KILLED**; a harmless `translateY(0px)` → correctly **SURVIVES** (the guard
+bounds the displacement rather than forbidding the rule, so it cannot go red for
+a reason that does not matter). Restored by checksum `5b9f6aa3…`.
+
+### Deploy checks (§15), each reported individually
+
+1. suite green, **662/662** (count unchanged — this is a correction, not a new
+   feature; one guard was restated) — **PASS**
+2. whole diff read: `styles.css` (−0.83px rule deleted, WS79 comment added) + the
+   restated guard only — **PASS**
+3. driven in the browser on the built page: `transform: none` on the shipped SVG;
+   only one `.dvr-step-btn svg` rule in the stylesheet; build id `567e3a5` —
+   **PASS**
+4. the reported defect addressed against the owner's own words — **PASS** (device
+   confirmation is the owner's)
+5. nothing else moved — the ring is still 36×36/50%, the button 36×44, gap 12px —
+   **PASS**
+6. built bundle grepped: the only `translateY(-0.83px)` in `dist/styles.41ac3feb.css`
+   is **inside the explanatory comment**; no rule applies it — **PASS**
+7. commit on remote `144829e` → live propagation to be confirmed by the owner —
+   see below
+
+### NOT DONE / not verified
+
+- **iPhone rendering is unverified.** The owner must confirm the build id under
+  NYHETER reads **`567e3a5`** and that the arrows now look centred. A 0.13px
+  centroid residual is not perceptible by measurement, but only the owner's eye
+  can settle what the eye sees — and on this exact defect the owner's report has
+  now been right twice where offline reasoning was wrong.
+
+### Process note
+
+WS77's entry in this file stated the nudge as settled fact and explained it with
+a confident rationale ("the eye follows the arc, not the bbox"). It was wrong,
+and the entry has been left in place with a correction banner rather than
+rewritten, so the next session can see **how** the wrong reasoning was reached.
+The lesson generalises: **when a visual claim can be measured, measure the ink
+the user sees, not a geometric feature of the path that is easy to compute.**
