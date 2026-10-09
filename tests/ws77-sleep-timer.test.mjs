@@ -26,18 +26,55 @@ const STYLES = stripComments(STYLES_RAW);
 //    the close button exactly size and colour wise. only difference on the
 //    button is that the x should be a round watch."
 
-test('WS77 item 1: the ±15 s glyph is nudged so its ARC centres in the ring', () => {
-  // MEASURED: the glyph's arc is centred at viewBox y=13 while the ring is at
-  // y=12, so the visible arrow sits ~1 unit low. The fix is a small upward
-  // transform on the glyph inside the button (a transform, so nothing reflows).
+test('WS77 item 1 (RESTATED WS79): the ±15 s glyph carries NO vertical nudge', () => {
+  // ---- RESTATED (AGENTS.md 7b). Say what the earlier claim was, and what it is now.
+  //
+  // WHAT THIS GUARD USED TO SAY (WS77): "the ±15 s glyph is nudged so its ARC
+  // centres in the ring", asserting `.player .dvr-step-btn svg` carried
+  // `translateY(-0.83px)`. It REQUIRED an upward nudge.
+  //
+  // WHY THAT WAS WRONG (owner reported it a second time, 2026-10-09: "check also
+  // again the centering for the circular arrows ... the visual is not centered").
+  // WS77 picked the wrong anchor. MEASURED on the built page, both methods, both
+  // arrows identical:
+  //   ring centre        viewBox y = 12
+  //   ink BBOX           y 1.025 .. 20.975  -> centre 11.0  = 0.83px ABOVE
+  //   ink MASS centroid  (sampled)          -> 12.15        = 0.13px BELOW
+  // The bbox centre is dragged up by the arrowhead's thin bar reaching y=1. The
+  // eye reads the ink's MASS, and the mass was ALREADY centred (0.13px). WS77's
+  // -0.83px then pushed the mass 0.70px ABOVE the ring centre -- the "fix" made
+  // the misalignment worse, which is exactly what the owner saw.
+  //
+  // THE PROPERTY THAT MATTERS, asserted at least as strongly as before: the glyph
+  // is not displaced vertically at all. The button's own `align-items:center`
+  // puts the 20px svg box on the button centre, which is the ring's centre.
   const rule = STYLES.match(/\.player \.dvr-step-btn svg\s*\{([^}]*)\}/);
-  assert.ok(rule, 'the ±15 s glyph must carry the centering nudge');
-  const t = rule[1].match(/transform:\s*translateY\((-?[\d.]+)px\)/);
-  assert.ok(t, 'the nudge must be a translateY');
-  // Must be UPWARD (negative) -- the arc sits low, so a downward nudge would
-  // make the misalignment worse.
-  assert.ok(Number(t[1]) < 0,
-    `the nudge must move the glyph UP; got ${t[1]}px`);
+  // The rule need not exist. If it does, any vertical displacement it declares
+  // must be under a fifth of a CSS pixel -- which is under one device pixel even
+  // on a 3x screen, so it cannot be perceived. This is stated as a BOUND rather
+  // than "must be absent" so a harmless `translateY(0)` is not a false failure,
+  // while a real nudge of the WS77 kind (0.83px) is caught.
+  const t = rule ? rule[1].match(/transform:\s*translateY\((-?[\d.]+)px\)/) : null;
+  if (t) {
+    assert.ok(Math.abs(Number(t[1])) < 0.2,
+      `the ±15 s glyph must NOT be perceptibly displaced vertically; found translateY(${t[1]}px). ` +
+      'MEASURED: the ink mass centroid is at viewBox y=12.15 vs the ring centre 12.00, i.e. already ' +
+      "centred; WS77's -0.83px moved it to 11.30 (0.70px high), which is the misalignment the owner saw");
+  }
+
+  // And the ring the glyph must sit in is still centred on the button, so the
+  // glyph's own flex centring lands it on the ring's centre.
+  const btn = STYLES.match(/^\.dvr-step-btn\s*\{([^}]*)\}/m);
+  assert.ok(btn, '.dvr-step-btn must exist');
+  assert.match(btn[1], /align-items:\s*center/,
+    'the button must flex-centre the glyph box, which is what puts it on the ring centre');
+  const ring = STYLES.match(/^\.dvr-step-btn::before\s*\{([^}]*)\}/m);
+  assert.ok(ring, 'the ring must exist');
+  assert.match(ring[1], /top:\s*50%/, 'the ring must be vertically centred on the button');
+  const w = ring[1].match(/width:\s*(\d+)px/)[1];
+  const h = ring[1].match(/height:\s*(\d+)px/)[1];
+  assert.equal(w, h, 'the ring must be square, so its centre is the button centre');
+  assert.match(ring[1], /border-radius:\s*50%/, 'the ring must be a circle');
 });
 
 test('WS77 item 2: the watch button mirrors the close button exactly', () => {
