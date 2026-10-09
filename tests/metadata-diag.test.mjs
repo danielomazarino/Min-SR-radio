@@ -1921,7 +1921,17 @@ test('WS5 Item 3: the chevron is on the right, aligned by flexbox with close', (
   const row = stripComments(region('.player-header {', '.player-row {', STYLES_WS5));
   assert.ok(/display: flex/.test(row), 'the header row must be a flex container'
 );
-  assert.ok(!/top:|margin-top: \d|translateY\(/.test(row),
+  // WS77 (owner, 2026-10-09): the header now carries ONE absolutely positioned
+  // overlay -- the sleep-timer watch -- which is centred with the standard
+  // absolute technique (`top: 50%` + `transform: translateY(-50%)`). That is NOT
+  // the "hand-tuned offset for flex alignment" this guard forbids: the header's
+  // own flex children still align by `align-items: center`, and the overlay is
+  // deliberately kept out of the flex flow (see the .player-sleep-btn comment).
+  // The guard is restated to keep its whole original property for the flex row
+  // while allowing the overlay, which is the ONLY element permitted a pixel
+  // offset here -- so a regression in the flex alignment still goes red.
+  const rowFlex = row.replace(/\.player-header \.player-sleep-btn[^{]*\{[^}]*\}/g, '');
+  assert.ok(!/top:|margin-top: \d|translateY\(/.test(rowFlex),
     'vertical alignment must NOT use hard-coded offsets');
   // The chevron rotation behaviour must survive, for BOTH buttons using the class.
   assert.ok(STYLES_WS5.includes('.player-expand-btn.open { transform: rotate(180deg); }'),
