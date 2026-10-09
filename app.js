@@ -7588,7 +7588,7 @@ function seekMeasureRecordText() {
     // currentTime directly, and still decides whether the programme-skip
     // buttons exist at all. Only the picture the button wears changed.
     const backBtn = el('button', {
-      class: 'player-btn dvr-step-btn', type: 'button', 'aria-label': 'Bakåt 15 sekunder',
+      class: 'player-btn dvr-step-btn dvr-step-back', type: 'button', 'aria-label': 'Bakåt 15 sekunder',
       html: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>',
       onclick: () => {
         if (isDvr) seekBy(-SEEK_STEP_S_DVR);
@@ -7627,7 +7627,7 @@ function seekMeasureRecordText() {
     }) : null;
 
     const fwdBtn = el('button', {
-      class: 'player-btn dvr-step-btn', type: 'button', 'aria-label': 'Framåt 15 sekunder',
+      class: 'player-btn dvr-step-btn dvr-step-fwd', type: 'button', 'aria-label': 'Framåt 15 sekunder',
       // Same circular arrow as the back button, same reason (see backBtn).
       html: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z"/></svg>',
       onclick: () => {
@@ -7645,6 +7645,10 @@ function seekMeasureRecordText() {
     });
 
     const controls = el('div', { class: 'player-controls' });
+    // WS76 (owner, 2026-10-09): the DVR row is marked so the ±15 s buttons can
+    // be nudged toward their skip buttons without touching the podcast row's
+    // 3-button transport (see the .player-controls.dvr rules in styles.css).
+    if (isDvr) controls.classList.add('dvr');
     if (prevProgramBtn) controls.appendChild(prevProgramBtn);
     if (backBtn) controls.appendChild(backBtn);
     controls.appendChild(playPause);

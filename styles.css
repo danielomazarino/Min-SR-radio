@@ -1822,8 +1822,34 @@ body:has(.player.visible) .build-line { display: none; }
   justify-content: center;
   cursor: pointer;
   flex: none;
+  /* ---- WS76 (owner, 2026-10-09): the ±15 s button is a thin green CIRCLE ----
+   * The owner: "make a thin round circular marking in the same green accent
+   * colour as the circular arrows around them". The button is 36 wide x 44
+   * tall, so a CSS `border` would draw an ELLIPSE, not a circle. The ring is
+   * therefore an absolutely-positioned square pseudo-element (the same
+   * technique the playing icon ring uses): 36 x 36, centred on the button's
+   * own centre, border-radius 50%, so it is a true circle.
+   *
+   * It also makes the whole circle clickable in the visual sense the owner
+   * asked for: the button's hit area is still its own 36 x 44 box, but the
+   * visible circle now reads as the thing you press. (No pointer-events trick
+   * is used -- the ring is part of the button, so a tap anywhere on the button,
+   * circle or padding, works.) */
+  position: relative;
 }
-.dvr-step-btn svg { width: 20px; height: 20px; }
+.dvr-step-btn::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 36px;
+  height: 36px;
+  margin: -18px 0 0 -18px;
+  border: 1.5px solid var(--accent);
+  border-radius: 50%;
+  pointer-events: none;
+}
+.dvr-step-btn svg { width: 20px; height: 20px; position: relative; }
 .dvr-step-btn:active { opacity: 0.6; }
 /* WS73 (owner, 2026-10-07): the programme-skip buttons narrow from 44px to the
    36px the ±15 s buttons already use, which pays for the wider transport gap
@@ -1842,6 +1868,35 @@ body:has(.player.visible) .build-line { display: none; }
   width: 36px;
 }
 .dvr-program-btn[style*="display: none"] { display: none !important; }
+
+/* ---- WS76 (owner, 2026-10-09): balance the ±15 s gap, and shift it off play ----
+ * OWNER: "the +- 15 seconds button are feeling wise to close to the play button.
+ * it also looks as they are closer to it than to the skip buttons ... move them
+ * slightly towards the skip buttons."
+ *
+ * MEASURED on the five-button DVR row at 390px, BEFORE this: the gap is a flat
+ * 12px, but the ±15 s button is 36px wide around a 20px glyph, so its glyph sits
+ * 8 + 12 = 20px from the play circle's edge yet 8 + 12 + 8 = 28px from the skip
+ * glyph's edge. That 8px asymmetry IS the owner's "closer to play than to the
+ * skips", and it is what this corrects.
+ *
+ * The fix is a NET-ZERO margin pair on each ±15 s button: -4px on its INNER
+ * edge (toward play) and +4px on its OUTER edge (toward the skip), so the button
+ * moves 4px outward while the row's total width is byte-identical. The result at
+ * 390px: ±15 s is 16px from the play circle and 16px from the skip glyph --
+ * balanced, and 4px further from play.
+ *
+ * SCOPED TO `.player-controls.dvr`, i.e. a DVR channel only. A podcast has no
+ * programme-skip buttons, so the class marks 17px - step 15 with nothing on the
+ * other side: nudging there would SHIFT the whole transport off centre for no
+ * reason, so the plain 3-button row keeps the plain uniform gap.
+ *
+ * Why margin and not a wider gap: the gap is symmetric, so raising it would move
+ * the ±15 s button away from BOTH neighbours, which is the opposite of the
+ * request. Only an asymmetric margin can move it toward one side and away from
+ * the other. */
+.player-controls.dvr .dvr-step-back { margin-left: -4px; margin-right: 4px; }
+.player-controls.dvr .dvr-step-fwd { margin-left: 4px; margin-right: -4px; }
 
 /* The DVR row now carries more controls — tighten the time label so the bar
    keeps most of the width. */
