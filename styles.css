@@ -1823,6 +1823,28 @@ body:has(.player.visible) .build-line { display: none; }
   pointer-events: none; /* the bar handles the pointer */
   transition: transform 0.12s ease;
 }
+/* ---- WS78 (owner, 2026-10-09): a ring around the thumb dot ----
+ * OWNER: "add for the slider a ring that is not too big around the current dot
+ * ... and make the ring area as well possible to grab to make it easier for
+ * users."
+ *
+ * The ring is 26px -- big enough to read as a grab target, small enough not to
+ * dominate the 4px track. It is drawn on the BASE class so BOTH sliders (live
+ * DVR and podcast) show it, centred on the thumb regardless of the thumb box's
+ * own size, so the ring-to-dot gap is identical on each. `pointer-events: none`
+ * on the RING keeps the grab decision on the thumb box below. */
+.seek-thumb::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 26px;
+  height: 26px;
+  margin: -13px 0 0 -13px;
+  border-radius: 50%;
+  border: 1.5px solid var(--accent);
+  pointer-events: none;
+}
 .episode-seek-bar .seek-thumb {
   /* Larger invisible hit area without changing the visible 14px thumb. */
   width: 32px;
@@ -1845,6 +1867,37 @@ body:has(.player.visible) .build-line { display: none; }
 }
 .episode-seek-bar.dragging .seek-thumb::after {
   transform: scale(1.15);
+}
+/* ---- WS78: the DVR thumb is grabbable, and its dot is drawn by ::after ----
+ * OWNER: "make the ring area as well possible to grab to make it easier for
+ * users".
+ *
+ * The base thumb is 14px and `pointer-events: none`, so on the live radio
+ * slider the only way to grab was the bar itself. Here the thumb box grows to
+ * 26px -- the ring's own size, so the ring IS the grab target -- while the
+ * visible dot stays 14px (drawn by ::after, exactly as the podcast slider
+ * already does). `pointer-events: auto` makes the thumb catch the press; the
+ * event still bubbles to the bar's own pointerdown, which runs the SAME drag
+ * (it computes the fraction from the bar's rect, so a press on the thumb seeks
+ * to the thumb, as expected). The vertical-swipe disambiguation is unchanged --
+ * a vertical gesture that starts on the thumb is still handed to swipe-to-close. */
+.dvr-bar .seek-thumb {
+  width: 26px;
+  height: 26px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  pointer-events: auto;
+}
+.dvr-bar .seek-thumb::after {
+  content: '';
+  position: absolute;
+  inset: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--surface);
+  box-shadow: 0 1px 4px rgba(28, 28, 30, 0.35);
+  pointer-events: none;
 }
 .dvr-bar.dragging .seek-thumb { transform: translate(-50%, -50%) scale(1.25); }
 @media (prefers-reduced-motion: reduce) {
@@ -1920,7 +1973,27 @@ body:has(.player.visible) .build-line { display: none; }
 .dvr-program-btn {
   color: var(--text-secondary);
   width: 36px;
+  /* ---- WS78 (owner, 2026-10-09): a small rounded rectangle around the skip
+   * glyphs, matching the ±15 s circles' accent, and CLICKABLE across the whole
+   * rectangle. The rect is a pseudo-element sized 30x26, centred on the button's
+   * 36x44 box -- smaller than the button, so every point inside the rectangle is
+   * already inside the button and therefore tappable (that is the "clickable for
+   * the rectangular area too" the owner asked for). */
+  position: relative;
 }
+.dvr-program-btn::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 30px;
+  height: 26px;
+  margin: -13px 0 0 -15px;
+  border: 1.5px solid var(--accent);
+  border-radius: 9px;
+  pointer-events: none;
+}
+.dvr-program-btn svg { position: relative; }
 .dvr-program-btn[style*="display: none"] { display: none !important; }
 
 /* ---- WS76 (owner, 2026-10-09): balance the ±15 s gap, and shift it off play ----
