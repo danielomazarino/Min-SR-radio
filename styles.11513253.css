@@ -1336,6 +1336,10 @@ body:has(.player.visible) .build-line { display: none; }
   align-items: center;
   gap: var(--player-gap);
   min-width: 0;
+  /* WS77: positioning context for the sleep-timer watch, which is an absolute
+     overlay at the header's left (see .player-sleep-btn). Without this the
+     button would resolve against .player and sit at the player's top corner. */
+  position: relative;
   /* ITEM 4: was `0 0 4px` (measured 36px tall). +2px below the header text, so
      the title block is less likely to be read as belonging to the row under it.
      Vertical only; the inline values stay 0.
@@ -1395,6 +1399,46 @@ body:has(.player.visible) .build-line { display: none; }
    icons at 22px, which fills a 32px circle. */
 .player-header .player-expand-btn svg { width: 18px; height: 18px; }
 .player-header .player-btn-close svg { width: 16px; height: 16px; }
+
+/* ---- WS77 (owner, 2026-10-09): the sleep-timer WATCH, mirroring the close ----
+ * OWNER: "on the same position as the round cross icon but on the left side of
+ * the player i want you to add an icon for a round watch ... the icon design
+ * should be the same as for the close button exactly size and colour wise. only
+ * difference on the button is that the x should be a round watch."
+ *
+ * Same 32px size and the same colour treatment as the close button (which is
+ * --text on --border, matching the sheet's ✕), so the pair reads as one.
+ *
+ * ABSOLUTELY positioned at the header's LEFT rather than a flex child: the
+ * header's text column is STRUCTURAL -- the width-only spacer holds the artwork
+ * column and exactly ONE element may occupy it (WS13 Part A) -- so a flex
+ * button here would shrink the column by 12px and pull the programme text and
+ * the quality pill off the artwork's right edge. As an overlay it lands on the
+ * header's left edge, the same edge as the album art below, and leaves the text
+ * where it is. The spacer stays, so the column does not move. */
+.player-header .player-sleep-btn {
+  width: 32px;
+  height: 32px;
+  flex: none;
+  position: absolute;
+  left: 0;
+  /* Vertically centred on the CLOSE BUTTON's line, not on the header's padding
+   * box. The header is `padding: 0 0 9px`, so its flex children (close, chevron)
+   * centre in the CONTENT box, which is 4.5px above the padding box's `50%`. A
+   * plain `top: 50%` therefore landed the watch 4.5px below the close --
+   * MEASURED (watchCentreY 719.8 vs closeCentreY 715.3). The subtract is half
+   * that bottom padding; if the header's padding changes, change this with it. */
+  top: calc(50% - 4.5px);
+  transform: translateY(-50%);
+  color: var(--text);
+  background: var(--border);
+}
+.player-header .player-sleep-btn svg { width: 16px; height: 16px; }
+/* Armed: filled in accent so the owner can see at a glance that it is running. */
+.player-header .player-sleep-btn.active {
+  background: var(--accent);
+  color: #fff;
+}
 /* The programme line takes the full remaining width and ellipsizes. No
    max-width percentage: the old 40% cap truncated the channel name on narrow
    phones for no reason.
@@ -1850,6 +1894,16 @@ body:has(.player.visible) .build-line { display: none; }
   pointer-events: none;
 }
 .dvr-step-btn svg { width: 20px; height: 20px; position: relative; }
+/* ---- WS77 (owner, 2026-10-09): centre the ±15 s glyph's INK in the ring ----
+ * OWNER: "the circle arrows are not perfectly centered visually in the rings".
+ *
+ * MEASURED: the glyph is a 24-unit viewBox drawn in a 20px box. Its ARC -- the
+ * C-shape the eye reads -- is centred at y=13 in that viewBox, while the ring
+ * is centred at y=12, so the visible arrow sits ~1 unit low (0.83px at a 20px
+ * box). Nudged up by exactly that unit. A transform, so nothing reflows.
+ * (The ink BBOX centre is at y=11 because the arrowhead bar reaches y=1; the
+ * eye follows the arc, not the bbox, which is why the nudge is upward.) */
+.player .dvr-step-btn svg { transform: translateY(-0.83px); }
 .dvr-step-btn:active { opacity: 0.6; }
 /* WS73 (owner, 2026-10-07): the programme-skip buttons narrow from 44px to the
    36px the ±15 s buttons already use, which pays for the wider transport gap
@@ -3009,6 +3063,32 @@ body:has(.player.visible) .build-line { display: none; }
 }
 
 .sheet-title { font-size: 19px; font-weight: 700; }
+
+/* ---- WS77: the sleep-timer sheet's choices ---- */
+.sleep-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 0 8px;
+}
+.sleep-option {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  font-size: 15px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.sleep-option:active { background: var(--accent-soft); }
+.sleep-cancel { color: var(--danger); border-color: var(--danger); }
+.sleep-active {
+  font-size: 13.5px;
+  color: var(--text-secondary);
+  margin: 0 0 4px;
+}
 
 .sheet-close {
   border: none;

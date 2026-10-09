@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = 'ff3a0d6';
+  const APP_BUILD = '0390736';
   const APP_DEVELOPER = 'Daniel Omazarino';
 
   // ---------------- favorites store ----------------
@@ -3944,6 +3944,11 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
 
   function stopAndClosePlayer() {
     clearPlaybackWatchdog();
+    // WS77: a closed player has nothing left to stop, so a manual close (or the
+    // sleep timer's own stop) cancels any pending sleep timer. Inlined rather
+    // than calling clearSleepTimer(), which would repaint the player mid-teardown.
+    if (sleepTimerId !== null) { clearTimeout(sleepTimerId); sleepTimerId = null; }
+    sleepTimerEndsAt = null;
     // WS70: stopping the player ends the active news sequence. The SAVED
     // preference is deliberately untouched — stopping a sequence must not
     // silently change the autoplay mode.
@@ -3977,6 +3982,96 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     $player.textContent = '';
     updatePlayingMarks();
     updateNewsFold(); // playback ended → News returns to fully expanded
+  }
+
+  // ---------------- WS77: sleep timer (viloläge) ----------------
+  // OWNER, 2026-10-09: a watch button to the LEFT of the transport opens a
+  // choice of 15 / 30 / 60 / 120 minutes; playback stops when the chosen time
+  // is up. The button's design is the close button's, with a round watch for
+  // the ✕.
+  //
+  // The timer is an END TIMESTAMP, not a countdown: a subtraction gives the
+  // remaining time, so the display cannot drift from the timer the way a
+  // decremented variable would. The setTimeout id is kept only so a new
+  // selection (or a stopped player) can clear the pending one.
+  let sleepTimerId = null;
+  let sleepTimerEndsAt = null;
+  const SLEEP_OPTIONS = [15, 30, 60, 120]; // minutes
+  let sleepSheetClose = null; // set while the sheet is open, so a stop can close it
+
+  function sleepTimerActive() {
+    return sleepTimerEndsAt !== null && Date.now() < sleepTimerEndsAt;
+  }
+
+  function clearSleepTimer() {
+    if (sleepTimerId !== null) { clearTimeout(sleepTimerId); sleepTimerId = null; }
+    sleepTimerEndsAt = null;
+    // Repaint so the watch button's active state clears.
+    if (state.current) renderPlayer();
+  }
+
+  // Lengths are normally the real minutes; the TEST SEAM lets the driven test
+  // watch the whole chain (setTimeout -> stopAndClosePlayer) without waiting an
+  // hour. The override is read only when a timer is ARMED, so a value set later
+  // cannot shorten a timer that is already running.
+  function sleepTimerSecondsFor(minutes) {
+    const override = Number(window.__srSleepSeconds);
+    if (Number.isFinite(override) && override > 0) return override;
+    return minutes * 60;
+  }
+
+  function setSleepTimer(minutes) {
+    if (sleepTimerId !== null) { clearTimeout(sleepTimerId); sleepTimerId = null; }
+    const ms = sleepTimerSecondsFor(minutes) * 1000;
+    sleepTimerEndsAt = Date.now() + ms;
+    sleepTimerId = setTimeout(() => {
+      sleepTimerId = null;
+      sleepTimerEndsAt = null;
+      if (sleepSheetClose) sleepSheetClose(); // a stop closes the sheet if open
+      stopAndClosePlayer();
+    }, ms);
+    diagLog(`sleep-timer-set (${minutes} min)`);
+    renderPlayer();
+  }
+
+  function openSleepTimerSheet() {
+    const overlay = el('div', { class: 'sheet-overlay' });
+    const sheet = el('div', { class: 'sheet sleep-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Viloläge' });
+    const close = () => {
+      sleepSheetClose = null;
+      $sheetRoot.textContent = '';
+      document.body.style.overflow = '';
+    };
+    sleepSheetClose = close;
+    const grabZone = el('div', { class: 'sheet-grab-zone' }, el('div', { class: 'sheet-grab' }));
+    const header = el('div', { class: 'sheet-header' },
+      el('div', { class: 'sheet-title', text: 'Viloläge' }),
+      el('button', { class: 'sheet-close', type: 'button', 'aria-label': 'Stäng', text: '✕', onclick: close }));
+    const body = el('div', { class: 'sleep-body' });
+    if (sleepTimerActive()) {
+      const left = Math.max(1, Math.round((sleepTimerEndsAt - Date.now()) / 60000));
+      body.appendChild(el('p', { class: 'sleep-active', text: `Aktivt: spelaren stängs om ca ${left} min.` }));
+      body.appendChild(el('button', {
+        class: 'sleep-option sleep-cancel', type: 'button', text: 'Stäng av viloläget',
+        onclick: () => { clearSleepTimer(); close(); },
+      }));
+    } else {
+      for (const minutes of SLEEP_OPTIONS) {
+        body.appendChild(el('button', {
+          class: 'sleep-option', type: 'button', text: `${minutes} minuter`,
+          onclick: () => { setSleepTimer(minutes); close(); },
+        }));
+      }
+    }
+    sheet.appendChild(grabZone);
+    sheet.appendChild(header);
+    sheet.appendChild(body);
+    overlay.appendChild(sheet);
+    $sheetRoot.textContent = '';
+    $sheetRoot.appendChild(overlay);
+    document.body.style.overflow = 'hidden';
+    enableSwipeToClose(overlay, sheet.querySelector('.sheet-grab-zone'), close, { axis: 'y', move: sheet });
+    enableSwipeToClose(overlay, sheet.querySelector('.sheet-header'), close, { axis: 'y', move: sheet });
   }
 
   metaDiagCountAdd('error');
@@ -8047,7 +8142,38 @@ function seekMeasureRecordText() {
     // Those are the episode and the show, not the same fact twice. The
     // duplicate the owner DID ask to remove is the bold CHANNEL name on a live
     // channel, which the live branch below still does not print.
+    // ---- WS77 (owner, 2026-10-09): the SLEEP-TIMER watch, mirroring close ----
+    // The owner: "on the same position as the round cross icon but on the left
+    // side of the player i want you to add an icon for a round watch ... the
+    // icon design should be the same as for the close button exactly size and
+    // colour wise. only difference on the button is that the x should be a
+    // round watch."
+    //
+    // It is a SIBLING of the header row, absolutely positioned at the row's
+    // left, rather than a flex child. Two reasons:
+    //   1. The header's text column is STRUCTURAL -- the width-only spacer holds
+    //      the artwork column and is exactly one element wide (see WS13 Part A).
+    //      Dropping a 32px button into that column would shrink it by 12px and
+    //      pull the programme text and the pills off the artwork's right edge.
+    //   2. "The round cross icon ... on the left side of the player" is
+    //      literally the header row's own left edge, which the spacer currently
+    //      occupies invisibly. An absolute overlay lands there EXACTLY -- both
+    //      the spacer and the button are 32px, centred on the column -- and the
+    //      spacer keeps the text where it is.
+    // Active state: the button fills in accent while a timer is running, so the
+    // owner can see at a glance that it is armed.
+    const sleepBtn = el('button', {
+      class: `player-btn player-sleep-btn${sleepTimerActive() ? ' active' : ''}`,
+      type: 'button',
+      'aria-label': sleepTimerActive() ? 'Viloläge aktivt' : 'Viloläge',
+      title: 'Viloläge',
+      'aria-pressed': sleepTimerActive() ? 'true' : 'false',
+      html: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5l3 1.8"/></svg>',
+      onclick: openSleepTimerSheet,
+    });
+
     const headerLine = el('div', { class: 'player-header' },
+      sleepBtn,
       headerSpacer,
       live
         ? el('div', { class: 'player-sub', text: cur._srProgramTitle || cur.subtitle || 'Direkt' })
