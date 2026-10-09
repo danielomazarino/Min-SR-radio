@@ -10587,3 +10587,150 @@ All files restored by checksum (`9f854b12…`, `8bc80302…`, `c052c524…`).
   the DVR row); the 13px → 11px arithmetic in §3 is a prediction, not a measurement.
 - **Dark theme was not exercised.** The ring fill is `var(--surface)`, so it tracks
   the theme by construction, but only the light theme was rendered.
+
+---
+
+## 2026-10-09 (WS81) — slider dot drift fixed, ±15 s gaps and arrow-mark sizes equalised
+
+**Status: DEPLOYED.** Source `b3d2edf`, artifacts `65223ed`, build id **`b3d2edf`**.
+Suite **669/669**. CSS `styles.a1cf7359.css`, JS `app.cf7aa9cf.js`.
+
+### The owner's instruction, verbatim
+
+OWNER, 2026-10-09:
+> "in the 773B2e5 it doesn't look perfect, so fix 1, 2 and 3 test -> build -> push
+>  to deploy in one pass"
+
+"The three" are the three items from the WS80 observation report, in the order the
+owner ranked them there.
+
+---
+
+### 1. The slider dot drifted to the right of the fill — the one real defect
+
+**MEASURED** (driving the app's own paint code, not an estimate):
+
+| position | fill ends at | dot centre at | drift |
+|---|---|---|---|
+| 0 % | 0 | 0 | 0 |
+| 25 % | 99 | 102.5 | **+3.5px** |
+| 50 % | 198 | 205 | **+7.0px** |
+| 75 % | 297 | 307.5 | **+10.5px** |
+| 85 % (the owner's screenshot) | 336.6 | 348.5 | **+11.9px** |
+| 100 % (live edge) | 396 | 410 | **+14.0px** |
+
+The drift was exactly **`position × 14px`** — worst at the live edge, which is
+precisely when the `−30 min` offset badge is on screen and the dot is furthest
+from where the fill says you are.
+
+**CAUSE — one position, two references** (AGENTS.md §3):
+
+- the **track** (`.seek-bar::before`, `left: 0; right: 0`) and the **thumb**
+  (`position: absolute`) resolve against the bar's **padding box**;
+- the **fill** was the only **normal-flow** child, so `width: f%` resolved against
+  the **content box** — which `.dvr-bar { padding-right: 14px }` (BUG B) shrinks
+  by exactly 14px.
+
+**FIX:** `.seek-fill` becomes `position: absolute; left: 0; top: 50%;
+transform: translateY(-50%)`, so it shares the track's box **by construction**.
+`padding-right: 14px` is left **untouched**, so BUG B's guarantee ("the thumb
+cannot reach the LIVE label zone") is unchanged.
+
+**Verified on the built page at 390px: drift 0.00 at every position, including
+f = 1.**
+
+**A first attempt was rejected, and why.** The initial fix moved the 14px reserve
+from `padding-right` to a negative `margin-right`. It did remove the drift, but it
+also shifted the **track** 14px right of the content box and under the LIVE pill —
+trading one defect for another. A second attempt computed a track/content width
+ratio in JS; a mutation check showed that a **hardcoded** ratio would have passed
+the guard silently (§5), so it was abandoned. Making the boxes agree removes the
+arithmetic entirely.
+
+---
+
+### 2. The ±15 s ink gaps were unequal
+
+**MEASURED** at 390px with the real `.dvr` row:
+
+| gap | before | after |
+|---|---|---|
+| skip ↔ ±15 s | 32.33px | 36.33px |
+| ±15 s ↔ play | 43.33px | 39.33px |
+
+**CAUSE:** WS76's `-4px / +4px` margin pair. WS76's requirement was "balance the
+±15 s gap" — but it balanced the **button boxes** (which already had a uniform
+12px flex gap) rather than the **ink**, and the ±15 s button is 36px wide around a
+20px glyph. A box-level balance cannot produce an ink-level balance when the two
+neighbours have different ink widths.
+
+**FIX:** the margins are now `0px`. The pre-existing uniform 12px flex gap then
+produces **equal ink gaps** (36.33 / 39.33 / 39.33 / 36.33 — symmetric), and the
+row's total width is unchanged.
+
+---
+
+### 3. The four arrow marks were three different sizes
+
+| element | before | after |
+|---|---|---|
+| skip mark | **30 × 26** rounded rect | **36 × 36** rounded rect |
+| ±15 s mark | **36** circle | **36** circle |
+| play mark | **44** circle | **44** circle (unchanged, deliberately) |
+
+All four arrow marks are now pixel-identical frames with identical 20px glyphs.
+`border-radius` stays `9px`, so the skip mark is still a **rounded rectangle**
+(9 is well under half the 36px side) — the shape language that distinguishes skip
+from step is preserved; only the size is unified. 36 × 36 still fits inside the
+36 × 44 button, so WS78's "every point inside the rectangle is clickable" property
+holds.
+
+**The play button stays 44px.** It is the primary action and deliberately the
+largest thing in the row; shrinking it is a different change and was not
+requested. It is now the **one** deliberate exception rather than one of three
+arbitrary sizes.
+
+---
+
+### Tests: 669 (2 restated, 3 added)
+
+- **fixpass BUG B** — restated in intent (the reserve survives unchanged) **and
+  hardened**, because a mutation survived and showed why: its raw-text regex was
+  satisfied by the **WS81 comment in `styles.css` that quotes
+  `padding-right: 14px`** even after the real rule became `0px`. It now asserts
+  against **comment-stripped** CSS. **This is the WS43b anchor trap and AGENTS.md
+  §2 in one**: a test that matches prose instead of a rule reports green while the
+  property is gone.
+- **ws76 nudge guard** — restated: the required margins are now `0px`; net-zero is
+  still asserted so the row cannot shift.
+- **3 new WS81 guards** — the fill is positioned (not in flow); all four arrow
+  marks are 36 × 36; the play button stays 44.
+
+**Mutation proof: 7 mutants, ALL KILLED, zero survived, zero NO-OPs** — fill back
+to in-flow (the original defect); skip rect back to 30 × 26; rect 36 wide but 26
+tall; rect radius 18px (a pill, shape lost); play button shrunk to 36 (over-
+equalised); the ±15 s nudge re-introduced; BUG B's `padding-right` removed.
+Files restored by checksum (`02a45818…`, `8bc80302…`).
+
+---
+
+### NOT verified
+
+- **iPhone rendering.** The owner must confirm the build id reads **`b3d2ed5`**-style
+  short id **`b3d2edf`** under Info, and that the slider dot now sits at the fill's
+  end, the arrows are evenly spaced, and the four marks look like one family.
+- **The drag itself was not exercised on a touch device** — the drift was measured
+  by driving the paint maths and reading layout, which is what the defect was about,
+  but the *feel* of dragging the corrected slider is untested.
+- **Dark theme** was what the owner's screenshots used; the fix is
+  position/geometry, so it is theme-independent, but only dark was rendered.
+
+### A note on the process
+
+Item 1 is the fourth consecutive pass on this control across WS77–WS81, and the
+pattern is worth recording: **each pass measured a real quantity and then
+interpreted it as "the centre" or "the position" without asking against which
+reference the user's eye was comparing.** WS77 centred the arc circle, WS79 the
+mass centroid, WS80 the bounding edge, WS81 the *reference box*. Three of the four
+were genuinely wrong. When a defect keeps surviving fixes, the productive question
+is not "is this value right?" but **"what is being compared to what?"**
