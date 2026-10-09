@@ -10042,3 +10042,64 @@ restored to its original 44px assertion.
   not visible while playing.
 - The extended player's cover is now 77px; the panel's own height grows with it.
   Not measured against a very long programme title on the device.
+
+---
+
+## 2026-10-09 (WS76) — a thin green ring on the ±15 s buttons, and a balanced gap
+
+**Status: DEPLOYED.** Source `ff3a0d6`, artifacts `6f501c6`, live build id
+**`ff3a0d6`**. Suite **647/647**. Live CSS `styles.130e96cf.css` (md5
+`feac811a…`), JS `app.8367ab1a.js`.
+
+### The owner's request, verbatim
+
+OWNER, 2026-10-09:
+> "on the iphone screen a challenge is that +- 15 seconds button are feeling wise
+> to close to the play button. it also looks as they are closer to it than to the
+> skip buttons. I'm thinking that we should make a thin round circular marking in
+> the same green accent colour as the circular arrows around them and move them
+> slightly towards the skip buttons. the whole circles should then be clickable."
+
+Also, the same message: the build id is no longer on the screen but is still
+under **Info**, and the owner is content to keep it that way ("for the clean
+look"). **No change** — the WS75 `body:has(.player.visible) .build-line {
+display: none }` stays, and the id remains in the About/Info overlay.
+
+### Cause of the asymmetry (measured, not guessed)
+
+The transport gap is a flat 12px, but the ±15 s button is **36px wide around a
+20px glyph**, so its glyph sat **20px** from the play circle yet **28px** from
+the skip glyph. That 8px asymmetry is precisely "closer to play than to the
+skips".
+
+### The fix
+
+| change | file | why |
+|---|---|---|
+| `.dvr-step-btn` draws a **1.5px accent ring** | `styles.css` | an absolutely-positioned **36×36** square pseudo-element with `border-radius: 50%`. A `border` on the 36×44 button would render an **ellipse**, not a circle. Same technique the playing-icon ring uses. |
+| the **whole button** is the click target | `styles.css` | the ring is `pointer-events: none` and belongs to the button, so a tap anywhere on the button (circle or padding) activates it — the visible circle reads as the thing you press. |
+| a **net-zero margin pair** on each ±15 s button | `styles.css` | inner `−4px` toward play, outer `+4px` toward the skip: the button moves **4px outward** while the row width is **unchanged**. A wider *gap* would move it away from *both* neighbours, which is the opposite of the request. |
+| the transport row is tagged `.dvr` on a DVR channel; the two ±15 s buttons get `.dvr-step-back` / `.dvr-step-fwd` | `app.js` | the nudge is **scoped** to the DVR row, so the podcast's 3-button row (no skips) keeps a uniform gap instead of shifting off centre. |
+
+**Measured after (5-button DVR row, 390px):** ±15 s ring → play circle **16px**
+(was 20); ±15 s ring → skip glyph **16px** (was 28). Balanced, 4px further from
+play, row width unchanged at 236px.
+
+### Tests
+
+`tests/ws76-transport-ring.test.mjs` (new, +5). Guards assert the circle is
+square (so `border-radius: 50%` is a circle, not an ellipse), the ring is a thin
+accent border that is not its own hit target, the nudge is an equal-and-opposite
+(net-zero) margin pair pointing the right way, the `.dvr` class is added only on
+a DVR channel, and the base gap / button widths are unchanged. Each proven red by
+mutation (drop the ring; flip the nudge signs; drop the `.dvr` class; make the
+ring an ellipse).
+
+### NOT DONE / not verified
+
+- **iPhone rendering is unverified.** All numbers are Chromium measurements. The
+  owner should confirm build `ff3a0d6` on the iPhone 13: a thin green ring on
+  both ±15 s buttons, sitting evenly between play and the skip buttons.
+- **The nudge is not observable in headless Chromium**, because `isDvr` is false
+  without a real DVR stream, so the live row never receives `.dvr` there. The
+  margins were verified by the CSS arithmetic and by a driven 5-button probe.
