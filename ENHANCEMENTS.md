@@ -10692,7 +10692,7 @@ arbitrary sizes.
 
 ---
 
-### Tests: 669 (2 restated, 3 added)
+### Tests: 666 → 669 (2 restated, 3 added)
 
 - **fixpass BUG B** — restated in intent (the reserve survives unchanged) **and
   hardened**, because a mutation survived and showed why: its raw-text regex was
@@ -10714,11 +10714,48 @@ Files restored by checksum (`02a45818…`, `8bc80302…`).
 
 ---
 
+### Deploy verification — the seven checks, each run separately
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Suite green **and the count went up** | **PASS** — 669/669, up from 666 |
+| 2 | Whole diff read, every changed file named | **PASS** — `styles.css` + 3 test files. **`app.js` did not change** (not in the diff at all) |
+| 3 | Driven in the browser, asserted on the **rendered DOM** | **PASS** — drift, ink gaps and all four mark sizes read back from live layout at 390px |
+| 4 | The stated defect actually fixed, against the owner's own words | **PASS** — dot at the fill's end; arrows evenly spaced; marks one family |
+| 5 | Nothing else moved | **PASS** — BUG B `padding-right: 14px` intact, play width 44, flex gap 12, ring 22 |
+| 6 | The **built** bundle contains the change | **PASS** — grepped `dist/styles.a1cf7359.css`, not the source |
+| 7 | Commit on the remote; assets serve; live == dist | **PASS** — see evidence below |
+
+**Evidence for check 7, re-measured after the deploy settled:**
+
+- `git log -1 --format='%h' -- app.js styles.css` → `b3d2edf`, and live
+  `app.cf7aa9cf.js` reports `APP_BUILD = 'b3d2edf'` — **the served id matches the
+  commit that produced it.**
+- Live `styles.a1cf7359.css`: **HTTP 200, 150 563 bytes, md5
+  `02a458187f77877b0ed69d8ac623e6de` — byte-identical to `dist/`.**
+- The live CSS was read back and contains all three fixes, with BUG B's
+  `padding-right: 14px` still present.
+- `index.html` and `sw.js` both reference `app.cf7aa9cf.js` / `styles.a1cf7359.css`
+  and nothing else.
+
+**What this establishes, and what it does not.** The checks prove the right code is
+**served**. They say nothing about how it **behaves** — that is still the owner's
+iPhone (see NOT verified).
+
+### Post-deploy housekeeping
+
+`bb09101` — deleted `app.ef8af54f.js` and `styles.e748a1ad.css`, the two bundles
+superseded by this build. Neither was referenced by `index.html` or `sw.js`
+(checked before deleting), so both were dead weight; the build had left their
+deletions unstaged. Live was re-verified healthy after this push.
+
+---
+
 ### NOT verified
 
-- **iPhone rendering.** The owner must confirm the build id reads **`b3d2ed5`**-style
-  short id **`b3d2edf`** under Info, and that the slider dot now sits at the fill's
-  end, the arrows are evenly spaced, and the four marks look like one family.
+- **iPhone rendering.** The owner must confirm the build id reads **`b3d2edf`**
+  under Info, and that the slider dot now sits at the fill's end, the arrows are
+  evenly spaced, and the four marks look like one family.
 - **The drag itself was not exercised on a touch device** — the drift was measured
   by driving the paint maths and reading layout, which is what the defect was about,
   but the *feel* of dragging the corrected slider is untested.
