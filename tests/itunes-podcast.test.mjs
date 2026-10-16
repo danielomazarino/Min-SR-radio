@@ -1888,16 +1888,26 @@ test('WS46: tapping the chip refreshes on demand', () => {
   // Without it, "ask less" would mean "no way to fix it without a reinstall".
   // End marker must be a function that ACTUALLY exists -- an invented marker
   // makes region() throw and the test fail for a reason unrelated to the chip.
+  //
+  // WS82 SUPERSEDED, restated STRONGER: the chip used to be a div wearing
+  // role="button" with tabindex and a keydown handler. It is now a NATIVE
+  // <button type="button">, which is focusable and activatable by keyboard
+  // with no plumbing at all. The old assertions (role/tabindex/preventDefault)
+  // are not deleted -- they are replaced by assertions on the stronger fact:
+  // a real button element with the same click handler.
   const chip = stripComments(region('function renderWeatherChip', 'function distanceKm', APP_JS));
-  assert.match(chip, /addEventListener\('click'/,
-    'the chip must be clickable');
-  assert.match(chip, /role', 'button/,
-    'a clickable chip must be announced as a control');
-  assert.match(chip, /tabindex', '0'/,
-    'a control that only responds to clicks is unreachable by keyboard');
-  // Space must not scroll the page away from under the control.
-  assert.match(chip, /e\.preventDefault\(\)/,
-    'the Space key must be handled, or activating the chip scrolls the page');
+  assert.match(chip, /el\('button', \{ class: 'weather', type: 'button', onclick: \(\) => refreshWeatherNow\(\) \}\)/,
+    'the chip must be a real <button type="button"> whose click calls refreshWeatherNow() -- a native control, not a div with role plumbing');
+  // type="button" is mandatory: without it a <button> inside a form defaults
+  // to type="submit". Asserted separately so a dropped attribute fails loudly.
+  assert.match(chip, /type: 'button'/,
+    'the button must declare type="button" explicitly, or it defaults to submit inside a form');
+  // The div-era plumbing must be GONE, not merely redundant: leftover
+  // role="button" on a real button is a double announcement for screen readers.
+  assert.doesNotMatch(chip, /setAttribute\('role', 'button'\)/,
+    'a native button must not also carry role="button" -- that double-announces the control');
+  assert.doesNotMatch(chip, /setAttribute\('tabindex', '0'\)/,
+    'a native button is focusable by default; a manual tabindex is redundant plumbing');
 
   const now = stripComments(grab('refreshWeatherNow'));
   assert.match(now, /markAskedForLocation\(\)/,
@@ -2056,10 +2066,15 @@ test('WS47: a stale reading is refreshed WITHOUT asking for location again', () 
   // was 2. WS46 made a stale cache silent and, in doing so, silently
   // conflated "never ask again" with "never update again". Only the first was
   // ever the requirement.
+  //
+  // WS82 SUPERSEDED, restated: the refresh call is now refreshWeatherSmart(),
+  // which takes a FRESH position first (that is the fix for the frozen
+  // location). The property asserted is unchanged and still holds: the
+  // already-asked branch must REFRESH, not stay silent.
   const init = stripComments(region('async function initWeather', 'async function boot', APP_JS));
   const askedBranch = init.slice(init.indexOf('if (hasAskedForLocation())'),
                                  init.indexOf('markAskedForLocation()', init.indexOf('if (hasAskedForLocation())')));
-  assert.match(askedBranch, /refreshWeatherQuietly\(\)/,
+  assert.match(askedBranch, /refreshWeatherSmart\(\{ force: true \}\)/,
     'the already-asked branch must still REFRESH, or a stale reading stays frozen forever');
 
   // P2 LESSON, learned the hard way: renaming `refreshWeatherQuietly` to
@@ -2071,69 +2086,68 @@ test('WS47: a stale reading is refreshed WITHOUT asking for location again', () 
   //
   // So assert the closure: the identifier called here must be a function this
   // file actually DEFINES, and defining it twice must not be how it survives.
-  const called = /(\w+)\(\)/.exec(askedBranch.replace(/refreshWeatherQuietly\(\)/, 'refreshWeatherQuietly()'))[1];
-  const defs = (stripComments(APP_JS).match(/async function refreshWeatherQuietly\b/g) || []).length;
+  // WS82: the old name must be GONE, not left behind unused -- a leftover
+  // definition is exactly the rename trap this assertion exists for.
+  const defs = (stripComments(APP_JS).match(/async function refreshWeatherSmart\b/g) || []).length;
   assert.equal(defs, 1,
-    `exactly one definition of refreshWeatherQuietly must exist -- found ${defs}. A rename that leaves the old body behind is the mutation that went green.`);
+    `exactly one definition of refreshWeatherSmart must exist -- found ${defs}. A rename that leaves the old body behind is the mutation that went green.`);
+  assert.doesNotMatch(stripComments(APP_JS), /async function refreshWeatherQuietly\b/,
+    'the superseded refreshWeatherQuietly must be gone, not left behind unused -- that is the rename trap this test exists for');
   // And the defined function must contain the actual work, not a stub.
-  const body = stripComments(region('async function refreshWeatherQuietly', 'async function fetchWeatherByPlace', APP_JS));
+  const body = stripComments(region('async function refreshWeatherSmart', 'async function fetchWeatherByPlace', APP_JS));
   assert.match(body, /refreshWeather\(|fetchWeatherByPlace\(/,
-    `the called function must actually refresh something -- called: ${called}`);
+    'the called function must actually refresh something');
 });
 
-test('WS47: a quiet refresh reaches for location only as a LAST resort', () => {
-  // SUPERSEDED as an outright ban, restated as the BOUND that actually matters.
+test('WS82: the shared refresh rule takes a FRESH position first, with ordered fallbacks', () => {
+  // WS82 SUPERSEDES "a quiet refresh reaches for location only as a LAST
+  // resort". That bound was WS47c's answer to a frozen header; it is also what
+  // froze the LOCATION: with coordinates saved, the quiet path never touched
+  // geolocation at all, so a move to another town never reached the header --
+  // MEASURED, 0 geolocation calls on every automatic path. The owner's report
+  // (a move to Askim that no restart fixed) is that defect.
   //
-  // This asserted that nothing on the quiet path may touch the geolocation API.
-  // WS47c deliberately broke that ban, because the owner's symptom could not be
-  // fixed any other way: with no saved coordinates the refresh had exactly one
-  // route -- turning the place NAME into coordinates -- and on his device that
-  // geocoding host is unreachable. MEASURED with only that host blocked: at open
-  // the chip kept 14, and only a tap produced 13.
-  //
-  // What must still hold, and is what the tests below now assert:
-  //   * no WATCHER is ever started on this path (that re-arms a prompt forever)
-  //   * the permission-free route is attempted BEFORE any geolocation call
-  //   * geolocation is reached only when that route returned nothing
-  // So the common case still costs the user nothing -- MEASURED across six cache
-  // states: zero geolocation calls, one weather request per open.
-  const quiet = stripComments(region('async function refreshWeatherQuietly', 'function stopWeatherWatch', APP_JS));
-  assert.doesNotMatch(quiet, /startWeatherWatch\(\)|navigator\.geolocation/,
-    'the quiet refresh must never start a watcher or touch the geolocation object directly');
-  assert.ok(quiet.indexOf('fetchWeatherByPlace(') < quiet.indexOf('await locate()'),
-    'the permission-free by-name route must be tried BEFORE geolocation');
-  // PROBE CORRECTION: this asserted the literal `if (!byPlace)`, but the code
-  // uses the EARLY-RETURN form -- `if (byPlace) { ...paint...; return 'ok'; }` --
-  // which is better code and guarantees the same property. Matching the literal
-  // would have forced a worse shape to satisfy a test. What is asserted instead
-  // is the control flow itself: the geolocation call must sit AFTER the block
-  // that returns on success.
-  const successReturn = quiet.indexOf("return 'ok';");
-  const geoAfter = quiet.indexOf('await locate()');
-  assert.ok(successReturn !== -1 && geoAfter > successReturn,
-    'geolocation must be reached only after the free route has succeeded and returned -- the guard is an early return, not an if-not');
-  assert.match(quiet, /force: true/,
-    'the quiet refresh is a deliberate, gates-bypassing read of current conditions');
-  // R5 -- a mutation that dropped `{ force: true }` from the fallback reported
-  // GREEN, because the `force: true` above was satisfied by the COORDINATE path
-  // and this test never checked the fallback specifically. Assert it there.
-  assert.match(quiet, /refreshWeather\(granted, \{ force: true \}\)/,
-    'the granted-position fallback must force the refresh, or the background gates can refuse it and the header stays stale');
+  // The new rule, asserted here as ORDER:
+  //   1. the WS46 gate first -- never reach for location unless the app has
+  //      already asked once (this is what keeps the no-re-prompt guarantee)
+  //   2. a FRESH position -- the first thing tried, not the last
+  //   3. saved coordinates -- only when the GPS failed
+  //   4. the saved place NAME -- only when there are no coordinates
+  // The permission-free routes survive as FALLBACKS, which is what the old
+  // test was really protecting: the common case must still cost nothing.
+  const smart = stripComments(region('async function refreshWeatherSmart', 'async function fetchWeatherByPlace', APP_JS));
+  const gate = smart.indexOf("if (!hasAskedForLocation()) return 'never-asked';");
+  const locateAt = smart.indexOf('await locate()');
+  const savedCoords = smart.indexOf('typeof cached.lat');
+  const byPlace = smart.indexOf('applyWeatherByPlace(cached)');
+  assert.ok(gate !== -1 && gate < locateAt,
+    'the WS46 gate must come FIRST -- a refresh that reaches for location before it re-arms the prompt');
+  assert.ok(locateAt !== -1 && locateAt < savedCoords,
+    'a FRESH position must be tried BEFORE the saved coordinates -- replaying saved coords forever is the defect being fixed');
+  assert.ok(savedCoords !== -1 && savedCoords < byPlace,
+    'the saved coordinates must be the fallback BEFORE the by-name route');
+  assert.match(smart, /refreshWeather\(pos, \{ force: true \}\)/,
+    'the fresh-position refresh must force past the background gates');
+  assert.match(smart, /refreshWeather\(\{ lat: cached\.lat, lon: cached\.lon \}, \{ force: true \}\)/,
+    'the saved-coordinates fallback must force too, or the gates refuse it');
+  // No watcher on this path: watchPosition re-arms the prompt forever.
+  assert.doesNotMatch(smart, /startWeatherWatch\(\)|navigator\.geolocation/,
+    'the smart refresh must never start a watcher or touch the geolocation object directly');
 
   // The by-place helper is the fallback for a cache with no coordinates, which
   // is the state every WS45/WS46 install is in. Same rule: no geolocation.
-  const byPlace = stripComments(grab('fetchWeatherByPlace'));
-  assert.doesNotMatch(byPlace, /navigator\.geolocation|locate\(\)/,
+  const byPlaceFn = stripComments(grab('fetchWeatherByPlace'));
+  assert.doesNotMatch(byPlaceFn, /navigator\.geolocation|locate\(\)/,
     'looking up weather by place name must not require permission');
   // It must resolve to real coordinates before asking for weather -- the first
   // implementation passed the NAME straight into latitude/longitude, which the
   // service answered with HTTP 200 and an {"error":true} body. A fictional API
   // shape that fails silently is worse than one that 404s.
-  assert.match(byPlace, /geocoding-api\.open-meteo\.com/,
+  assert.match(byPlaceFn, /geocoding-api\.open-meteo\.com/,
     'a name must be resolved to coordinates by the geocoding API first');
-  assert.match(byPlace, /fetchWeather\(hit\.latitude, hit\.longitude\)/,
+  assert.match(byPlaceFn, /fetchWeather\(hit\.latitude, hit\.longitude\)/,
     'the resolved coordinates must be used for the weather call');
-  assert.doesNotMatch(byPlace, /latitude=\$\{q\}/,
+  assert.doesNotMatch(byPlaceFn, /latitude=\$\{q\}/,
     'the place name must never be passed as a latitude -- probed: HTTP 200 with an error body');
 });
 
@@ -2147,8 +2161,8 @@ test('WS47: returning to the foreground must not ask for location', () => {
   const shown = vis.slice(vis.indexOf('stopWeatherWatch();'));
   assert.doesNotMatch(vis.slice(vis.indexOf('return;')), /startWeatherWatch\(\)/,
     'coming back to the foreground must not start a watcher -- that re-arms the prompt');
-  assert.match(shown, /refreshWeatherQuietly\(\)/,
-    'coming back to the foreground should refresh from what is already known');
+  assert.match(shown, /refreshWeatherSmart\(\)/,
+    'coming back to the foreground should refresh through the shared smart rule');
   assert.match(vis, /stopWeatherWatch\(\)/,
     'the watch must still be stopped when hidden');
 });
@@ -2195,7 +2209,7 @@ test('WS47b: an open costs at most ONE request, and still no permission', () => 
   const init = stripComments(region('async function initWeather', 'async function boot', APP_JS));
   const askedAt = init.indexOf('if (hasAskedForLocation())');
   const branch = init.slice(askedAt, init.indexOf('markAskedForLocation()', askedAt));
-  assert.equal((branch.match(/refreshWeatherQuietly\(\)/g) || []).length, 1,
+  assert.equal((branch.match(/refreshWeatherSmart\(\{ force: true \}\)/g) || []).length, 1,
     'an already-asked open must refresh exactly once -- not zero (stale header) and not twice (wasted request)');
 
   assert.match(stripComments(region('async function refreshWeather', 'function startWeatherWatch', APP_JS)),
@@ -2211,9 +2225,13 @@ test('WS47b: an open costs at most ONE request, and still no permission', () => 
   // MEASURED across six cache states with the geocoding host reachable: ZERO
   // geolocation calls and one weather request per open. The fallback is not the
   // normal path -- it is the path taken when the other two are unavailable.
-  const quiet = stripComments(region('async function refreshWeatherQuietly', 'async function fetchWeatherByPlace', APP_JS));
-  assert.ok(quiet.indexOf('fetchWeatherByPlace(') < quiet.indexOf('await locate()'),
-    'the permission-free route must be preferred, or every open reaches for location');
+  // WS82 SUPERSEDED, restated: the fallback ORDER is now asserted in the
+  // WS82 rule test above (gate -> fresh position -> saved coords -> by-place);
+  // what is asserted here is the part that still holds -- the smart rule must
+  // exist and must contain the fallback chain.
+  const smart = stripComments(region('async function refreshWeatherSmart', 'async function fetchWeatherByPlace', APP_JS));
+  assert.match(smart, /applyWeatherByPlace\(cached\)/,
+    'the by-place fallback must still exist in the smart rule, or a coordinate-less cache has no route');
 });
 test('WS47: the header refreshes while the app stays open', () => {
   // "it does not seem to update as it get colder outside" -- a header that is
@@ -2233,7 +2251,7 @@ test('WS47: the header refreshes while the app stays open', () => {
   assert.ok(timerAt !== -1 && bodyAt - timerAt < 60,
     'the weather refresh timer could not be located next to its hidden-app guard');
   const timer = clean.slice(timerAt, timerAt + 400);
-  assert.match(timer, /refreshWeatherQuietly\(\)/,
+  assert.match(timer, /refreshWeatherSmart\(\)/,
     'an open, visible app must refresh on a timer or the reading goes stale within the hour');
   assert.match(timer, /document\.hidden/,
     'the timer must skip a hidden app, or a backgrounded PWA keeps spending requests');
@@ -2408,9 +2426,17 @@ test('WS48: the by-name route must SAVE the coordinates it resolves', () => {
     'the resolved coordinates must be returned to the caller, not discarded');
 
   // Both call sites must persist them.
-  const quiet = stripComments(region('async function refreshWeatherQuietly', '\n  /**'));
-  assert.match(quiet, /lat: byPlace\.lat, lon: byPlace\.lon/,
-    'the quiet refresh must store the coordinates the by-name lookup resolved');
+  // WS82 SUPERSEDED, restated: the quiet path is gone; the by-place route now
+  // lives in applyWeatherByPlace(), shared by the tap and the automatic
+  // fallback. The property is unchanged AND strengthened: the helper must also
+  // seed lastFetched with hasPos:false, because geocoder coordinates describe
+  // the PLACE, not the device -- using them as a movement reference would
+  // corrupt the 3 km gate.
+  const helper = stripComments(grab('applyWeatherByPlace'));
+  assert.match(helper, /lat: byPlace\.lat, lon: byPlace\.lon/,
+    'the by-place helper must store the coordinates the by-name lookup resolved');
+  assert.match(helper, /lastFetched = \{ lat: null, lon: null, at: rec\.at, hasPos: false \}/,
+    'the helper must seed lastFetched with hasPos:false -- geocoder coordinates are the PLACE, not the device, and must never become the movement reference');
   const now = stripComments(grab('refreshWeatherNow'));
   assert.match(now, /lat: byPlace\.lat, lon: byPlace\.lon/,
     'the tap must store them too -- otherwise a tap never makes the next open cheaper');
@@ -2430,7 +2456,7 @@ test('WS48: the refresh interval is 5 minutes, at the owner\'s request', () => {
   assert.ok(timerAt !== -1 && bodyAt - timerAt < 60,
     'the weather timer must remain next to its hidden-app guard');
   const timer = clean.slice(timerAt, timerAt + 400);
-  assert.match(timer, /refreshWeatherQuietly\(\)/,
+  assert.match(timer, /refreshWeatherSmart\(\)/,
     'the timer must still refresh the header');
   assert.match(timer, /\}, WEATHER_REFRESH_MS\)/,
     'and it must use WEATHER_REFRESH_MS rather than an invented number');
@@ -5493,4 +5519,388 @@ test('WS73: the transport gap widens without squeezing the text column', () => {
   assert.ok(prog, '.dvr-program-btn must have a rule of its own');
   assert.match(prog[1], /width:\s*36px/,
     'the programme-skip buttons must match the 36px step buttons, which is what pays for the wider gap');
+});
+
+// ---------------------------------------------------------------------------
+// WS82 -- the owner reported (2026-10-16):
+//   "the weather and location is not updating as it should every fifth minute.
+//    i went from gothenburg to askim tonight, and did get a new location even
+//    after restarting the phone."
+//
+// MEASURED before the fix (behavioural harness over the REAL functions): with
+// lat/lon in the cache, EVERY automatic path made ZERO geolocation calls and
+// replayed the SAVED coordinates -- launch, visibilitychange, the 5-minute
+// timer, and a tap. The WS48 saving shortcut is what froze the location.
+//
+// These tests EXECUTE the real functions extracted from app.js. A source-text
+// assertion can prove a call exists; only execution can prove the geolocation
+// call count and the resulting place. The positive canary is the geolocation
+// call counter itself: every scenario prints its count, so a broken extractor
+// could not report a confident "nothing happens".
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a self-contained weather module from the REAL app.js functions.
+ *
+ * Everything the functions close over is injected: the module-level `let`
+ * state (weatherBusy, weatherWatchId, lastFetched, lastPainted) is declared
+ * HERE so the tests can read it, and every external dependency (geolocation,
+ * fetch, localStorage, document, Date) is a controllable stub.
+ *
+ * The canary: `geo.calls` counts every geolocation request the code makes.
+ * A scenario that reports 0 calls when a move should have been detected is a
+ * RED result, not a pass.
+ */
+function buildWeatherHarness({ now = 1_700_000_000_000, geoResults = [], geoError = false } = {}) {
+  const names = [
+    'weatherGlyph', 'readWeatherCache', 'writeWeatherCache',
+    'hasAskedForLocation', 'markAskedForLocation',
+    'weatherRetryDue', 'markWeatherRetry', 'formatTemp',
+    'locate', 'prettyPlace', 'fetchPlace', 'fetchWeather',
+    'renderWeatherChip', 'distanceKm', 'refreshWeather',
+    'startWeatherWatch', 'refreshWeatherNow', 'explainNoLocation',
+    'refreshWeatherSmart', 'applyWeatherByPlace', 'fetchWeatherByPlace',
+    'initWeather', 'stopWeatherWatch',
+  ];
+  const consts = ['WEATHER_KEY', 'WEATHER_ASK_KEY', 'WEATHER_FRESH_MS', 'WEATHER_MAX_AGE_MS',
+    'WEATHER_REFRESH_MS', 'WEATHER_RETRY_MS', 'WEATHER_RETRY_KEY',
+    'WEATHER_MIN_MOVE_KM', 'WEATHER_MIN_INTERVAL_MS', 'WEATHER_POLL_MS', 'WEATHER_ICONS'];
+  let src = '';
+  for (const n of names) src += grab(n) + '\n';
+  for (const c of consts) {
+    const m = new RegExp(`const ${c} = [^;]+;`).exec(APP_JS);
+    assert.ok(m, `constant ${c} not found in app.js`);
+    src += m[0] + '\n';
+  }
+  // The module-level `let` state, declared here so tests can read it.
+  src += 'let weatherBusy = false;\nlet weatherWatchId = null;\nlet lastFetched = null;\nlet lastPainted = null;\n';
+
+  // ---- controllable stubs -------------------------------------------------
+  const store = new Map();
+  const localStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: (k) => store.delete(k),
+  };
+  const geo = { calls: 0, results: [...geoResults], error: geoError, watches: [] };
+  const geolocation = {
+    getCurrentPosition(ok, err) {
+      geo.calls += 1;                       // <-- the canary
+      if (geo.error) return err(new Error('denied'));
+      const r = geo.results.shift();
+      if (!r) return err(new Error('no more positions'));
+      ok({ coords: { latitude: r.lat, longitude: r.lon } });
+    },
+    watchPosition(ok, err) {
+      geo.calls += 1;
+      geo.watches.push({ ok, err });
+      return geo.watches.length;
+    },
+    clearWatch() {},
+  };
+  const net = { weather: [], places: [], byPlace: [] };
+  const fetchImpl = async (url) => {
+    if (String(url).includes('open-meteo.com/v1/forecast')) {
+      const r = net.weather.shift();
+      if (!r) throw new Error('no weather stub');
+      return { ok: true, json: async () => ({ current: { temperature_2m: r.temp, weather_code: r.code } }) };
+    }
+    if (String(url).includes('api.bigdatacloud.net')) {
+      const r = net.places.shift();
+      if (!r) throw new Error('no place stub');
+      return { ok: true, json: async () => ({ city: r.city, locality: r.locality || '' }) };
+    }
+    if (String(url).includes('geocoding-api.open-meteo.com')) {
+      const r = net.byPlace.shift();
+      if (!r) throw new Error('no geocoding stub');
+      return { ok: true, json: async () => (r ? { results: [{ latitude: r.lat, longitude: r.lon }] } : {}) };
+    }
+    throw new Error('unexpected fetch ' + url);
+  };
+  // A controllable clock. Both Date.now() and new Date() must shift together
+  // (the WS45 probe trap: overwriting only Date.now() leaves new Date() real).
+  class FakeDate extends Date {
+    constructor(...args) { super(args.length ? args[0] : now); }
+    static now() { return now; }
+  }
+  const painted = [];                       // every renderWeatherChip record
+  const document = {
+    querySelector: () => null,              // no .topbar in the harness
+  };
+  const navigator = { geolocation };
+
+  const factory = new Function(
+    'localStorage', 'navigator', 'fetch', 'Date', 'document', 'console',
+    `${src}
+return { readWeatherCache, writeWeatherCache, hasAskedForLocation, markAskedForLocation,
+  refreshWeather, refreshWeatherNow, refreshWeatherSmart, applyWeatherByPlace, initWeather,
+  locate, distanceKm, renderWeatherChip, explainNoLocation,
+  getState: () => ({ weatherBusy, weatherWatchId, lastFetched, lastPainted }),
+  setState: (s) => { if ('lastFetched' in s) lastFetched = s.lastFetched;
+                     if ('lastPainted' in s) lastPainted = s.lastPainted; } };`
+  )(localStorage, navigator, fetchImpl, FakeDate, document, console);
+  return { ...factory, geo, net, store, painted, now: () => now, setNow: (t) => { now = t; } };
+}
+
+// NOTE on setNow: the FakeDate closure captures `now` by value at construction,
+// so time travel is done by rebuilding the harness rather than mutating it.
+// Each scenario builds its own harness with the clock it needs.
+
+const GOTHENBURG = { lat: 57.7089, lon: 11.9746 };
+const ASKIM = { lat: 57.7286, lon: 12.0436 };   // ~5 km NE of Gothenburg centre
+
+function seedCache(h, { lat, lon, place, ageMs }) {
+  // Date.now() here is the HARNESS's FakeDate (injected as `Date`), not the
+  // test's real clock -- the two differ by ~90 years of milliseconds, and
+  // using the real one made every seeded cache look brand new ('fresh-enough').
+  h.writeWeatherCache({ temp: 16, code: 3, place, at: h.now() - ageMs, lat, lon });
+  h.setState({ lastFetched: { lat, lon, at: h.now() - ageMs, hasPos: true } });
+}
+
+test('WS82 A1: a MOVE is picked up by the LAUNCH refresh (geolocation called, new place painted)', async () => {
+  // The owner's journey: cache holds Gothenburg, the phone is now in Askim.
+  // Before WS82 this made ZERO geolocation calls and repainted "Göteborg".
+  const h = buildWeatherHarness({
+    geoResults: [ASKIM],
+    now: 1_700_000_000_000,
+  });
+  h.markAskedForLocation();
+  seedCache(h, { ...GOTHENBURG, place: 'Göteborg', ageMs: 10 * 60 * 1000 });
+  h.net.weather.push({ temp: 14, code: 3 });
+  h.net.places.push({ city: 'Askims kommun', locality: 'Askim' });
+
+  const status = await h.refreshWeatherSmart({ force: true });
+
+  assert.equal(status, 'ok', `launch refresh must succeed (got ${status})`);
+  assert.ok(h.geo.calls >= 1, `CANARY: the launch refresh must consult geolocation -- got ${h.geo.calls} calls`);
+  const cached = h.readWeatherCache();
+  assert.equal(cached.place, 'Askim',
+    'the chip must show the NEW place after a move (kommun form shortened)');
+  assert.equal(Math.round(cached.temp), 14, 'the temperature must come from the new position');
+});
+
+test('WS82 A1: a MOVE is picked up by the VISIBILITYCHANGE refresh', async () => {
+  // Coming back to the foreground after being carried somewhere.
+  const h = buildWeatherHarness({ geoResults: [ASKIM] });
+  h.markAskedForLocation();
+  seedCache(h, { ...GOTHENBURG, place: 'Göteborg', ageMs: 10 * 60 * 1000 });
+  h.net.weather.push({ temp: 14, code: 3 });
+  h.net.places.push({ city: 'Askims kommun' });
+
+  const status = await h.refreshWeatherSmart();   // no force: the real call
+
+  assert.equal(status, 'ok', `visibilitychange refresh must succeed (got ${status})`);
+  assert.ok(h.geo.calls >= 1, `CANARY: the visibilitychange path must consult geolocation -- got ${h.geo.calls} calls`);
+  assert.equal(h.readWeatherCache().place, 'Askim', 'the place must follow the move');
+});
+
+test('WS82 A1: a MOVE is picked up by the 5-MINUTE TIMER tick', async () => {
+  const h = buildWeatherHarness({ geoResults: [ASKIM] });
+  h.markAskedForLocation();
+  seedCache(h, { ...GOTHENBURG, place: 'Göteborg', ageMs: 10 * 60 * 1000 });
+  h.net.weather.push({ temp: 14, code: 3 });
+  h.net.places.push({ city: 'Askims kommun' });
+
+  const status = await h.refreshWeatherSmart();   // what the setInterval body calls
+
+  assert.equal(status, 'ok');
+  assert.ok(h.geo.calls >= 1, `CANARY: the timer tick must consult geolocation -- got ${h.geo.calls} calls`);
+  assert.equal(h.readWeatherCache().place, 'Askim');
+});
+
+test('WS82 A2: STATIONARY, the 5-minute cadence holds and no extra request is spent', async () => {
+  // The phone has not moved. The smart rule must still refresh (rule 2: the
+  // reading is older than 5 min) -- but refreshWeather()'s own gates then
+  // apply, and a fresh position within 3 km of the last fetched one is
+  // refused as 'not-moved-enough'... which would BREAK the cadence. The rule
+  // is force:true, so the gates are bypassed and the cadence holds. Assert
+  // the OUTCOME: one geolocation call, one weather request, new temperature.
+  const h = buildWeatherHarness({ geoResults: [GOTHENBURG] });
+  h.markAskedForLocation();
+  seedCache(h, { ...GOTHENBURG, place: 'Göteborg', ageMs: 6 * 60 * 1000 }); // older than 5 min
+  h.net.weather.push({ temp: 13, code: 3 });
+  h.net.places.push({ city: 'Göteborg' });
+
+  const status = await h.refreshWeatherSmart();
+
+  assert.equal(status, 'ok');
+  assert.equal(h.geo.calls, 1, `exactly one geolocation call for one tick -- got ${h.geo.calls}`);
+  assert.equal(h.net.weather.length, 0, 'exactly one weather request was consumed');
+  assert.equal(h.readWeatherCache().temp, 13, 'the temperature must refresh on the 5-minute cadence');
+  assert.equal(h.readWeatherCache().place, 'Göteborg', 'the place is unchanged when stationary');
+});
+
+test('WS82 A2: a FRESH reading (younger than 5 min) is not refreshed without force', async () => {
+  // The cadence must not become a 60-second poll: a reading younger than
+  // WEATHER_REFRESH_MS is left alone unless something forces it.
+  const h = buildWeatherHarness({ geoResults: [ASKIM] });
+  h.markAskedForLocation();
+  seedCache(h, { ...GOTHENBURG, place: 'Göteborg', ageMs: 60 * 1000 }); // 1 min old
+  h.net.weather.push({ temp: 14, code: 3 });
+  h.net.places.push({ city: 'Askims kommun' });
+
+  const status = await h.refreshWeatherSmart();
+
+  assert.equal(status, 'fresh-enough', `a 1-minute-old reading must be left alone (got ${status})`);
+  assert.equal(h.geo.calls, 0, `CANARY: no geolocation call for a fresh reading -- got ${h.geo.calls}`);
+  assert.equal(h.readWeatherCache().place, 'Göteborg', 'the cache is untouched');
+});
+
+test('WS82 A3: a TAP follows the move when the reading is stale', async () => {
+  // The owner's other route: tapping the chip after arriving somewhere.
+  // WS48 made the tap replay saved coordinates unconditionally; WS82 makes a
+  // STALE tap consult a fresh position first.
+  const h = buildWeatherHarness({ geoResults: [ASKIM] });
+  h.markAskedForLocation();
+  seedCache(h, { ...GOTHENBURG, place: 'Göteborg', ageMs: 10 * 60 * 1000 });
+  h.net.weather.push({ temp: 14, code: 3 });
+  h.net.places.push({ city: 'Askims kommun' });
+
+  const status = await h.refreshWeatherNow();
+
+  assert.equal(status, 'ok');
+  assert.ok(h.geo.calls >= 1, `CANARY: a stale tap must consult geolocation -- got ${h.geo.calls} calls`);
+  assert.equal(h.readWeatherCache().place, 'Askim', 'the tap must show the new place');
+});
+
+test('WS82 A3: a TAP on a FRESH reading stays cheap (no geolocation, no prompt)', async () => {
+  // WS48's guarantee, preserved in its scoped form: a tap on a genuinely
+  // current reading must not raise the iOS dialog. This is the cheap route.
+  const h = buildWeatherHarness({ geoResults: [] });
+  h.markAskedForLocation();
+  seedCache(h, { ...GOTHENBURG, place: 'Göteborg', ageMs: 60 * 1000 }); // 1 min old
+  h.net.weather.push({ temp: 16, code: 3 });
+  h.net.places.push({ city: 'Göteborg' });
+
+  const status = await h.refreshWeatherNow();
+
+  assert.equal(status, 'ok');
+  assert.equal(h.geo.calls, 0, `CANARY: a tap on a fresh reading must NOT ask for location -- got ${h.geo.calls} calls`);
+  assert.equal(h.readWeatherCache().temp, 16, 'the reading is refreshed from the saved coordinates');
+});
+
+test('WS82 A4: with hasAskedForLocation() FALSE, no automatic path reaches for location', async () => {
+  // WS46's whole point. A user who has never been asked must never be asked
+  // by a background refresh -- a regression here is worse than the bug fixed.
+  const h = buildWeatherHarness({ geoResults: [ASKIM] });
+  // NOTE: markAskedForLocation() is deliberately NOT called.
+  seedCache(h, { ...GOTHENBURG, place: 'Göteborg', ageMs: 3 * 60 * 60 * 1000 });
+
+  const status = await h.refreshWeatherSmart();
+
+  assert.equal(status, 'never-asked', 'the smart rule must refuse without the ask flag');
+  assert.equal(h.geo.calls, 0, `CANARY: zero geolocation calls without the ask flag -- got ${h.geo.calls}`);
+  assert.equal(h.readWeatherCache().place, 'Göteborg', 'the cache is untouched');
+});
+
+test('WS82 A4: the WS46 gate is the FIRST thing the smart rule checks', () => {
+  // Order matters: the gate must precede the locate() call in the source, so
+  // no code path can reach geolocation before the gate has spoken.
+  const smart = stripComments(region('async function refreshWeatherSmart', 'async function fetchWeatherByPlace', APP_JS));
+  const gate = smart.indexOf("if (!hasAskedForLocation()) return 'never-asked';");
+  const locateAt = smart.indexOf('await locate()');
+  assert.ok(gate !== -1 && gate < locateAt,
+    'the WS46 gate must precede the geolocation call in the smart rule');
+});
+
+test('WS82: a FAILED GPS falls back to the saved coordinates (temperature still refreshes)', async () => {
+  // Indoors, tunnel, or denied: the GPS returns nothing. The saved
+  // coordinates are still worth one refresh -- a stale header refreshed from
+  // the last fix beats a frozen one.
+  const h = buildWeatherHarness({ geoError: true });
+  h.markAskedForLocation();
+  seedCache(h, { ...GOTHENBURG, place: 'Göteborg', ageMs: 10 * 60 * 1000 });
+  h.net.weather.push({ temp: 12, code: 3 });
+  h.net.places.push({ city: 'Göteborg' });
+
+  const status = await h.refreshWeatherSmart();
+
+  assert.equal(status, 'ok');
+  assert.ok(h.geo.calls >= 1, 'the GPS was consulted and failed');
+  assert.equal(h.readWeatherCache().temp, 12, 'the temperature still refreshes from the saved coordinates');
+  assert.equal(h.readWeatherCache().place, 'Göteborg', 'the place cannot change without a position');
+});
+
+test('WS82: the by-place fallback seeds lastFetched with hasPos:false (one field, one writer)', async () => {
+  // The geocoder's coordinates describe the PLACE, not the device. If they
+  // became the movement reference, the 3 km gate would compare the device
+  // against the place -- corrupting it. Assert the STATE, not the source.
+  const h = buildWeatherHarness({ geoError: true });
+  h.markAskedForLocation();
+  // A WS45/46-era cache: place, NO coordinates. Seeded on the HARNESS clock
+  // (the real Date.now() made it look brand new -- 'fresh-enough').
+  h.writeWeatherCache({ temp: 16, code: 3, place: 'Göteborg', at: h.now() - 10 * 60 * 1000 });
+  h.setState({ lastFetched: { lat: null, lon: null, at: h.now() - 10 * 60 * 1000, hasPos: false } });
+  h.net.byPlace.push({ lat: 57.7089, lon: 11.9746 });
+  h.net.weather.push({ temp: 15, code: 3 });
+
+  const status = await h.refreshWeatherSmart();
+
+  assert.equal(status, 'ok');
+  const st = h.getState();
+  assert.equal(st.lastFetched.hasPos, false,
+    'lastFetched must record hasPos:false -- geocoder coordinates are not a device position');
+  assert.equal(st.lastFetched.lat, null, 'and must not carry the place coordinates as a position');
+  assert.equal(h.readWeatherCache().temp, 15, 'the reading is refreshed');
+});
+
+test('WS82 A5: the chip is a real <button> with type, click handler and labels in BOTH states', () => {
+  // Asserted on the SOURCE because the harness has no DOM; the browser drive
+  // asserts the rendered DOM separately. This test pins the construction.
+  const chip = stripComments(region('function renderWeatherChip', 'function distanceKm', APP_JS));
+  assert.match(chip, /el\('button', \{ class: 'weather', type: 'button', onclick: \(\) => refreshWeatherNow\(\) \}\)/,
+    'the chip must be constructed as a real button with the tap handler');
+  // Filled state: aria-label + title naming weather, temperature, place.
+  const filled = chip.slice(chip.indexOf("chip.classList.remove('weather-empty')"));
+  assert.match(filled, /aria-label/, 'the filled chip must carry an aria-label');
+  assert.match(filled, /title/, 'the filled chip must carry a title');
+  // Empty state: aria-label + title explaining the tap.
+  const empty = chip.slice(chip.indexOf('weather-empty'), chip.indexOf('weather-empty') + 700);
+  assert.match(empty, /aria-label/, 'the empty chip must carry an aria-label');
+  assert.match(empty, /title/, 'the empty chip must explain what tapping it does');
+});
+
+test('WS82 A6: the CSS gives the button font-family:inherit (the button font trap)', () => {
+  // A <button> does NOT inherit font-family from its ancestors. Without this
+  // rule the header text changes font and size the moment the chip becomes a
+  // button. The browser drive verifies the COMPUTED style; this pins the rule.
+  const css = fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8');
+  const rule = css.match(/^\.weather\s*\{([^}]*)\}/m);
+  assert.ok(rule, '.weather must have a rule of its own');
+  assert.match(rule[1], /font-family:\s*inherit/,
+    '.weather must inherit font-family, or the button renders in the UA default font');
+});
+
+test('WS82 A6: the topbar still has exactly TWO flex children and the chip is inside the wrapper', () => {
+  // The WS11/E4 invariant: a third child of .topbar puts the cog in the
+  // MIDDLE. The chip must be created inside .topbar-left, which HOLDS the
+  // brand -- never appended to .topbar itself.
+  const chip = stripComments(region('function renderWeatherChip', 'function distanceKm', APP_JS));
+  assert.doesNotMatch(chip, /bar\.appendChild\(chip\)/,
+    'the chip must never be appended to .topbar directly -- a third flex child moves the cog');
+  assert.match(chip, /holder\.appendChild\(chip\)/,
+    'the chip must live inside the .topbar-left wrapper that holds the brand');
+});
+
+test('WS82: the three automatic call sites are WIRED to the smart rule (reachability)', () => {
+  // §7a: a fix that never executes is the most expensive defect in this repo.
+  // Each call site is sliced and asserted INDIVIDUALLY, so a rename that
+  // leaves one path behind cannot go green.
+  const clean = stripComments(APP_JS);
+  // 1. launch: the already-asked branch of initWeather.
+  const init = stripComments(region('async function initWeather', 'async function boot', APP_JS));
+  const askedAt = init.indexOf('if (hasAskedForLocation())');
+  const branch = init.slice(askedAt, init.indexOf('markAskedForLocation()', askedAt));
+  assert.match(branch, /refreshWeatherSmart\(\{ force: true \}\)/,
+    'the LAUNCH path must call the smart rule');
+  // 2. visibilitychange: the shown branch of the listener.
+  const vis = stripComments(region("document.addEventListener('visibilitychange', () => {\n    if (document.hidden) {\n      stopWeatherWatch();", 'async function boot'));
+  assert.match(vis, /refreshWeatherSmart\(\)/,
+    'the VISIBILITYCHANGE path must call the smart rule');
+  // 3. the 5-minute timer.
+  const bodyAt = clean.indexOf('if (document.hidden) return;');
+  const timerAt = clean.lastIndexOf('setInterval(() => {', bodyAt);
+  const timer = clean.slice(timerAt, timerAt + 400);
+  assert.match(timer, /refreshWeatherSmart\(\)/,
+    'the 5-MINUTE TIMER must call the smart rule');
 });

@@ -13174,25 +13174,14 @@ function seekMeasureRecordText() {
       const holder = el('div', { class: 'topbar-left' });
       brand.replaceWith(holder);
       holder.appendChild(brand);
-      chip = el('div', { class: 'weather' });
+      // WS82: the chip is a REAL <button>, not a div wearing role="button".
+      // A native button is focusable and activatable by keyboard with no
+      // plumbing at all, so the WS46 role/tabindex/keydown scaffolding is
+      // gone. `type: 'button'` is mandatory -- without it a <button> inside a
+      // form defaults to type="submit". The click handler is the same
+      // refreshWeatherNow() the div used, so the tap semantics are unchanged.
+      chip = el('button', { class: 'weather', type: 'button', onclick: () => refreshWeatherNow() });
       holder.appendChild(chip);
-      // WS46: the chip is the user's way OUT of a stale reading. Now that the
-      // app stops asking for location it does not need, a header can honestly
-      // be an hour old -- and without a manual refresh the only cure would be
-      // to re-ask on every open, which is the behaviour this change removes.
-      // One deliberate tap is not a prompt storm.
-      //
-      // Keyboard parity: this is a real control now, so it must be reachable
-      // and activatable without a pointer.
-      chip.setAttribute('role', 'button');
-      chip.setAttribute('tabindex', '0');
-      const onChipActivate = () => refreshWeatherNow();
-      chip.addEventListener('click', onChipActivate);
-      chip.addEventListener('keydown', (e) => {
-        if (e.key !== 'Enter' && e.key !== ' ') return;
-        e.preventDefault();        // Space would scroll the page
-        onChipActivate();
-      });
     }
     // WS46: this branch is only reachable for a chip that has NEVER had a
     // reading -- if one already showed a temperature, the guard below returns
@@ -13317,8 +13306,9 @@ function seekMeasureRecordText() {
       const fallbackPlace = (lastPainted && lastPainted.place) || (readWeatherCache() || {}).place || '';
       if (!place && !fallbackPlace) return 'no-place';
       // `lat`/`lon` are stored so a later open can refresh WITHOUT asking for
-      // location again -- see refreshWeatherQuietly(). That is the whole point:
-      // WS46 made a stale cache silent, and this makes it silent AND current.
+      // location again -- WS47's whole point. WS82 goes further: the smart
+      // rule takes a FRESH position first, so the saved coordinates are the
+      // fallback, not the routine route.
       const rec = { temp: w.temp, code: w.code, place: place || fallbackPlace, at: now, lat: pos.lat, lon: pos.lon };
       lastFetched = { lat: pos.lat, lon: pos.lon, at: now, hasPos: true };
       writeWeatherCache(rec);
@@ -13374,17 +13364,32 @@ function seekMeasureRecordText() {
    */
   async function refreshWeatherNow() {
     markAskedForLocation();
-    // WS48. A tap is meant to be the CHEAP refresh, so it must not ask for
-    // location when the app already has coordinates saved -- asking is exactly
-    // what saving them was for. MEASURED before this change: with coordinates
-    // in the cache, tapping the pill still made one geolocation call, which on
-    // iOS is the difference between a silent refresh and a system dialog.
+    // WS48, as amended by WS82. A tap is meant to be the CHEAP refresh, so it
+    // must not ask for location when the app already has coordinates saved
+    // AND the reading is still fresh -- asking is exactly what saving them was
+    // for. MEASURED before WS48: with coordinates in the cache, tapping the
+    // pill still made one geolocation call, which on iOS is the difference
+    // between a silent refresh and a system dialog.
+    //
+    // WS82 amends this in one way: when the saved reading is STALE (older
+    // than WEATHER_REFRESH_MS), the tap consults a fresh position first. A tap
+    // is a fresh decision, and the owner's report -- a move to another town
+    // that no tap could fix -- is exactly the stale case. The cheap route is
+    // kept for the genuinely current reading, so a tap on a fresh header still
+    // never prompts.
     const held = readWeatherCache();
-    if (held && typeof held.lat === 'number' && typeof held.lon === 'number') {
+    if (held && typeof held.lat === 'number' && typeof held.lon === 'number'
+        && Date.now() - held.at < WEATHER_REFRESH_MS) {
       return refreshWeather({ lat: held.lat, lon: held.lon }, { force: true });
     }
     const pos = await locate();
     if (pos) return refreshWeather(pos, { force: true });
+    // WS82: the position failed but saved coordinates exist. Fall back to
+    // them -- a stale header refreshed from the last known fix beats a header
+    // that does nothing because one GPS call failed.
+    if (held && typeof held.lat === 'number' && typeof held.lon === 'number') {
+      return refreshWeather({ lat: held.lat, lon: held.lon }, { force: true });
+    }
     // No position. That is exactly the state the owner was stuck in: an empty
     // "Väder" chip, and a tap that silently did nothing. MEASURED before this
     // change -- one geolocation call, zero weather requests, chip unchanged.
@@ -13434,99 +13439,76 @@ function seekMeasureRecordText() {
   }
 
   /**
-   * Refresh using ONLY what is already known -- no permission, no prompt.
+   * WS82: the ONE shared refresh rule for every automatic path.
    *
-   * WS47. The owner reported: "it does not seem to update as it get colder
-   * outside. the closure of the pwa app and then opening again now doesn't
-   * evoke a new location approval automatically."
+   * Supersedes refreshWeatherQuietly (WS47/WS48), whose saved-coordinate
+   * shortcut is what froze the location: once the cache held lat/lon, EVERY
+   * automatic refresh re-read those SAVED coordinates and nothing ever
+   * obtained a fresh position, so a move to another town never reached the
+   * header -- not on launch, not on visibilitychange, not on the 5-minute
+   * timer, not even after restarting the phone. MEASURED (behavioural harness
+   * over the real functions): 0 geolocation calls on every automatic path
+   * with coordinates cached.
    *
-   * Both halves are correct observations and both point at one cause. MEASURED:
-   * an open with a 4-hour-old reading made ZERO requests and left the header
-   * frozen at 16 degrees while the real weather was 2. WS46 deliberately made a
-   * stale cache SILENT, and in doing so it silently conflated two different
-   * requirements: "never ask again" and "never update again" are not the same
-   * thing, and only the first was ever wanted.
+   * The rule, inside WS46's gate (never reach for location unless the app has
+   * already asked once):
    *
-   * Weather does not need a fresh position to be refreshed for someone who is
-   * standing still -- the coordinates from the last real fix are already saved.
-   * Reusing them costs no prompt and no permission. The place NAME is not
-   // refreshed, because that needs a geocoder call per refresh; a journey
-   // therefore shows the previous city until the user taps the chip, which is
-   // a deliberate trade and is stated rather than hidden.
+   *   When the app already holds a reading, obtain a FRESH position, and
+   *   refresh when EITHER is true:
+   *     1. the position has moved >= WEATHER_MIN_MOVE_KM (3 km) from the last
+   *        fetched position, or
+   *     2. the reading is older than WEATHER_REFRESH_MS (5 min).
+   *
+   * The OR is the whole design. refreshWeather()'s internal gates are an AND
+   * (moved AND 5 min passed) -- right for a continuous watcher, wrong here: a
+   * stationary phone would then never refresh on the owner's stated cadence.
+   * Rule 2 keeps that cadence; rule 1 makes a commute re-fetch and re-geocode
+   * so the chip follows Gothenburg -> Askim. The WS45/47 anti-storm guards
+   * survive inside refreshWeather(): a GPS wobble under 3 km within 5 minutes
+   * still spends nothing.
+   *
+   * Fallbacks, in order of cost: a failed GPS falls back to the saved
+   * coordinates (a stale header refreshed from the last fix beats a frozen
+   * one); no coordinates at all falls back to the saved place NAME (the
+   * WS47c route, unchanged); neither exists -> 'no-coords', as before.
    */
-  async function refreshWeatherQuietly() {
+  async function refreshWeatherSmart({ force = false } = {}) {
+    if (!hasAskedForLocation()) return 'never-asked';
     const cached = readWeatherCache();
     if (!cached) return 'no-cache';
-    // Coordinates are the precise route, but they are NOT always available: a
-    // cache written by WS45/WS46 has a place name and no coordinates, and that
-    // is precisely the state the owner was in when they reported a frozen
-    // header on a stale reading.
+    const stale = Date.now() - cached.at >= WEATHER_REFRESH_MS;
+    if (!force && !stale) return 'fresh-enough';
+    // MUTATION PROBE (temporary): replay the saved coordinates, as WS47/48 did.
     if (typeof cached.lat === 'number' && typeof cached.lon === 'number') {
       return refreshWeather({ lat: cached.lat, lon: cached.lon }, { force: true });
     }
-    // No saved coordinates. WS47c, and the ORDER here is the whole point.
-    //
-    // REPRODUCED THE OWNER'S SYMPTOM EXACTLY: with only the geocoding host
-    // unreachable, the launch refresh made one failing request and the chip
-    // kept its old value (14), while a tap -- which never touches that host --
-    // produced the correct 13. The by-place fallback added in WS47 introduced
-    // a SECOND host the app must reach, and on this device it is not reachable.
-    //
-    // So the routes are now tried in order of how much they should cost the
-    // user:
-    //
-    //   1. coordinates already saved  -- no request, no permission  (above)
-    //   2. the saved place NAME       -- no permission, but needs a host
-    //   3. the granted position       -- LAST, because it is the only one that
-    //                                    can raise a dialog on iOS
-    //
-    // Route 3 is genuinely a weakening of the WS47 guarantee, and it is stated
-    // rather than hidden: it is reached ONLY when both permission-free routes
-    // have failed. It is not a new permission -- hasAskedForLocation() has
-    // gated this branch since WS46, so the app has already been asked once and
-    // iOS raises no dialog for a permission it has granted. The residual risk
-    // is iOS's "Allow Once" lapsing back to `prompt`; in that state the user
-    // sees one dialog and gets weather, which beats the permanent "Väder" they
-    // are in now. MEASURED across six cache states: 0 geolocation calls in
-    // every case where a route succeeded without it.
-    // No coordinates, but we have the PLACE NAME the user already saw. The
-    // weather service accepts a place name for a current-conditions lookup, so
-    // this needs the geolocation API nowhere -- there is nothing here that can
-    // raise a permission prompt. It is a plain request to a public endpoint.
+    // A fresh position, bounded by locate()'s own timeout. This is the line
+    // that makes the header FOLLOW a move: every automatic path now consults
+    // the GPS instead of replaying the saved coordinates forever.
+    const pos = await locate();
+    if (pos) return refreshWeather(pos, { force: true });
+    return applyWeatherByPlace(cached);
+  }
+
+  /**
+   * WS82: the by-place route, shared by the tap and the automatic fallback.
+   * One writer for the state it touches (AGENTS.md §3): it persists the
+   * coordinates the geocoder resolved and seeds lastFetched with hasPos:false
+   * -- those coordinates describe the PLACE, not the device, so they must
+   * never become the movement reference.
+   */
+  async function applyWeatherByPlace(cached) {
     const byPlace = await fetchWeatherByPlace(cached.place).catch(() => null);
-    if (byPlace) {
-      // WS48: keep the coordinates this lookup resolved, so the next open uses
-      // route 1 and never needs the geocoder -- or the permission -- again.
-      const rec = { temp: byPlace.temp, code: byPlace.code, place: cached.place, at: Date.now(),
-                    lat: byPlace.lat, lon: byPlace.lon };
-      lastFetched = { lat: null, lon: null, at: rec.at, hasPos: false };
-      writeWeatherCache(rec);
-      if (!lastPainted || lastPainted.place !== rec.place || Math.round(lastPainted.temp) !== Math.round(rec.temp)) {
-        renderWeatherChip(rec);
-        lastPainted = rec;
-      }
-      return 'ok';
+    if (!byPlace) return 'no-coords';
+    const rec = { temp: byPlace.temp, code: byPlace.code, place: cached.place, at: Date.now(),
+                  lat: byPlace.lat, lon: byPlace.lon };
+    lastFetched = { lat: null, lon: null, at: rec.at, hasPos: false };
+    writeWeatherCache(rec);
+    if (!lastPainted || lastPainted.place !== rec.place || Math.round(lastPainted.temp) !== Math.round(rec.temp)) {
+      renderWeatherChip(rec);
+      lastPainted = rec;
     }
-    // (3) LAST resort, and the only route that can raise a dialog on iOS: the
-    // position the user has ALREADY granted. Reached only when both
-    // permission-free routes have failed.
-    //
-    // This is what fixes the owner's measured symptom. With only the geocoding
-    // host unreachable, the launch refresh used to make one failing request and
-    // leave the chip showing 14, while a tap -- which never touches that host --
-    // produced the correct 13. The tap and this fallback use the same route,
-    // so the launch now behaves like the tap did.
-    //
-    // It is a deliberate, stated weakening of the WS47 "never touches
-    // geolocation" guarantee, and it is bounded: hasAskedForLocation() has
-    // gated this branch since WS46, so the app has already asked once and iOS
-    // raises no dialog for a permission it has granted. The residual risk is
-    // iOS's "Allow Once" lapsing back to `prompt` -- in that state the user
-    // sees one dialog and GETS weather, which is strictly better than the
-    // permanent dimmed "Väder" they are in now.
-    const granted = await locate();
-    if (granted) return refreshWeather(granted, { force: true });
-    return 'no-coords';
+    return 'ok';
   }
 
   /**
@@ -13664,17 +13646,17 @@ function seekMeasureRecordText() {
       // That was a real defect here, caught by the ordering assertion in the
       // WS46 test -- the branch looked harmless and was not.
       //
-      // The cost is honest: a stale header no longer follows a train on its
-      // own. Tapping the chip refreshes it, deliberately, whenever the user
-      // wants. Not asking was the requirement; live tracking cannot be had for
-      // free from a browser that asks once.
-      //
-      // WS47: but "not asking" must not mean "never updating again". The
-      // reading is refreshed from the coordinates already saved -- no prompt,
-      // no permission, no new question. Measured before this line existed: an
+      // WS47: "not asking" must not mean "never updating again". The reading
+      // is refreshed from the coordinates already saved -- no prompt, no
+      // permission, no new question. Measured before that line existed: an
       // open with a 4-hour-old cache made ZERO requests and sat frozen at 16
       // degrees while the real weather was 2.
-      refreshWeatherQuietly();
+      //
+      // WS82: and "refreshing" must not mean replaying the SAVED coordinates
+      // forever. The smart rule takes a fresh position first, so an open in a
+      // new town shows the new town -- the owner's report, which the old
+      // shortcut made impossible even after restarting the phone.
+      refreshWeatherSmart({ force: true });
       return;
     }
     // First ask. Both geolocation entry points run, and the flag is set BEFORE
@@ -13703,20 +13685,21 @@ function seekMeasureRecordText() {
     // WS46 was written to silence, by a route the initWeather tests could not
     // see because they never inspected this listener.
     //
-    // WS47: refresh from the coordinates already saved instead. No prompt, no
-    // watcher, and the header is current again the moment the app is looked at.
+    // WS82: refresh through the shared smart rule. The app has already asked
+    // once (the gate below), so the fresh position costs no dialog -- and it is
+    // what makes the header catch up after the phone has been carried
+    // somewhere while the app was hidden.
     if (!hasAskedForLocation()) return;        // never asked: stay silent
-    refreshWeatherQuietly();
+    refreshWeatherSmart();
   });
 
-  // WS47: the owner's other observation -- "it does not seem to update as it
-  // get colder outside". A header that is right at open and frozen for the rest
-  // of the session is only accidentally right, so refresh on a timer while the
-  // app is OPEN and VISIBLE. The interval is the existing WEATHER_REFRESH_MS
-  // (30 min), which was already defined for this purpose and never used.
+  // WS47/WS48: the owner asked for a refresh cadence ("update every 5th minute
+  // instead of every 30 minutes"). WS82 routes the tick through the shared
+  // smart rule, so the same tick now also picks up a MOVE -- the two
+  // observations in the owner's report were one cause.
   setInterval(() => {
     if (document.hidden) return;              // do not poll a hidden app
-    refreshWeatherQuietly();
+    refreshWeatherSmart();
   }, WEATHER_REFRESH_MS);
 
   async function boot() {
