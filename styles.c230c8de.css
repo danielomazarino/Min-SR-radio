@@ -138,6 +138,11 @@ body {
   color: var(--text-secondary);
   font-size: 13px;
   white-space: nowrap;
+  /* WS82: the chip is a real <button> now. A button does NOT inherit
+     font-family from its ancestors -- it uses the UA default -- so without
+     this line the header text changes font and size the moment the element
+     becomes a button. Verified on the rendered DOM, not in source. */
+  font-family: inherit;
   /* WS46: tapping the chip forces a refresh, so it must LOOK tappable and
      must have a real touch target. The transparent background is what stopped
      the WS43b red-row overlay from bleeding into this element. */
