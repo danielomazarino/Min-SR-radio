@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '3cb1a4b';
+  const APP_BUILD = 'a2824da';
   // WS80 (owner, 2026-10-09): "change under Info from Daniel Omazarino to Danielo
   // Mazarino". Corrected at the single source -- this constant is what the About
   // overlay's `.about-version` line renders (`${APP_BUILD} · Utvecklad av ...`).
@@ -13478,15 +13478,17 @@ function seekMeasureRecordText() {
     if (!cached) return 'no-cache';
     const stale = Date.now() - cached.at >= WEATHER_REFRESH_MS;
     if (!force && !stale) return 'fresh-enough';
-    // MUTATION PROBE (temporary): replay the saved coordinates, as WS47/48 did.
-    if (typeof cached.lat === 'number' && typeof cached.lon === 'number') {
-      return refreshWeather({ lat: cached.lat, lon: cached.lon }, { force: true });
-    }
     // A fresh position, bounded by locate()'s own timeout. This is the line
     // that makes the header FOLLOW a move: every automatic path now consults
     // the GPS instead of replaying the saved coordinates forever.
     const pos = await locate();
     if (pos) return refreshWeather(pos, { force: true });
+    // GPS failed (indoors, tunnel, denied). The saved coordinates are still
+    // worth one refresh -- the temperature follows, the place cannot change
+    // without a position, which is honest.
+    if (typeof cached.lat === 'number' && typeof cached.lon === 'number') {
+      return refreshWeather({ lat: cached.lat, lon: cached.lon }, { force: true });
+    }
     return applyWeatherByPlace(cached);
   }
 
