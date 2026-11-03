@@ -493,7 +493,12 @@ test('snapshot: listener accounting is present, per type, add and remove', () =>
   // programme and song for the playhead after a seek. It is registered ONCE at
   // module scope, which is why it cannot accumulate the way renderPlayer's
   // timeupdate listener used to (the WS1 leak).
-  assert.equal(addSites, 9, 'expected 9 audioEl.addEventListener source sites');
+  // WS83 added a 10th: the `loadedmetadata` listener that applies the
+  // remembered stop location. Same discipline — registered ONCE at module
+  // scope, counted with its own metaDiagCountAdd call. RESTATED per §7b: the
+  // requirement (every audioEl add site is counted) is unchanged; the count
+  // moves 9 → 10 because a new site legitimately exists.
+  assert.equal(addSites, 10, 'expected 10 audioEl.addEventListener source sites');
   assert.ok(countCalls >= addSites,
     'every audioEl.addEventListener site must have a matching metaDiagCountAdd call');
   // The surplus must be exactly the $player gesture registrations (one call

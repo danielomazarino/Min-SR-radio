@@ -172,6 +172,154 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     return typeof v === 'string' ? v.slice(0, max) : '';
   }
 
+  // ---------------- WS83: remembered stop locations ----------------
+  // OWNER, 2026-11-03: "when a play of a program or podcast is stopped, look
+  // for a solution where this timestamp is remembered for future restart as
+  // the stop location."
+  //
+  // OWNER DECISIONS (2026-11-03), recorded so they cannot drift:
+  //   1. Restart behaviour is ASK, never silent auto-resume: the app offers
+  //      "Fortsätt från M:SS" / "Börja om" and the owner chooses.
+  //   2. Scope: SR podcasts, iTunes podcasts and schedule episodes. Live
+  //      radio is excluded (live is live — there is no stop location) and
+  //      news clips are excluded (short, listened in one go).
+  //
+  // The store is a NEW namespaced-localStorage key, the same pattern as
+  // favourites. It shares no field with any existing state (§3: one field,
+  // one writer — nothing else writes or reads this key). Every access is
+  // try/catch-wrapped: private mode throws on both read and write, and a
+  // storage failure must never break playback.
+  const PLAYBACK_POSITIONS_KEY = 'minradio.playback-positions.v1';
+  // HEURISTICS, not measurements (§5: never hardcode a number to make a
+  // report go away). They are named and commented so a future session can
+  // question them instead of inheriting them as facts:
+  //   - RESUME_MIN_INTO_S: a position earlier than this is "just started" —
+  //     starting over IS resuming, so no prompt.
+  //   - RESUME_MIN_REMAINING_S: a position this close to the end counts as
+  //     finished — the entry is deleted and the next play starts from the top
+  //     silently.
+  //   - POSITIONS_TTL_MS / POSITIONS_CAP: retention. Episodes older than a
+  //     month are unlikely to be resumed mid-way; the cap bounds the store.
+  const RESUME_MIN_INTO_S = 30;
+  const RESUME_MIN_REMAINING_S = 30;
+  const POSITIONS_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+  const POSITIONS_CAP = 50;
+
+  function loadPlaybackPositions() {
+    try {
+      const raw = localStorage.getItem(PLAYBACK_POSITIONS_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+      const out = {};
+      const now = Date.now();
+      for (const [key, entry] of Object.entries(parsed)) {
+        if (!entry || typeof entry !== 'object') continue;
+        const pos = Number(entry.positionS);
+        if (!Number.isFinite(pos) || pos < 0) continue;
+        const saved = Number(entry.savedAt);
+        if (!Number.isFinite(saved) || now - saved > POSITIONS_TTL_MS) continue;
+        out[key] = {
+          positionS: pos,
+          durationS: Number.isFinite(Number(entry.durationS)) ? Number(entry.durationS) : null,
+          title: safeStr(entry.title, 160) || null,
+          savedAt: saved,
+        };
+      }
+      return out;
+    } catch {
+      return {}; // corrupted or unavailable storage — behave as "nothing saved"
+    }
+  }
+
+  function savePlaybackPositions(map) {
+    try {
+      // Oldest evicted first when over the cap.
+      const entries = Object.entries(map)
+        .sort((a, b) => (a[1].savedAt || 0) - (b[1].savedAt || 0))
+        .slice(-POSITIONS_CAP);
+      localStorage.setItem(PLAYBACK_POSITIONS_KEY, JSON.stringify(Object.fromEntries(entries)));
+      return true;
+    } catch {
+      return false; // private mode / quota — playback is never affected
+    }
+  }
+
+  /**
+   * The store key for one episode. SR episode ids are small integers; iTunes
+   * track ids are large. Prefixing BOTH providers means an SR id and an
+   * iTunes id can never compare equal — the same reason extGuardKey() exists.
+   * `provider` is 'sr' (default) or 'itunes'.
+   */
+  function playbackPositionKey(provider, id) {
+    return `${provider === 'itunes' ? 'itunes' : 'sr'}:${id}`;
+  }
+
+  /**
+   * Record the current playhead for the current episode, if it is one the
+   * owner asked to be remembered. Returns the saved entry (or null).
+   * Never throws; never touches playback.
+   */
+  function savePlaybackPosition() {
+    const cur = state.current;
+    // Scope gate: episodes only, and never a news broadcast. News plays as
+    // { kind:'episode', id:-1, isNewsBroadcast:true }, so BOTH the flag and a
+    // real positive id are required — a flag-only gate would let a future
+    // news shape with a real id leak in, and an id-only gate would miss the
+    // existing -1 sentinel.
+    if (!cur || cur.kind !== 'episode' || cur.isNewsBroadcast === true) return null;
+    if (!Number.isInteger(cur.id) || cur.id <= 0) return null;
+    const t = Number.isFinite(audioEl.currentTime) ? audioEl.currentTime : null;
+    if (t === null || t <= 0) return null;
+    const dur = Number.isFinite(audioEl.duration) && audioEl.duration > 0
+      ? audioEl.duration
+      : (Number.isFinite(cur.duration) && cur.duration > 0 ? cur.duration : null);
+    const key = playbackPositionKey(cur.provider === 'itunes' ? 'itunes' : 'sr', cur.id);
+    const positions = loadPlaybackPositions();
+    positions[key] = {
+      positionS: Math.floor(t),
+      durationS: dur != null ? Math.round(dur) : null,
+      title: safeStr(cur.title, 160) || null,
+      savedAt: Date.now(),
+    };
+    savePlaybackPositions(positions);
+    diagLog(`position-saved key=${key} t=${Math.floor(t)}`);
+    return positions[key];
+  }
+
+  /**
+   * The saved position for an episode, or null when there is nothing worth
+   * offering: no entry, too early in the episode, or effectively finished
+   * (the near-end case deletes the entry so the next play starts clean).
+   */
+  function savedResumePosition(provider, id, durationS) {
+    if (!Number.isInteger(id) || id <= 0) return null;
+    const key = playbackPositionKey(provider, id);
+    const entry = loadPlaybackPositions()[key];
+    if (!entry) return null;
+    if (entry.positionS < RESUME_MIN_INTO_S) return null;
+    const dur = Number.isFinite(durationS) && durationS > 0 ? durationS : entry.durationS;
+    if (dur != null && dur - entry.positionS < RESUME_MIN_REMAINING_S) {
+      // Effectively finished: forget it, so the next play starts from the top
+      // without a prompt for a position that has nothing left to offer.
+      const positions = loadPlaybackPositions();
+      delete positions[key];
+      savePlaybackPositions(positions);
+      return null;
+    }
+    return entry;
+  }
+
+  function clearPlaybackPosition(provider, id) {
+    if (!Number.isInteger(id) || id <= 0) return;
+    const key = playbackPositionKey(provider, id);
+    const positions = loadPlaybackPositions();
+    if (!(key in positions)) return;
+    delete positions[key];
+    savePlaybackPositions(positions);
+  }
+
+
   /**
    * A short Swedish date for a search row: "17 sep", "5 jan 2025".
    *
@@ -2076,6 +2224,12 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // Observe the window while HLS is playing. Cheap: only runs when a live
   // HLS track is active, piggybacks on timeupdate.
   metaDiagCountAdd('timeupdate');
+  // WS83: throttled position save during playback. The pause/stop/pagehide
+  // saves cover the deliberate exits; this one covers the exits nobody
+  // chooses — a crash, a killed tab, an OS reclaim. 15 s of loss is the
+  // worst case and is a heuristic, not a measurement (§5).
+  let lastPositionSaveAt = 0;
+  const POSITION_SAVE_INTERVAL_MS = 15000;
   audioEl.addEventListener('timeupdate', () => {
     if (state.current && state.current.kind === 'live'
       && state.current.transport === 'hls') {
@@ -2086,6 +2240,11 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // pause (position stays — the displayed track stays consistent).
     if (state.current && state.current.kind === 'episode') {
       updateEpisodeTrack();
+      const nowMs = Date.now();
+      if (nowMs - lastPositionSaveAt >= POSITION_SAVE_INTERVAL_MS) {
+        lastPositionSaveAt = nowMs;
+        savePlaybackPosition();
+      }
     }
   });
 
@@ -3774,6 +3933,27 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   }
 
   function playTrack(track) {
+    // ---- WS83: the ask-first resume gate ----
+    // OWNER DECISION (2026-11-03): restart behaviour is ASK, never silent
+    // auto-resume. An episode with a meaningful saved position opens the
+    // choice sheet BEFORE any playback starts; the tap that asked for the
+    // episode is honoured only after the owner chooses. The gate sits at the
+    // very top of playTrack so a prompt never mutates player state — the
+    // previous playback (if any) is untouched until a choice is made.
+    // Excluded: news (isNewsBroadcast), non-episode kinds, sentinel ids, and
+    // the paused-CURRENT track (tapping the paused episode must simply
+    // continue, not re-ask — the isCurrent guard).
+    if (track.kind === 'episode' && track.isNewsBroadcast !== true
+      && Number.isInteger(track.id) && track.id > 0
+      && !isCurrent(track.kind, track.id)
+      && track.__resumeDecided !== true) {
+      const entry = savedResumePosition(
+        track.provider === 'itunes' ? 'itunes' : 'sr', track.id, track.duration);
+      if (entry) {
+        openResumeSheet(track, entry);
+        return;
+      }
+    }
     // Any track transition invalidates both old episode resolution and state.
     // This is important for episode→episode, not just episode→live.
     stopEpisodeTracks();
@@ -3946,8 +4126,62 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     playTrack(track);
   }
 
+  // ---- WS83: the resume-choice sheet ----
+  // OWNER DECISION (2026-11-03): ASK, never silent auto-resume. The sheet
+  // follows the sleep-timer sheet's structure and CSS exactly (grab zone,
+  // header, option buttons) — no new styles. Both choices proceed through
+  // playTrack with __resumeDecided set, so the gate above lets them through
+  // exactly once; a dismissed sheet (✕ / swipe) starts NOTHING, which is the
+  // honest reading of "ask": no choice, no playback.
+  function openResumeSheet(track, entry) {
+    const overlay = el('div', { class: 'sheet-overlay' });
+    const sheet = el('div', { class: 'sheet sleep-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Fortsätt spela' });
+    const close = () => {
+      $sheetRoot.textContent = '';
+      document.body.style.overflow = '';
+    };
+    const proceed = (resume) => {
+      close();
+      if (resume) track.__resumeFromS = entry.positionS;
+      track.__resumeDecided = true;
+      playTrack(track);
+    };
+    const grabZone = el('div', { class: 'sheet-grab-zone' }, el('div', { class: 'sheet-grab' }));
+    const header = el('div', { class: 'sheet-header' },
+      el('div', { class: 'sheet-title', text: 'Fortsätt spela' }),
+      el('button', { class: 'sheet-close', type: 'button', 'aria-label': 'Stäng', text: '✕', onclick: close }));
+    const body = el('div', { class: 'sleep-body' });
+    body.appendChild(el('p', {
+      class: 'sleep-active',
+      text: `${track.title || 'Avsnittet'} — du stannade vid ${fmtDur(entry.positionS)}.`,
+    }));
+    body.appendChild(el('button', {
+      class: 'sleep-option', type: 'button',
+      text: `Fortsätt från ${fmtDur(entry.positionS)}`,
+      onclick: () => proceed(true),
+    }));
+    body.appendChild(el('button', {
+      class: 'sleep-option', type: 'button', text: 'Börja om',
+      onclick: () => proceed(false),
+    }));
+    sheet.appendChild(grabZone);
+    sheet.appendChild(header);
+    sheet.appendChild(body);
+    overlay.appendChild(sheet);
+    $sheetRoot.textContent = '';
+    $sheetRoot.appendChild(overlay);
+    document.body.style.overflow = 'hidden';
+    enableSwipeToClose(overlay, sheet.querySelector('.sheet-grab-zone'), close, { axis: 'y', move: sheet });
+    enableSwipeToClose(overlay, sheet.querySelector('.sheet-header'), close, { axis: 'y', move: sheet });
+  }
+
+
   function stopAndClosePlayer() {
     clearPlaybackWatchdog();
+    // WS83: the position must be recorded BEFORE the teardown, while
+    // state.current and audioEl.currentTime still describe the episode. This
+    // is the owner's actual "stop" — the ✕ on the player.
+    savePlaybackPosition();
     // WS77: a closed player has nothing left to stop, so a manual close (or the
     // sleep timer's own stop) cancels any pending sleep timer. Inlined rather
     // than calling clearSleepTimer(), which would repaint the player mid-teardown.
@@ -4210,6 +4444,12 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       // When the limit or the end of the list is reached, advanceNewsSequence
       // clears the queue and the player is left in its normal finished state.
       if (ev === 'ended' && advanceNewsSequence()) return;
+      // WS83: a pause or a natural end is a stop the owner chose. Record the
+      // playhead so a later restart can offer to resume. `ended` saves too:
+      // the near-end rule in savedResumePosition() then deletes the entry, so
+      // a finished episode never prompts. Live radio never reaches this branch
+      // (the gate is inside savePlaybackPosition).
+      if (ev === 'pause' || ev === 'ended') savePlaybackPosition();
       updatePlayingMarks();
       if (ev === 'pause' || ev === 'play') {
         renderPlayer();
@@ -4232,6 +4472,27 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     renderPlayer();
   });
 
+  // ---- WS83: apply the remembered stop location ----
+  // REACHABILITY (§7a), stated precisely: audioEl.currentTime cannot be set
+  // before the media has metadata, so the seek is carried by `loadedmetadata`
+  // — the first event on BOTH the plain-audio path and the native-HLS path
+  // where a seek is legal. The pending position is stored on the TRACK
+  // (`__resumeFromS`), not in a module variable, so a superseded playback
+  // (owner taps another episode while this one loads) can never apply a stale
+  // seek: the handler re-checks that state.current is still this track. The
+  // flag is consumed exactly once, then cleared.
+  metaDiagCountAdd('loadedmetadata');
+  audioEl.addEventListener('loadedmetadata', () => {
+    const cur = state.current;
+    if (!cur || cur.__resumeFromS == null) return;
+    const target = cur.__resumeFromS;
+    cur.__resumeFromS = null;
+    try {
+      audioEl.currentTime = target;
+      diagLog(`resume-seek t=${target}`);
+    } catch { /* the element may not accept a seek yet — start from the top */ }
+  });
+
   // ---- MediaSession (låsskärm / kontrollcenter) ----
   // Utan explicit metadata kan iOS binda låsskärmsspelaren till fel installerad
   // PWA (observerat 2026-09-22: tryck på låsskärmsspelaren öppnade en annan
@@ -4252,11 +4513,18 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   window.addEventListener('pagehide', (e) => {
     diagLog(`pagehide persisted=${e.persisted} playing=${!audioEl.paused}`);
     if (e.persisted) return; // bakgrund, inte stängd — låt ljudet spela
+    // WS83: the app is being closed for real. Record the playhead first —
+    // after the pause the element still holds its position, but state.current
+    // is the only thing that knows WHICH episode it belongs to, and this
+    // handler is the last code that runs.
+    savePlaybackPosition();
     if (!audioEl.paused) audioEl.pause();
     updateMediaSession(); // rensar now-playing direkt
   });
   document.addEventListener('freeze', () => {
     diagLog(`freeze playing=${!audioEl.paused}`);
+    // WS83: same rule as pagehide — the page may never wake up again.
+    savePlaybackPosition();
     if (!audioEl.paused) audioEl.pause();
     updateMediaSession();
   });
