@@ -3724,3 +3724,69 @@ body.player-gesture-lock {
    visible`), so it is accent-coloured like every other control rather than the
    old bespoke --text ring. */
 .info-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- WS84: news source toggle (Nyheter | Sport) ---------- */
+.news-feed-row { gap: 8px; }
+.news-feed-btn {
+  flex: 1;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.news-feed-btn.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.news-feed-btn:active { opacity: 0.6; }
+
+/* ---------- WS84: favourite star on the podcast card header ---------- */
+/* Same 44px icon-button family as .fresh-btn; the accent colour marks the
+   favourited state, dim secondary marks not-favourited. */
+.pod-star-btn {
+  width: 44px;
+  height: 44px;
+  flex: none;
+  align-self: center;
+  border-radius: 50%;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.pod-star-btn.active { color: var(--accent); }
+.pod-star-btn:active { opacity: 0.6; }
+.pod-star-btn svg { display: block; width: 22px; height: 22px; }
+
+/* ---------- WS84: episode info card body ---------- */
+.epi-info { display: flex; flex-direction: column; gap: 12px; padding: 4px 0 12px; }
+.epi-info-img {
+  width: 100%;
+  max-height: 220px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+}
+.epi-info-meta { font-size: 12.5px; color: var(--text-secondary); }
+.epi-info-desc { font-size: 14px; line-height: 1.45; margin: 0; }
+.epi-info-play {
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--accent);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.epi-info-play:active { background: var(--accent-soft); }

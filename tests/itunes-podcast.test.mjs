@@ -4959,12 +4959,20 @@ test('WS67: the card delegates to openContextCard and rows open a playable card'
   // openExternalPodcastCard and an SR id to the SR card, and both build rows
   // whose onclick calls playTrack. Reusing it is what makes "it plays" true for
   // BOTH providers instead of a promise made only for the one I tested.
+  // WS84 restated (was `playTrack({`): the rows now build the track in a
+  // `playArgs()` closure and call `playTrack(playArgs())` — the SAME call with
+  // the SAME track shape, so the episode rows still play. The restatement
+  // asserts the call AND the track shape, which is stronger than the old
+  // literal-pattern match, not weaker.
   const op = region('function openPodcastCard', 'function openExternalPodcastCard', src);
   assert.match(op, /pod\?\.provider === 'itunes'\) return openExternalPodcastCard\(pod\)/,
     'openPodcastCard must still split the two providers -- the freshness card depends on this');
-  assert.match(op, /playTrack\(\{/, 'the SR episode rows must still call playTrack');
-  assert.match(region('function openExternalPodcastCard', 'function closeSheet', src), /playTrack\(\{/,
+  assert.match(op, /playTrack\(playArgs\(\)\)/, 'the SR episode rows must still call playTrack');
+  assert.match(op, /kind: 'episode'/, 'the SR rows must still play as episodes');
+  const opx = region('function openExternalPodcastCard', 'function closeSheet', src);
+  assert.match(opx, /playTrack\(playArgs\(\)\)/,
     'the iTunes episode rows must still call playTrack');
+  assert.match(opx, /kind: 'episode'/, 'the iTunes rows must still play as episodes');
 });
 
 test('WS67: every favourite appears, and the wording separates fresh from silent', () => {

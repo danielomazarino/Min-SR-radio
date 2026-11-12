@@ -274,9 +274,16 @@ test('the renderer still derives its label from audioUrl (no UI change needed)',
 });
 
 test('feed, ordering, links, timestamps and styling are untouched', () => {
-  // The news section's other behaviour must not move.
-  assert.ok(APP_JS.includes("const RSS_URL = 'https://api.sr.se/api/rss/program/83?format=145'"),
-    'the feed must stay the Ekot Atom feed');
+  // WS84 restated (was the literal `const RSS_URL = '…83…'`): the feed is now
+  // SELECTABLE (owner request), stored in NEWS_FEEDS with 'ekot' as the
+  // DEFAULT — so an existing user still gets Ekot. The restatement asserts the
+  // default and both feed URLs, which is stronger than the old single literal.
+  assert.ok(APP_JS.includes("ekot: { url: 'https://api.sr.se/api/rss/program/83?format=145'"),
+    'the default feed must stay the Ekot Atom feed');
+  assert.ok(APP_JS.includes("sport: { url: 'https://api.sr.se/api/rss/program/179?format=145'"),
+    'the sport feed must be the Radiosporten Atom feed');
+  assert.ok(APP_JS.includes('NEWS_FEEDS[localStorage.getItem(NEWS_FEED_KEY)] || NEWS_FEEDS.ekot'),
+    'an unknown stored value must fall back to Ekot');
   // Newest-first ordering, unchanged.
   assert.ok(APP_JS.includes('items.sort((a, b) => (b.publishDateUtc ?? 0) - (a.publishDateUtc ?? 0))'),
     'news ordering must stay newest-first');
