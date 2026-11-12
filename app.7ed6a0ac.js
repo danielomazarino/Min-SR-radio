@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = 'b5a917e';
+  const APP_BUILD = 'ee1950e';
   // WS80 (owner, 2026-10-09): "change under Info from Daniel Omazarino to Danielo
   // Mazarino". Corrected at the single source -- this constant is what the About
   // overlay's `.about-version` line renders (`${APP_BUILD} · Utvecklad av ...`).
@@ -150,7 +150,23 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // stoptimeutc usually gives natural alignment anyway (a song change is
   // picked up at most one interval late).
   const NOW_PLAYING_INTERVAL_MS = 45000;
-  const RSS_URL = 'https://api.sr.se/api/rss/program/83?format=145';
+  // WS84: the news section's source is selectable — Ekot (default) or
+  // Radiosporten. Both feeds are SR Atom RSS with the SAME entry structure
+  // (verified live 2026-11-11: title/published/link/content with image and a
+  // "Lyssna:" clip), so fetchNewsFlashes' parser needs no branch — only the
+  // URL changes. Persisted under its own key; default 'ekot' so existing
+  // users see no change.
+  const NEWS_FEED_KEY = 'minradio.newsfeed.v1';
+  const NEWS_FEEDS = {
+    ekot: { url: 'https://api.sr.se/api/rss/program/83?format=145', label: 'Nyheter' },
+    sport: { url: 'https://api.sr.se/api/rss/program/179?format=145', label: 'Sport' },
+  };
+  function loadNewsFeed() {
+    return NEWS_FEEDS[localStorage.getItem(NEWS_FEED_KEY)] || NEWS_FEEDS.ekot;
+  }
+  function saveNewsFeed(name) {
+    try { localStorage.setItem(NEWS_FEED_KEY, NEWS_FEEDS[name] ? name : 'ekot'); } catch { /* ignore */ }
+  }
 
   function parseSrDate(v) {
     if (typeof v !== 'string') return null;
@@ -1339,7 +1355,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     let xml;
     try {
-      const res = await fetch(RSS_URL, { signal: controller.signal });
+      const res = await fetch(loadNewsFeed().url, { signal: controller.signal });
       if (!res.ok) throw new Error(`Nyhetsflödet svarade med ${res.status}`);
       xml = await res.text();
     } finally {
@@ -9444,7 +9460,7 @@ function seekMeasureRecordText() {
         updateNewsFold();
       },
     },
-      el('h2', { class: 'section-title', text: 'Nyheter' }),
+      el('h2', { class: 'section-title', text: loadNewsFeed().label }),
       el('span', { class: 'news-toggle-chevron', 'aria-hidden': 'true' }));
     newsHeaderRow.appendChild(newsToggle);
     // WS70: the autoplay toggle. Icon-only, no visible text. The icon shows
@@ -10610,7 +10626,12 @@ function seekMeasureRecordText() {
         onclick: close,
       }));
     const body = el('div', { class: 'card-body' });
-    buildBody(body, close);
+    // WS84: buildBody receives the header too, so a card can add controls
+    // (the favourite star) to it. The header is NOT yet in the document here
+    // — a document.querySelector inside buildBody would find nothing (that
+    // was the defect the driven browser check caught) — so the node itself
+    // is passed, not a lookup.
+    buildBody(body, close, header);
     sheet.appendChild(grabZone);
     sheet.appendChild(header);
     sheet.appendChild(body);
@@ -10876,6 +10897,79 @@ function seekMeasureRecordText() {
 
   // Podcast card: recent episodes via episodes/index (SR quirk: page 1 is
   // empty for many programs — try page 2 as well).
+  // ---------------- WS84: episode info card + favourite star ----------------
+
+  /** The star glyph, shared by both podcast card variants. */
+  const STAR_SVG = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>';
+
+  /**
+   * The favourite star for a podcast card header. Filled (accent) when the
+   * podcast is favourited in ITS OWN provider store; clicking removes it via
+   * removeFavoriteRow() — the same single writer the settings sheet uses — so
+   * the two surfaces can never disagree about the store's contents.
+   * `provider` is 'sr' | 'itunes'; it decides which store is checked.
+   */
+  function buildPodStarButton(pod, provider) {
+    const isFav = () => provider === 'itunes'
+      ? loadExternalPodcasts().some((p) => p.id === pod.id)
+      : loadFavorites().podcasts.includes(pod.id);
+    const btn = el('button', {
+      class: `pod-star-btn${isFav() ? ' active' : ''}`,
+      type: 'button',
+      'aria-pressed': String(isFav()),
+      'aria-label': isFav() ? `Ta bort ${pod.name} från favoriter` : `Lägg till ${pod.name} i favoriter`,
+      html: STAR_SVG,
+      onclick: () => {
+        if (!isFav()) return; // not favourited here: nothing to remove
+        removeFavoriteRow('podcasts', pod.id, pod.name);
+        // The order key must forget the id, or it would linger and resurface.
+        persistPodcastRowOrder(
+          podcastRowOrder(loadFavorites().podcasts, loadExternalPodcasts())
+            .filter((x) => x !== pod.id)
+        );
+        const fav = isFav();
+        btn.classList.toggle('active', fav);
+        btn.setAttribute('aria-pressed', String(fav));
+        btn.setAttribute('aria-label', fav
+          ? `Lägg till ${pod.name} i favoriter`
+          : `Ta bort ${pod.name} från favoriter`);
+        showToast(`Borttaget: ${pod.name}`);
+      },
+    });
+    return btn;
+  }
+
+  /**
+   * The episode information card. Long-press on an episode row opens it;
+   * a tap on the row still plays (addLongPress isolates hold from tap).
+   * The Spela button goes through playTrack with the SAME track shape the
+   * row's own onclick builds — so the WS83 resume gate applies identically.
+   */
+  function openEpisodeInfoCard(ep, pod, playArgs) {
+    const when = formatTime(ep.publishDateUtc) || null;
+    const dur = Number.isFinite(ep.duration) && ep.duration > 0 ? fmtDur(ep.duration) : null;
+    const meta = [when, dur].filter(Boolean).join(' · ');
+    openContextCard({
+      title: ep.title || pod.name,
+      subtitle: pod.name,
+      image: ep.artwork || pod.image || null,
+      buildBody: (body, close) => {
+        const info = el('div', { class: 'epi-info' });
+        if (ep.description) info.appendChild(el('p', { class: 'epi-info-desc', text: ep.description }));
+        if (meta) info.appendChild(el('div', { class: 'epi-info-meta', text: meta }));
+        if (playArgs) {
+          info.appendChild(el('button', {
+            class: 'epi-info-play', type: 'button', text: 'Spela',
+            onclick: () => { close(); playTrack(playArgs()); },
+          }));
+        } else {
+          info.appendChild(el('div', { class: 'epi-info-meta', text: 'Inget ljud för detta avsnitt.' }));
+        }
+        body.appendChild(info);
+      },
+    });
+  }
+
   function openPodcastCard(pod) {
     // An external podcast has no SR programme id, so the SR endpoint below
     // would 404. Split FIRST, before any SR call is made -- otherwise an
@@ -10886,7 +10980,10 @@ function seekMeasureRecordText() {
       title: pod.name,
       subtitle: 'Avsnitt',
       image: pod.image || null,
-      buildBody: (body, close) => {
+      buildBody: (body, close, header) => {
+        // WS84: the favourite star rides in the card header, next to the
+        // close button. Provider-explicit: this card is the SR path.
+        header.appendChild(buildPodStarButton(pod, 'sr'));
         body.appendChild(el('div', { class: 'card-loading', text: 'Hämtar avsnitt…' }));
         (async () => {
           let eps = [];
@@ -10912,18 +11009,28 @@ function seekMeasureRecordText() {
             row.appendChild(el('span', { class: 'card-time', text: formatTime(parseSrDate(ep.publishdateutc)) || '' }));
             row.appendChild(el('span', { class: 'card-title', text: ep.title || '' }));
             if (duration) row.appendChild(el('span', { class: 'card-state', text: fmtDur(duration) }));
+            const playArgs = audioUrl ? () => ({
+                kind: 'episode', id: ep.id,
+                title: ep.title || pod.name,
+                subtitle: pod.name,
+                audioUrl, duration,
+                artwork: pod.image,
+              }) : null;
             if (audioUrl) {
               row.onclick = () => {
                 close();
-                playTrack({
-                  kind: 'episode', id: ep.id,
-                  title: ep.title || pod.name,
-                  subtitle: pod.name,
-                  audioUrl, duration,
-                  artwork: pod.image,
-                });
+                playTrack(playArgs());
               };
             }
+            // WS84: long-press opens the episode's information card. Tap
+            // still plays — addLongPress cancels the hold on touchend.
+            addLongPress(row, () => openEpisodeInfoCard({
+              title: ep.title || pod.name,
+              description: ep.description || null,
+              publishDateUtc: parseSrDate(ep.publishdateutc),
+              duration,
+              artwork: pod.image,
+            }, pod, playArgs));
             list.appendChild(row);
           }
           body.appendChild(list);
@@ -10941,7 +11048,10 @@ function seekMeasureRecordText() {
       title: pod.name,
       subtitle: 'Avsnitt',
       image: pod.image || null,
-      buildBody: (body, close) => {
+      buildBody: (body, close, header) => {
+        // WS84: the favourite star rides in the card header. This card is
+        // the iTunes path, so the star reads the external store.
+        header.appendChild(buildPodStarButton(pod, 'itunes'));
         body.appendChild(el('div', { class: 'card-loading', text: 'Hämtar avsnitt…' }));
         (async () => {
           const eps = await extEpisodes(pod.id);
@@ -10965,19 +11075,29 @@ function seekMeasureRecordText() {
             row.appendChild(el('span', { class: 'card-time', text: formatTime(ep.publishDateUtc) || '' }));
             row.appendChild(el('span', { class: 'card-title', text: ep.title || '' }));
             if (ep.duration) row.appendChild(el('span', { class: 'card-state', text: fmtDur(ep.duration) }));
+            const playArgs = ep.audioUrl ? () => ({
+                kind: 'episode', id: ep.id ?? pod.id,
+                title: ep.title || pod.name,
+                subtitle: pod.name,
+                audioUrl: ep.audioUrl,
+                duration: ep.duration,
+                artwork: ep.artwork || pod.image,
+                provider: 'itunes',
+              }) : null;
             if (ep.audioUrl) {
               row.onclick = () => {
                 close();
-                playTrack({
-                  kind: 'episode', id: ep.id ?? pod.id,
-                  title: ep.title || pod.name,
-                  subtitle: pod.name,
-                  audioUrl: ep.audioUrl,
-                  duration: ep.duration,
-                  artwork: ep.artwork || pod.image,
-                });
+                playTrack(playArgs());
               };
             }
+            // WS84: long-press opens the episode's information card.
+            addLongPress(row, () => openEpisodeInfoCard({
+              title: ep.title || pod.name,
+              description: ep.description || null,
+              publishDateUtc: ep.publishDateUtc,
+              duration: ep.duration,
+              artwork: ep.artwork || pod.image,
+            }, pod, playArgs));
             list.appendChild(row);
           }
           body.appendChild(list);
@@ -11563,6 +11683,34 @@ function seekMeasureRecordText() {
         el('span', { class: 'setting-minmax', text: '4' }),
         el('div', { class: 'setting-slider-wrap' }, newsRange, thumbBubble),
         el('span', { class: 'setting-minmax', text: '20' })));
+
+    // WS84: news source — Ekot ("Nyheter") or Radiosporten ("Sport"). A
+    // segmented pair of buttons, same visual family as the sleep options.
+    // The change takes effect on the next home render (the sheet's Spara
+    // already re-boots the home screen via onDone: boot).
+    const newsFeed = loadNewsFeed();
+    const feedBtns = {};
+    const feedSection = el('div', { class: 'setting-section' },
+      el('h3', { class: 'section-title', text: 'Nyhedskälla' }),
+      el('div', { class: 'setting-row news-feed-row' },
+        ...Object.entries(NEWS_FEEDS).map(([name, def]) => {
+          const btn = el('button', {
+            class: `news-feed-btn${newsFeed === def ? ' active' : ''}`,
+            type: 'button',
+            'aria-pressed': String(newsFeed === def),
+            text: def.label,
+            onclick: () => {
+              saveNewsFeed(name);
+              for (const [n, b] of Object.entries(feedBtns)) {
+                const on = n === name;
+                b.classList.toggle('active', on);
+                b.setAttribute('aria-pressed', String(on));
+              }
+            },
+          });
+          feedBtns[name] = btn;
+          return btn;
+        })));
     // position the bubble once the sheet is laid out. The resize listener is
     // removed on close — openSheet runs on every open, and without removal
     // listeners accumulate on window across opens (leak, verified 2026-09-22).
@@ -11599,6 +11747,7 @@ function seekMeasureRecordText() {
       }),
       doneBtn));
     sheet.appendChild(newsSetting);
+    sheet.appendChild(feedSection);
 
     // Selected favorites with custom sorting — order here = order on the
     // home screen (first = leftmost). Placed ABOVE the selection list so the
