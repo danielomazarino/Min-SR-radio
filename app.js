@@ -7613,8 +7613,28 @@ function seekMeasureRecordText() {
           renderSongLinks(song.artist, song.title)));
       };
       renderSongView();
+      // WS86 (owner, 2026-11-14): "sometimes i listen to a radio show and
+      // wonder what it is about and don't want to go to the tablå and click
+      // there to see". An info action INSIDE the expanded panel opens the
+      // episode information card for what the playhead is sitting on — the
+      // same card the tablå long-press opens, so the two surfaces cannot
+      // drift apart. The row is repainted with the rest of the panel, so it
+      // always describes the current moment.
+      const infoRow = el('button', {
+        class: 'expand-info-row', type: 'button',
+        'aria-label': 'Visa programinformation',
+        html: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 4.2a1.3 1.3 0 1 1 0 2.6 1.3 1.3 0 0 1 0-2.6zM11 10.5h2V18h-2v-7.5z"/></svg>',
+      }, el('span', { class: 'expand-info-label', text: 'Vad handlar det här?' }));
+      infoRow.addEventListener('click', () => { openNowPlayingInfoCard(); });
+      content.appendChild(infoRow);
       // Re-paint when metadata/artwork arrives after the panel opened.
+      // The hook keeps the EXACT shape the WS2 Bug 3 guard asserts; the info
+      // row is re-appended by wrapping the hook afterwards, so the guard's
+      // property (renderSongView() re-runs inside the hook) still holds and
+      // the row survives the repaint too.
       panel._srRepaint = () => { content.textContent = ''; renderSongView(); };
+      const baseRepaint = panel._srRepaint;
+      panel._srRepaint = () => { baseRepaint(); content.appendChild(infoRow); };
       return panel;
     };
 
@@ -11054,6 +11074,60 @@ function seekMeasureRecordText() {
       .filter(Boolean);
   }
 
+  /**
+   * WS86 (owner, 2026-11-14): "sometimes i listen to a radio show and wonder
+   * what it is about and don't want to go to the tablå and click there to see".
+   *
+   * The episode information card, opened FROM THE PLAYER. The playhead's
+   * programme is resolved from the data the player already holds — the same
+   * `_srSchedule` entry `resolveMetadataForPosition` reads for the programme
+   * title — so the card describes the SAME moment the player shows, and the
+   * two surfaces cannot disagree (the R6 rule, applied to a third surface).
+   *
+   * For a live channel the schedule entry carries the programme's own
+   * description (verified live 2026-11-14: scheduledepisodes rows carry
+   * `description`), so no extra fetch is needed. For an EPISODE the track
+   * already carries its description from the play path.
+   *
+   * No Spela button: the episode is ALREADY playing — the card is opened from
+   * the player, so a play button would offer to restart what is on.
+   */
+  function openNowPlayingInfoCard() {
+    const cur = state.current;
+    if (!cur) return;
+    if (cur.kind === 'episode') {
+      openEpisodeInfoCard({
+        title: cur.title,
+        description: cur.description || null,
+        publishDateUtc: null,
+        duration: Number.isFinite(cur.duration) ? cur.duration : null,
+        artwork: cur.artwork || null,
+        showNoAudioNote: false,
+      }, { name: cur.subtitle || cur.programName || '' }, null);
+      return;
+    }
+    // Live: the programme at the PLAYHEAD, from the same schedule the title
+    // pill reads. Behind live the on-air programme would be the wrong answer
+    // — the same reason R5 exists.
+    const schedule = Array.isArray(cur._srSchedule) ? cur._srSchedule : [];
+    const ev = pickByPosition(schedule.map((e) => ({
+      startMs: e.startMs, stopMs: e.endMs, title: e.title,
+      description: e.description, image: e.image, programName: e.programName,
+    })), playheadWallMs());
+    if (!ev) {
+      showToast('Ingen programinformation hittades just nu.');
+      return;
+    }
+    openEpisodeInfoCard({
+      title: ev.title || cur._srProgramTitle || cur.title,
+      description: ev.description || null,
+      publishDateUtc: ev.startMs,
+      duration: null,
+      artwork: ev.image || cur.artwork || null,
+      showNoAudioNote: false,
+    }, { name: ev.programName || cur.subtitle || '' }, null);
+  }
+
   function openEpisodeInfoCard(ep, pod, playArgs) {
     const when = formatTime(ep.publishDateUtc) || null;
     const dur = Number.isFinite(ep.duration) && ep.duration > 0 ? fmtDur(ep.duration) : null;
@@ -11075,7 +11149,11 @@ function seekMeasureRecordText() {
             class: 'epi-info-play', type: 'button', text: 'Spela',
             onclick: () => { close(); playTrack(playArgs()); },
           }));
-        } else {
+        } else if (ep.showNoAudioNote) {
+          // WS86: the note is only for a card opened from a LIST, where
+          // "no audio" explains a missing play button. The PLAYER path
+          // passes showNoAudioNote false — the programme IS playing, so
+          // the note would be a lie.
           info.appendChild(el('div', { class: 'epi-info-meta', text: 'Inget ljud för detta avsnitt.' }));
         }
         body.appendChild(info);

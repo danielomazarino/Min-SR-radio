@@ -360,3 +360,47 @@ test('WS85: the tablå rows open the episode info card on long-press, tap still 
   assert.match(fn, /if \(ev\.episodeId\) \{/,
     'a non-playable slot must still open the card with what the schedule carries');
 });
+
+test('WS86: the player opens the episode info card for what the playhead is sitting on', () => {
+  // The card must describe the PLAYHEAD's programme — the same schedule entry
+  // the title pill reads — not the on-air one. Behind live, the on-air
+  // programme would be the wrong answer (the R5 rule, on a third surface).
+  const fn = grab('openNowPlayingInfoCard');
+  assert.match(fn, /pickByPosition\(schedule\.map/,
+    'the live card must resolve the programme from the playhead schedule');
+  assert.match(fn, /playheadWallMs\(\)/,
+    'the resolution must use the playhead wall clock, not Date.now()');
+  assert.match(fn, /ev\.description \|\| null/,
+    'the schedule entry\'s description must be shown');
+  // An episode track shows its own description; no Spela button is offered
+  // because the episode is ALREADY playing.
+  assert.match(fn, /cur\.description \|\| null/,
+    'an episode card must show the track description');
+  const card = grab('openEpisodeInfoCard');
+  // The card is shared, so the no-audio wording must not claim a dead button
+  // for the player case — the player case passes playArgs null and the card
+  // must not print "Inget ljud" for something that IS playing.
+  assert.match(fn, /openEpisodeInfoCard\(/, 'the player path must open the shared card');
+});
+
+test('WS86: the expanded panel carries the info action and it survives repaints', () => {
+  // buildExpandPanel is a `const ... = () => {` arrow, not a `function`
+  // declaration, so grab() (which keys on `function NAME(`) cannot see it —
+  // the exact silent-extraction trap AGENTS.md §7 warns about. Extract by
+  // brace matching from the const declaration instead.
+  const start = APP.indexOf('const buildExpandPanel = () => {');
+  assert.notEqual(start, -1, 'const buildExpandPanel must exist in app.js');
+  let d = 0, end = start;
+  for (let i = start; i < APP.length; i++) {
+    if (APP[i] === '{') d++;
+    else if (APP[i] === '}') { d--; if (d === 0) { end = i; break; } }
+  }
+  const fn = APP.slice(start, end + 1);
+  assert.match(fn, /expand-info-row/, 'the panel must carry the info row');
+  assert.match(fn, /openNowPlayingInfoCard\(\)/,
+    'the row must open the now-playing info card');
+  // The repaint hook must re-append the row, or the first metadata update
+  // would erase the only way to open the card.
+  assert.match(fn, /baseRepaint\(\); content\.appendChild\(infoRow\)/,
+    'the repaint must re-append the info row');
+});

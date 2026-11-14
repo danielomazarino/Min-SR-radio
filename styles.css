@@ -3796,3 +3796,25 @@ body.player-gesture-lock {
   cursor: pointer;
 }
 .epi-info-play:active { background: var(--accent-soft); }
+
+/* ---------- WS86: "what is this about?" row in the expanded player ---------- */
+/* A quiet, full-width action under the now-playing row. Same 44px target and
+   secondary-colour family as the rest of the panel; the accent marks hover/
+   press so it reads as tappable without shouting. */
+.expand-info-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+.expand-info-row svg { display: block; width: 18px; height: 18px; flex: none; }
+.expand-info-row:active { color: var(--accent); }
