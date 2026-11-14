@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = 'ee1950e';
+  const APP_BUILD = 'b2f034b';
   // WS80 (owner, 2026-10-09): "change under Info from Daniel Omazarino to Danielo
   // Mazarino". Corrected at the single source -- this constant is what the About
   // overlay's `.about-version` line renders (`${APP_BUILD} · Utvecklad av ...`).
@@ -9405,7 +9405,9 @@ function seekMeasureRecordText() {
         });
         // Fas 5: long-press opens the context card (tablå for channels,
         // episode list for podcasts). Tap still plays.
-        addLongPress(btn, () => (isPod ? openPodcastCard(item) : openChannelCard(item)));
+        // WS85: the provider rides through so the card's star reads the
+        // store the row actually lives in (SR / Bauer / international).
+        addLongPress(btn, () => (isPod ? openPodcastCard(item) : openChannelCard({ ...item, provider: item.provider || 'sr' })));
         if (item.image) {
           btn.appendChild(el('img', { src: item.image, alt: '', loading: 'lazy', draggable: 'false' }));
         } else {
@@ -10805,7 +10807,15 @@ function seekMeasureRecordText() {
       title: channel.name,
       subtitle: 'Tablå — igår + idag',
       image: channel.image || null,
-      buildBody: (body, close) => {
+      buildBody: (body, close, header) => {
+        // WS85 (owner, 2026-11-14): the star is on EVERY tablå card, not only
+        // podcasts — an unfilled star marks a not-yet-favourited channel and
+        // tapping it favourites the channel from the card. Provider-explicit:
+        // the home row passes the provider through, so the star reads the
+        // store the channel actually lives in.
+        addStarToHeader(header, buildFavStarButton(channel, 'channels',
+          channel.provider === 'bauer' ? 'bauer'
+            : channel.provider === 'intl' ? 'intl' : 'sr'));
         body.appendChild(el('div', { class: 'card-loading', text: 'Hämtar tablå…' }));
         Promise.all([
           fetchScheduleDay(channel.id, localDateStrOffset(1)),
@@ -10874,6 +10884,48 @@ function seekMeasureRecordText() {
                   } catch { showToast('Kunde inte hämta avsnittet.'); }
                 };
               }
+              // WS85 (owner, 2026-11-14): the episode info card works on the
+              // tablå too. Long-press opens it; tap still plays. The card
+              // fetches the FULL episode (episodes/get) so the description,
+              // date and duration are the real ones, not the schedule row's
+              // short summary — the same fetch the tap path already makes,
+              // so no second endpoint and no new failure mode. A row without
+              // an episode id (a non-playable slot) still opens the card with
+              // what the schedule row carries.
+              addLongPress(row, async () => {
+                let ep = {
+                  title: ev.title,
+                  description: ev.description,
+                  publishDateUtc: ev.startMs,
+                  duration: null,
+                  artwork: ev.image || channel.image,
+                };
+                let playArgs = null;
+                if (ev.episodeId) {
+                  try {
+                    const data = await apiFetch(`${SR_API}/episodes/get?id=${ev.episodeId}&format=json`);
+                    const full = data?.episode || {};
+                    const { audioUrl, duration } = episodeAudioFields(full);
+                    ep = {
+                      title: full.title || ev.title,
+                      description: full.description || ev.description,
+                      publishDateUtc: parseSrDate(full.publishdateutc) ?? ev.startMs,
+                      duration,
+                      artwork: full.imageurl || ev.image || channel.image,
+                    };
+                    if (audioUrl) {
+                      playArgs = () => ({
+                        kind: 'episode', id: full.id ?? ev.episodeId,
+                        title: full.title || ev.title,
+                        subtitle: ev.programName || channel.name,
+                        audioUrl, duration,
+                        artwork: ev.image || channel.image,
+                      });
+                    }
+                  } catch { /* the schedule row's own data still shows */ }
+                }
+                openEpisodeInfoCard(ep, { name: ev.programName || channel.name }, playArgs);
+              });
               list.appendChild(row);
             }
           };
@@ -10903,40 +10955,70 @@ function seekMeasureRecordText() {
   const STAR_SVG = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>';
 
   /**
-   * The favourite star for a podcast card header. Filled (accent) when the
-   * podcast is favourited in ITS OWN provider store; clicking removes it via
+   * The favourite star for a card header. Filled (accent) when the item is
+   * favourited in ITS OWN provider store; clicking toggles/removes via
    * removeFavoriteRow() — the same single writer the settings sheet uses — so
    * the two surfaces can never disagree about the store's contents.
-   * `provider` is 'sr' | 'itunes'; it decides which store is checked.
+   * `kind` is 'podcasts' | 'channels'; `provider` is 'sr' | 'itunes' | 'bauer'
+   * | 'intl'; it decides which store is checked and written.
+   *
+   * WS85 (owner, 2026-11-14): the star sits LEFT of the close button — where
+   * the close button was before — with extra spacing, because the old
+   * right-of-close position made it too easy to un-favourite by mistake.
+   * The header is a flex row (card-head … close), so the star is INSERTED
+   * BEFORE the close button and the gap comes from the header's own layout.
    */
-  function buildPodStarButton(pod, provider) {
-    const isFav = () => provider === 'itunes'
-      ? loadExternalPodcasts().some((p) => p.id === pod.id)
-      : loadFavorites().podcasts.includes(pod.id);
+  function buildFavStarButton(item, kind, provider) {
+    const isFav = () => {
+      if (provider === 'itunes') return loadExternalPodcasts().some((p) => p.id === item.id);
+      if (provider === 'bauer') return loadBauerFavorites().some((p) => p.id === item.id);
+      if (provider === 'intl') return loadIntlFavorites().some((p) => p.id === item.id);
+      return loadFavorites()[kind].includes(item.id);
+    };
+    const removeRow = () => {
+      removeFavoriteRow(kind, item.id, item.name);
+      // The order key must forget the id, or it would linger and resurface.
+      if (kind === 'podcasts') {
+        persistPodcastRowOrder(
+          podcastRowOrder(loadFavorites().podcasts, loadExternalPodcasts())
+            .filter((x) => x !== item.id)
+        );
+      } else {
+        persistChannelRowOrder(
+          channelRowOrder(loadFavorites().channels, loadBauerFavorites(), loadIntlFavorites())
+            .filter((x) => x !== item.id)
+        );
+      }
+    };
     const btn = el('button', {
       class: `pod-star-btn${isFav() ? ' active' : ''}`,
       type: 'button',
       'aria-pressed': String(isFav()),
-      'aria-label': isFav() ? `Ta bort ${pod.name} från favoriter` : `Lägg till ${pod.name} i favoriter`,
+      'aria-label': isFav() ? `Ta bort ${item.name} från favoriter` : `Lägg till ${item.name} i favoriter`,
       html: STAR_SVG,
       onclick: () => {
         if (!isFav()) return; // not favourited here: nothing to remove
-        removeFavoriteRow('podcasts', pod.id, pod.name);
-        // The order key must forget the id, or it would linger and resurface.
-        persistPodcastRowOrder(
-          podcastRowOrder(loadFavorites().podcasts, loadExternalPodcasts())
-            .filter((x) => x !== pod.id)
-        );
+        removeRow();
         const fav = isFav();
         btn.classList.toggle('active', fav);
         btn.setAttribute('aria-pressed', String(fav));
         btn.setAttribute('aria-label', fav
-          ? `Lägg till ${pod.name} i favoriter`
-          : `Ta bort ${pod.name} från favoriter`);
-        showToast(`Borttaget: ${pod.name}`);
+          ? `Lägg till ${item.name} i favoriter`
+          : `Ta bort ${item.name} från favoriter`);
+        showToast(`Borttaget: ${item.name}`);
       },
     });
     return btn;
+  }
+
+  /**
+   * WS85: insert the star into a card header LEFT of the close button. The
+   * header's children are [card-head, close]; the star goes between them.
+   */
+  function addStarToHeader(header, star) {
+    const closeBtn = header.querySelector('.sheet-close');
+    if (closeBtn) header.insertBefore(star, closeBtn);
+    else header.appendChild(star);
   }
 
   /**
@@ -10944,7 +11026,34 @@ function seekMeasureRecordText() {
    * a tap on the row still plays (addLongPress isolates hold from tap).
    * The Spela button goes through playTrack with the SAME track shape the
    * row's own onclick builds — so the WS83 resume gate applies identically.
+   *
+   * WS85 (owner, 2026-11-14): the description is formatted, not dumped. The
+   * sources carry different shapes — SR episodes have plain text with
+   * newlines, iTunes feeds often have HTML with <p>/<br> — so the text is
+   * split into paragraphs on BOTH newline and block-tag boundaries, tags are
+   * stripped, and each paragraph renders as its own <p>. A wall of run-on
+   * credits ("Programledare: … Panel: … Ansvarig utgivare: …") becomes
+   * readable lines.
    */
+  function descriptionParagraphs(raw) {
+    if (!raw || typeof raw !== 'string') return [];
+    const withBreaks = raw
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(p|div|li)>/gi, '\n')
+      .replace(/<p[^>]*>/gi, '\n');
+    // stripTags collapses ALL whitespace to single spaces, which would erase
+    // the paragraph breaks this function exists to create — so the tag strip
+    // and entity decode are done here, preserving newlines.
+    const stripped = withBreaks
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+      .replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, '&');
+    return stripped
+      .split(/\n+/)
+      .map((p) => p.replace(/[ \t]+/g, ' ').trim())
+      .filter(Boolean);
+  }
+
   function openEpisodeInfoCard(ep, pod, playArgs) {
     const when = formatTime(ep.publishDateUtc) || null;
     const dur = Number.isFinite(ep.duration) && ep.duration > 0 ? fmtDur(ep.duration) : null;
@@ -10955,7 +11064,11 @@ function seekMeasureRecordText() {
       image: ep.artwork || pod.image || null,
       buildBody: (body, close) => {
         const info = el('div', { class: 'epi-info' });
-        if (ep.description) info.appendChild(el('p', { class: 'epi-info-desc', text: ep.description }));
+        const paras = descriptionParagraphs(ep.description);
+        if (paras.length) {
+          info.appendChild(el('div', { class: 'epi-info-desc' },
+            ...paras.map((p) => el('p', { text: p }))));
+        }
         if (meta) info.appendChild(el('div', { class: 'epi-info-meta', text: meta }));
         if (playArgs) {
           info.appendChild(el('button', {
@@ -10981,9 +11094,9 @@ function seekMeasureRecordText() {
       subtitle: 'Avsnitt',
       image: pod.image || null,
       buildBody: (body, close, header) => {
-        // WS84: the favourite star rides in the card header, next to the
-        // close button. Provider-explicit: this card is the SR path.
-        header.appendChild(buildPodStarButton(pod, 'sr'));
+        // WS84/WS85: the favourite star rides in the card header, LEFT of
+        // the close button. Provider-explicit: this card is the SR path.
+        addStarToHeader(header, buildFavStarButton(pod, 'podcasts', 'sr'));
         body.appendChild(el('div', { class: 'card-loading', text: 'Hämtar avsnitt…' }));
         (async () => {
           let eps = [];
@@ -11049,9 +11162,9 @@ function seekMeasureRecordText() {
       subtitle: 'Avsnitt',
       image: pod.image || null,
       buildBody: (body, close, header) => {
-        // WS84: the favourite star rides in the card header. This card is
-        // the iTunes path, so the star reads the external store.
-        header.appendChild(buildPodStarButton(pod, 'itunes'));
+        // WS84/WS85: the star in the card header, LEFT of the close button.
+        // This card is the iTunes path, so the star reads the external store.
+        addStarToHeader(header, buildFavStarButton(pod, 'podcasts', 'itunes'));
         body.appendChild(el('div', { class: 'card-loading', text: 'Hämtar avsnitt…' }));
         (async () => {
           const eps = await extEpisodes(pod.id);
@@ -12300,14 +12413,19 @@ function seekMeasureRecordText() {
     }
     rebuildSelected();
     selectedSection.appendChild(selectedWrap);
-    sheet.appendChild(selectedSection);
 
-    // Selection section — its own header so the list reads as the main task
+    // WS85 (owner, 2026-11-14): the selection UI — heading, counter, tabs and
+    // the search box — moved UP, directly under the Nyhedskälla section and
+    // ABOVE the "Valda favoriter" list. The owner marked the old position at
+    // the very bottom of the sheet and drew the arrow to the spot under the
+    // news-source toggle. The "Valda favoriter" section now follows the
+    // selection UI, so the sheet reads: settings → pick → what is picked.
     sheet.appendChild(el('h3', { class: 'section-title', text: 'Välj favoriter' }));
     sheet.appendChild(counter);
     sheet.appendChild(el('div', { class: 'tabs' }, tabChannels, tabPodcasts));
     sheet.appendChild(searchInput);
     sheet.appendChild(listWrap);
+    sheet.appendChild(selectedSection);
     overlay.appendChild(sheet);
     $sheetRoot.textContent = '';
     $sheetRoot.appendChild(overlay);
