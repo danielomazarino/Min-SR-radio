@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '69dce1f';
+  const APP_BUILD = '06e0d0a';
   // WS80 (owner, 2026-10-09): "change under Info from Daniel Omazarino to Danielo
   // Mazarino". Corrected at the single source -- this constant is what the About
   // overlay's `.about-version` line renders (`${APP_BUILD} · Utvecklad av ...`).
@@ -9061,6 +9061,9 @@ function seekMeasureRecordText() {
     const mover = move || panel;
     let startX = 0, startY = 0, d = 0, dragging = false, intent = null, t0 = 0;
     let scrollOwnsIt = false;
+    // WS90: the close threshold, decided at touchstart (see the touchstart
+    // handler below for why it must be decided there and not at release).
+    let closeThreshold = 0;
     const W = () => window.innerWidth;
     const H = () => window.innerHeight;
 
@@ -9160,6 +9163,9 @@ function seekMeasureRecordText() {
       // gesture take back a scroll the browser has already claimed -- and the
       // zone test would compare against a surface that is already translating.
       scrollOwnsIt = false;
+      // WS90: reset the scaled threshold every gesture, or a stale value from
+      // a previous touch would leak into this one.
+      closeThreshold = 0;
       if (axis === 'y') {
         const s = scroller();
         // ---- WS64: THE BANNER IS NOT PART OF ANY LIST, SO IT IS NOT "PRIORITY 1". ----
@@ -9198,8 +9204,36 @@ function seekMeasureRecordText() {
         // is asked only about the part that actually scrolls.
         const onChrome = isEl(e.target) && !!e.target.closest(chromeSelector);
         if (s && s.scrollTop > 0 && !onChrome) scrollOwnsIt = true;
-        // At scroll-top (or nothing to scroll) the top half closes the card.
-        else if (startY > closeZoneBottom()) scrollOwnsIt = true;
+        // WS61 (2026-10-04): at scroll-top the top half closed the card, and a
+        // start below the half line handed the gesture to the scroll.
+        // WS90 (owner, 2026-11-15) SUPERSEDES the below-the-line half of that
+        // rule: "the swipe down to close the card only work if one touches on
+        // the top pixels of the card. so it would be good if starting a bit
+        // further down from the card top would also close the card instead of
+        // moving back up again when reaching the bottom."
+        //
+        // The mechanism is the threshold, not the start zone: `d > 35%` of the
+        // viewport. A drag that starts further down has LESS room before the
+        // finger runs out of screen, so the same 35% became unreachable — the
+        // card sprang back at the bottom. The owner sees exactly that.
+        //
+        // The fix scales the threshold to the room the finger actually has,
+        // measured from where the drag started to the viewport bottom — never
+        // a constant. A drag from the top still needs the full 35% (unchanged
+        // behaviour for tall cards); a drag starting further down needs
+        // proportionally less, because there is proportionally less room. The
+        // flick rule (d > 40 in 250ms) is untouched — a quick flick already
+        // closes from anywhere.
+        //
+        // WHAT IS NOT SUPERSEDED: scroll priority 1. The first branch above is
+        // untouched — when the list HAS been scrolled, the drag belongs to the
+        // list wherever the finger is. WS90 only changes how easily an allowed
+        // gesture closes at scroll-top, never where the gesture is allowed at
+        // all. The WS61 guard test was restated for this (see
+        // itunes-podcast.test.mjs, WS90 block).
+        else {
+          closeThreshold = Math.max(40, (H() - startY) * 0.35);
+        }
       }
       mover.style.transition = 'none';
     }, { passive: true });
@@ -9255,7 +9289,13 @@ function seekMeasureRecordText() {
       // on what a valid close looks like.
       const flick = elapsed < 250 && d > 40;
       const size = axis === 'x' ? W() : H();
-      if (d > size * 0.35 || flick) {
+      // WS90: the threshold was scaled at touchstart to the room the finger
+      // actually had (see the touchstart handler). 0 means the gesture was
+      // owned by the scroll or never started — fall back to the viewport rule
+      // so the pre-WS90 behaviour is untouched in every case WS90 does not
+      // name.
+      const threshold = closeThreshold > 0 ? closeThreshold : size * 0.35;
+      if (d > threshold || flick) {
         const dir = axis === 'x' ? (d > 0 ? W() : -W()) : H();
         mover.style.transform = axis === 'x' ? `translateX(${dir}px)` : `translateY(${dir}px)`;
         setTimeout(close, 180);
@@ -10746,17 +10786,28 @@ function seekMeasureRecordText() {
     // WS89 (owner, 2026-11-15): a card opened FROM THE PLAYER must not rise
     // higher than the expanded player's top edge — "i would like it to stop
     // at the same height as the extended player top if not in need for being
-    // higher in case of text not becoming visible then". The cap is a MAXIMUM:
-    // the sheet stays content-sized below it, so a two-line card is short and
-    // a long description still scrolls. Measured from the live player, not a
-    // constant — the player's height varies (mini-bar, artwork, badges), and
-    // a hard-coded number is exactly the fudge this repo has been bitten by.
-    // The sheet's own `min-height` (the WS62 short-list floor) is relaxed for
-    // this card, or the floor would override the cap.
+    // higher in case of text not becoming visible then". Measured from the
+    // live player, not a constant — the player's height varies (mini-bar,
+    // artwork, badges), and a hard-coded number is exactly the fudge this
+    // repo has been bitten by. The sheet's own `min-height` (the WS62
+    // short-list floor) is relaxed for this card, or the floor would override
+    // the cap. WS90 (same day, screenshot) corrected the mechanism: the cap
+    // alone left a SHORT card floating BELOW the player's top edge, so the
+    // block below now also sets a FLOOR — the sheet's height becomes exactly
+    // the distance from the player's top edge to the viewport bottom, and the
+    // card's top edge sits ON the player's top edge whether the text is two
+    // lines or twenty.
     if (Number.isFinite(maxHeightPx) && maxHeightPx > 0) {
       sheet.style.setProperty('--card-max-h', `${Math.round(maxHeightPx)}px`);
-      sheet.style.setProperty('--card-min-h', '0px');
       sheet.classList.add('card-capped');
+      // WS90: the floor. The sheet's own padding (34px top + safe-area bottom)
+      // is added back because box-sizing is border-box — the height includes
+      // it, and omitting it would leave the card short by exactly that much.
+      const sheetPadTop = 34;
+      const sheetPadBottom = 20 + (parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safe-bottom')) || 0);
+      const floorH = Math.round(window.innerHeight - maxHeightPx + sheetPadTop + sheetPadBottom);
+      sheet.style.setProperty('--card-min-h', `${floorH}px`);
+      sheet.classList.add('card-floored');
     }
     // A stale height is the flakiness the owner reported, so it must not be
     // allowed to persist across an orientation change. Removed on close with
