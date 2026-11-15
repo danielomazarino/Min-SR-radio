@@ -3797,24 +3797,22 @@ body.player-gesture-lock {
 }
 .epi-info-play:active { background: var(--accent-soft); }
 
-/* ---------- WS86: "what is this about?" row in the expanded player ---------- */
-/* A quiet, full-width action under the now-playing row. Same 44px target and
-   secondary-colour family as the rest of the panel; the accent marks hover/
-   press so it reads as tappable without shouting. */
-.expand-info-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 44px;
-  padding: 0 4px;
+/* ---------- WS87: description preview in the expanded player ---------- */
+/* WS86's "Vad handlar det här?" row is GONE (owner, 2026-11-15): the
+   description now sits directly under the episode name, clamped to three
+   lines with the browser's own ellipsis, and the whole block opens the info
+   card. The button wrapper is transparent — the text IS the control. */
+.expand-desc-btn {
+  display: block;
+  width: 100%;
+  padding: 0;
   border: none;
   background: none;
-  color: var(--text-secondary);
+  color: inherit;
   font: inherit;
-  font-size: 13.5px;
-  font-weight: 600;
   cursor: pointer;
   text-align: left;
+  -webkit-tap-highlight-color: transparent;
 }
-.expand-info-row svg { display: block; width: 18px; height: 18px; flex: none; }
-.expand-info-row:active { color: var(--accent); }
+.expand-desc-btn:active { opacity: 0.6; }
+.expand-desc-btn .expand-desc { margin-top: 0; }

@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '778b800';
+  const APP_BUILD = 'dc39537';
   // WS80 (owner, 2026-10-09): "change under Info from Daniel Omazarino to Danielo
   // Mazarino". Corrected at the single source -- this constant is what the About
   // overlay's `.about-version` line renders (`${APP_BUILD} · Utvecklad av ...`).
@@ -7613,28 +7613,48 @@ function seekMeasureRecordText() {
           renderSongLinks(song.artist, song.title)));
       };
       renderSongView();
-      // WS86 (owner, 2026-11-14): "sometimes i listen to a radio show and
-      // wonder what it is about and don't want to go to the tablå and click
-      // there to see". An info action INSIDE the expanded panel opens the
-      // episode information card for what the playhead is sitting on — the
-      // same card the tablå long-press opens, so the two surfaces cannot
-      // drift apart. The row is repainted with the rest of the panel, so it
-      // always describes the current moment.
-      const infoRow = el('button', {
-        class: 'expand-info-row', type: 'button',
-        'aria-label': 'Visa programinformation',
-        html: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 4.2a1.3 1.3 0 1 1 0 2.6 1.3 1.3 0 0 1 0-2.6zM11 10.5h2V18h-2v-7.5z"/></svg>',
-      }, el('span', { class: 'expand-info-label', text: 'Vad handlar det här?' }));
-      infoRow.addEventListener('click', () => { openNowPlayingInfoCard(); });
-      content.appendChild(infoRow);
+      // WS87 (owner, 2026-11-15): "i don't like the 'Vad handlar det här om'
+      // and the info icon. instead show some lines of the episode information
+      // directly under the episode name in the player. where info needs to be
+      // cut show some ... in the end of the line. when clicking on the episode
+      // text shown open the big card". WS87b: "left align the episode
+      // information with the episode title and not the image".
+      //
+      // So the info row is GONE. The description preview lives INSIDE the
+      // now-playing text block — appended into `.expand-text`, the same
+      // column the title is in — so it aligns with the title BY STRUCTURE,
+      // not by a margin that has to be kept in sync with the image width.
+      // Clamped to three lines with an ellipsis (CSS line-clamp — the "..."
+      // is the browser's, not a JS-truncated string that would cut mid-word).
+      // The whole block is the tap target for the card.
+      const mountInfoPreview = () => {
+        const info = resolveNowPlayingInfo();
+        if (!info || !info.description) return null;
+        const btn = el('button', {
+          class: 'expand-desc-btn', type: 'button',
+          'aria-label': 'Visa programinformation',
+        }, el('div', { class: 'expand-desc', text: info.description }));
+        btn.addEventListener('click', () => { openNowPlayingInfoCard(); });
+        // The text column of the row renderSongView just built. Falling back
+        // to `content` keeps the preview reachable even if the row shape
+        // changes — misaligned but present beats aligned but gone.
+        const textCol = content.querySelector('.expand-row:last-child .expand-text')
+          || content.querySelector('.expand-row .expand-text');
+        (textCol || content).appendChild(btn);
+        return btn;
+      };
+      let infoPreview = mountInfoPreview();
       // Re-paint when metadata/artwork arrives after the panel opened.
-      // The hook keeps the EXACT shape the WS2 Bug 3 guard asserts; the info
-      // row is re-appended by wrapping the hook afterwards, so the guard's
-      // property (renderSongView() re-runs inside the hook) still holds and
-      // the row survives the repaint too.
+      // The hook keeps the EXACT shape the WS2 Bug 3 guard asserts; the
+      // preview is re-mounted by wrapping the hook afterwards, so the
+      // guard's property (renderSongView() re-runs inside the hook) still
+      // holds and the preview follows the playhead too.
       panel._srRepaint = () => { content.textContent = ''; renderSongView(); };
       const baseRepaint = panel._srRepaint;
-      panel._srRepaint = () => { baseRepaint(); content.appendChild(infoRow); };
+      panel._srRepaint = () => {
+        baseRepaint();
+        infoPreview = mountInfoPreview();
+      };
       return panel;
     };
 
@@ -11092,40 +11112,62 @@ function seekMeasureRecordText() {
    * No Spela button: the episode is ALREADY playing — the card is opened from
    * the player, so a play button would offer to restart what is on.
    */
-  function openNowPlayingInfoCard() {
+  /**
+   * WS86/WS87: the programme information for what the playhead is sitting on,
+   * as ONE resolver so the expanded panel's preview lines and the info card
+   * can never disagree (the R6 rule — one fact, one source, many surfaces).
+   *
+   * For a live channel the programme is resolved from the same `_srSchedule`
+   * entry the title pill reads, at `playheadWallMs()` — behind live the
+   * on-air programme would be the wrong answer (the R5 rule). For an episode
+   * the track's own description is the source.
+   *
+   * Returns null when there is nothing to show — the caller decides what
+   * "nothing" looks like (the panel omits the block; the card shows a toast).
+   */
+  function resolveNowPlayingInfo() {
     const cur = state.current;
-    if (!cur) return;
+    if (!cur) return null;
     if (cur.kind === 'episode') {
-      openEpisodeInfoCard({
-        title: cur.title,
+      return {
+        title: cur.title || '',
+        programName: cur.subtitle || cur.programName || '',
         description: cur.description || null,
         publishDateUtc: null,
         duration: Number.isFinite(cur.duration) ? cur.duration : null,
         artwork: cur.artwork || null,
-        showNoAudioNote: false,
-      }, { name: cur.subtitle || cur.programName || '' }, null);
-      return;
+      };
     }
-    // Live: the programme at the PLAYHEAD, from the same schedule the title
-    // pill reads. Behind live the on-air programme would be the wrong answer
-    // — the same reason R5 exists.
     const schedule = Array.isArray(cur._srSchedule) ? cur._srSchedule : [];
     const ev = pickByPosition(schedule.map((e) => ({
       startMs: e.startMs, stopMs: e.endMs, title: e.title,
       description: e.description, image: e.image, programName: e.programName,
     })), playheadWallMs());
-    if (!ev) {
-      showToast('Ingen programinformation hittades just nu.');
-      return;
-    }
-    openEpisodeInfoCard({
-      title: ev.title || cur._srProgramTitle || cur.title,
+    if (!ev) return null;
+    return {
+      title: ev.title || cur._srProgramTitle || cur.title || '',
+      programName: ev.programName || cur.subtitle || '',
       description: ev.description || null,
       publishDateUtc: ev.startMs,
       duration: null,
       artwork: ev.image || cur.artwork || null,
+    };
+  }
+
+  function openNowPlayingInfoCard() {
+    const info = resolveNowPlayingInfo();
+    if (!info) {
+      showToast('Ingen programinformation hittades just nu.');
+      return;
+    }
+    openEpisodeInfoCard({
+      title: info.title,
+      description: info.description,
+      publishDateUtc: info.publishDateUtc,
+      duration: info.duration,
+      artwork: info.artwork,
       showNoAudioNote: false,
-    }, { name: ev.programName || cur.subtitle || '' }, null);
+    }, { name: info.programName }, null);
   }
 
   function openEpisodeInfoCard(ep, pod, playArgs) {
