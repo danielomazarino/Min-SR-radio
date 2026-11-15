@@ -483,3 +483,41 @@ test('WS88: a live SONG is never shown with the programme description unlabelled
   assert.match(fn, /descriptionIsProgramme: false/,
     'an episode description must never be labelled as programme-level');
 });
+
+test('WS89: the player info card is capped at the expanded player top edge', () => {
+  // OWNER, 2026-11-15: "i would like it to stop at the same height as the
+  // extended player top if not in need for being higher in case of text not
+  // becoming visible then."
+  const card = grab('openNowPlayingInfoCard');
+  // The cap is MEASURED from the live player, not a constant — the player's
+  // height varies and a hard-coded number is the fudge this repo forbids.
+  assert.match(card, /\$player\.classList\.contains\('visible'\)/,
+    'the cap must be measured from the live player');
+  assert.match(card, /getBoundingClientRect\(\)\.top/,
+    'the cap must be the player top edge');
+  assert.match(card, /openEpisodeInfoCard\([\s\S]*playerTop\)/,
+    'the measured cap must reach the card');
+  // grab() cannot extract openContextCard: its signature has a DESTRUCTURING
+  // brace pair, and the matcher closes at the destructuring's '}' — the exact
+  // silent-extraction trap AGENTS.md §7 warns about. Extract by brace-matching
+  // from the BODY opening brace instead.
+  const sigStart = APP.indexOf('function openContextCard(');
+  assert.notEqual(sigStart, -1, 'openContextCard must exist');
+  const bodyOpen = APP.indexOf('{', APP.indexOf(')', sigStart));
+  let d = 0, bodyEnd = bodyOpen;
+  for (let i = bodyOpen; i < APP.length; i++) {
+    if (APP[i] === '{') d++;
+    else if (APP[i] === '}') { d--; if (d === 0) { bodyEnd = i; break; } }
+  }
+  const ctx = APP.slice(sigStart, bodyEnd + 1);
+  assert.match(ctx, /maxHeightPx/, 'openContextCard must accept the cap');
+  assert.match(ctx, /--card-max-h/, 'the cap must be published as a CSS variable');
+  assert.match(ctx, /card-capped/, 'the capped sheet must carry the capped class');
+  // The cap is a MAXIMUM: the sheet stays content-sized below it.
+  const css = fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8');
+  const rule = css.slice(css.indexOf('.sheet.context-card.card-capped'),
+    css.indexOf('}', css.indexOf('.sheet.context-card.card-capped')));
+  assert.match(rule, /max-height:\s*var\(--card-max-h/, 'the cap must be a max-height');
+  assert.match(rule, /min-height:\s*var\(--card-min-h/,
+    'the WS62 short-list floor must be relaxed for the capped card');
+});

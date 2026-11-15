@@ -2575,8 +2575,7 @@ body.player-gesture-lock {
  */
 .sheet.context-card {
   /* Anchor scrolling must clear the fixed block. */
-  scroll-padding-top: var(--card-fixed-h, 0px);
-  /* ---- WS62, part 2: THE SHORT-LIST REGRESSION, and its honest cause. ----
+  scroll-padding-top: var(--card-fixed-h, 0px);  /* ---- WS62, part 2: THE SHORT-LIST REGRESSION, and its honest cause. ----
    *
    * Deleting the list padding removed a 95px BLACK BAND from every card (see
    * the note above), but it also removed 95px of SHEET HEIGHT, and that turned
@@ -3816,3 +3815,21 @@ body.player-gesture-lock {
 }
 .expand-desc-btn:active { opacity: 0.6; }
 .expand-desc-btn .expand-desc { margin-top: 0; }
+
+/* ---- WS89: a card opened FROM THE PLAYER stops at the player's top edge ----
+ *
+ * OWNER, 2026-11-15: "i would like it to stop at the same height as the
+ * extended player top if not in need for being higher in case of text not
+ * becoming visible then."
+ *
+ * The cap is a MAXIMUM, not a height: the sheet stays content-sized below it,
+ * so a two-line card is short and a long description still scrolls. The value
+ * is measured from the live player in JS (--card-max-h) — a constant would be
+ * the fudge this repo has been bitten by. The WS62 short-list floor
+ * (min-height: calc(100dvh - var(--band-y))) is relaxed for this card only,
+ * or the floor would override the cap.
+ */
+.sheet.context-card.card-capped {
+  max-height: var(--card-max-h, none);
+  min-height: var(--card-min-h, 0px);
+}
