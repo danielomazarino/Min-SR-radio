@@ -420,6 +420,12 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
       id: ep.id ?? null,
       title: safeStr(ep.title, 160) || null,
       url: safeStr(ep.url, 500) || null,
+      // WS88: the EPISODE's own description. SR's app shows it under the
+      // episode title (owner's screenshot 2026-11-15); the podcast-level
+      // blurb is a different text about the SERIES. Dropped here before,
+      // which is why the player showed "Mats Nileskär ger dig möten…" for
+      // an episode about George Clinton.
+      description: safeStr(ep.description, 600) || null,
       publishDateUtc: parseSrDate(ep.publishdateutc),
       audioUrl,
       duration,
@@ -2563,11 +2569,19 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
     // already; at the live edge it is the programme on air, which is the same
     // thing the owner expects to see.
     const programme = cur._srProgramTitle || null;
+    // WS88 (owner, 2026-11-15): the programme's own description, so the
+    // player's preview can label it as the PROGRAMME's text. The schedule
+    // entry is the same one resolveMetadataForPosition reads for the title.
+    const schedule = Array.isArray(cur._srSchedule) ? cur._srSchedule : [];
+    const ev = pickByPosition(schedule.map((e) => ({
+      startMs: e.startMs, stopMs: e.endMs, description: e.description,
+    })), playheadWallMs());
     return {
       atLiveEdge,
       song,
       artwork,
       programme,
+      programmeDescription: ev ? (ev.description || null) : null,
     };
   }
   // ---- WS26 Part 3: fill the timeline from SR, not from listening ----
@@ -7630,10 +7644,19 @@ function seekMeasureRecordText() {
       const mountInfoPreview = () => {
         const info = resolveNowPlayingInfo();
         if (!info || !info.description) return null;
+        // WS88 (owner, 2026-11-15, P3 live): when a SONG is playing, the
+        // programme description must not sit under the song title — it reads
+        // as if it described the song. The programme's name is prefixed so
+        // the text is honestly labelled: "Vaken: Musik, tävlingar och
+        // samtal…". For an episode the description IS about the episode, so
+        // no prefix.
+        const text = info.descriptionIsProgramme && info.programName
+          ? `${info.programName}: ${info.description}`
+          : info.description;
         const btn = el('button', {
           class: 'expand-desc-btn', type: 'button',
           'aria-label': 'Visa programinformation',
-        }, el('div', { class: 'expand-desc', text: info.description }));
+        }, el('div', { class: 'expand-desc', text }));
         btn.addEventListener('click', () => { openNowPlayingInfoCard(); });
         // The text column of the row renderSongView just built. Falling back
         // to `content` keeps the preview reachable even if the row shape
@@ -8837,7 +8860,9 @@ function seekMeasureRecordText() {
         audioUrl: ep.audioUrl,
         duration: ep.duration,
         artwork: pod.image,
-        description: pod.description || null,
+        // WS88: the EPISODE's description first; the podcast blurb is only
+        // the fallback for an episode that carries none.
+        description: ep.description || pod.description || null,
         programName: pod.name,
         image: pod.image || null,
       });
@@ -10920,6 +10945,10 @@ function seekMeasureRecordText() {
                       subtitle: ev.programName || channel.name,
                       audioUrl, duration,
                       artwork: ev.image || channel.image,
+                      // WS88: the EPISODE's description travels with the
+                      // track, so the player's preview describes THIS
+                      // episode, not the series.
+                      description: ep.description || ev.description || null,
                     });
                   } catch { showToast('Kunde inte hämta avsnittet.'); }
                 };
@@ -10960,6 +10989,10 @@ function seekMeasureRecordText() {
                         subtitle: ev.programName || channel.name,
                         audioUrl, duration,
                         artwork: ev.image || channel.image,
+                        // WS88: the EPISODE's description travels with the
+                        // track, so the player's preview describes THIS
+                        // episode, not the series.
+                        description: full.description || ev.description || null,
                       });
                     }
                   } catch { /* the schedule row's own data still shows */ }
@@ -11133,6 +11166,8 @@ function seekMeasureRecordText() {
         title: cur.title || '',
         programName: cur.subtitle || cur.programName || '',
         description: cur.description || null,
+        // WS88: false — an episode's description IS about the episode.
+        descriptionIsProgramme: false,
         publishDateUtc: null,
         duration: Number.isFinite(cur.duration) ? cur.duration : null,
         artwork: cur.artwork || null,
@@ -11144,10 +11179,20 @@ function seekMeasureRecordText() {
       description: e.description, image: e.image, programName: e.programName,
     })), playheadWallMs());
     if (!ev) return null;
+    // WS88 (owner, 2026-11-15, P3 live): when a SONG is playing, the
+    // programme's description must not sit under the song title — it reads
+    // as if it described the song ("Det Lyser I Fönstret Hos Mor" followed
+    // by "Musik, tävlingar och samtal…"). SR publishes no song descriptions
+    // (verified: rightnow dead, HLS carries no metadata), so the honest
+    // options are "programme text, labelled as such" or nothing. The label
+    // is the caller's decision; this flag carries the fact.
+    const head = resolvePlayheadMeta();
+    const songPlaying = Boolean(head && head.song && head.song.title);
     return {
       title: ev.title || cur._srProgramTitle || cur.title || '',
       programName: ev.programName || cur.subtitle || '',
       description: ev.description || null,
+      descriptionIsProgramme: songPlaying,
       publishDateUtc: ev.startMs,
       duration: null,
       artwork: ev.image || cur.artwork || null,
@@ -11160,9 +11205,15 @@ function seekMeasureRecordText() {
       showToast('Ingen programinformation hittades just nu.');
       return;
     }
+    // WS88: same labelling as the panel preview — when a song is playing,
+    // the programme description is prefixed with the programme name so it
+    // cannot read as if it described the song.
+    const description = info.descriptionIsProgramme && info.programName
+      ? `${info.programName}: ${info.description}`
+      : info.description;
     openEpisodeInfoCard({
       title: info.title,
-      description: info.description,
+      description,
       publishDateUtc: info.publishDateUtc,
       duration: info.duration,
       artwork: info.artwork,
@@ -11248,6 +11299,9 @@ function seekMeasureRecordText() {
                 subtitle: pod.name,
                 audioUrl, duration,
                 artwork: pod.image,
+                // WS88: the EPISODE's description travels with the track, so
+                // the player's preview describes THIS episode, not the series.
+                description: ep.description || null,
               }) : null;
             if (audioUrl) {
               row.onclick = () => {
@@ -11316,6 +11370,8 @@ function seekMeasureRecordText() {
                 duration: ep.duration,
                 artwork: ep.artwork || pod.image,
                 provider: 'itunes',
+                // WS88: the EPISODE's description travels with the track.
+                description: ep.description || null,
               }) : null;
             if (ep.audioUrl) {
               row.onclick = () => {

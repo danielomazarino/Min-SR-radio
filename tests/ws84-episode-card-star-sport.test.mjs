@@ -435,3 +435,51 @@ test('WS87: the panel preview and the info card read the SAME resolver', () => {
   assert.match(panel, /mountInfoPreview = \(\) => \{[\s\S]*?resolveNowPlayingInfo\(\)/,
     'the preview must read the same resolver the card reads');
 });
+
+test('WS88: the played episode carries its OWN description, not the series blurb', () => {
+  // OWNER, 2026-11-15: P3 Soul's player showed the podcast-level blurb
+  // ("Mats Nileskär ger dig möten och soulvärlden") instead of the episode's
+  // own description that SR's app shows. Root cause: fetchLatestEpisode
+  // dropped ep.description and playPodcast fell back to pod.description.
+  const fetch = grab('fetchLatestEpisode');
+  assert.match(fetch, /description: safeStr\(ep\.description, 600\) \|\| null/,
+    'fetchLatestEpisode must extract the EPISODE description');
+  const play = grab('playPodcast');
+  assert.match(play, /description: ep\.description \|\| pod\.description \|\| null/,
+    'playPodcast must prefer the episode description over the series blurb');
+  // Every play path must carry the description, or the player preview goes
+  // blank for episodes started from a card row.
+  const srCard = grab('openPodcastCard');
+  assert.match(srCard, /description: ep\.description \|\| null/,
+    'the SR podcast card rows must carry the episode description');
+  const extCard = grab('openExternalPodcastCard');
+  assert.match(extCard, /description: ep\.description \|\| null/,
+    'the iTunes card rows must carry the episode description');
+  const chan = grab('openChannelCard');
+  assert.match(chan, /description: ep\.description \|\| ev\.description \|\| null/,
+    'the tablå play paths must carry the episode description');
+});
+
+test('WS88: a live SONG is never shown with the programme description unlabelled', () => {
+  // OWNER, 2026-11-15, P3 live: the song "Det Lyser I Fönstret Hos Mor" sat
+  // above the programme blurb "Musik, tävlingar och samtal…" — reading as if
+  // it described the song. SR publishes no song descriptions (verified:
+  // rightnow dead, HLS carries no metadata), so the programme text must be
+  // LABELLED with the programme name when a song is playing.
+  const fn = grab('resolveNowPlayingInfo');
+  assert.match(fn, /descriptionIsProgramme: songPlaying/,
+    'the resolver must carry whether the description is programme-level');
+  assert.match(fn, /const songPlaying = Boolean\(head && head\.song && head\.song\.title\)/,
+    'the flag must be decided by whether a SONG is playing');
+  // The preview and the card must both apply the label.
+  const panel = APP.slice(APP.indexOf('const buildExpandPanel = () => {'),
+    APP.indexOf('expandPanelToggle = function'));
+  assert.match(panel, /descriptionIsProgramme && info\.programName\s*\?\s*`\$\{info\.programName\}: \$\{info\.description\}`/,
+    'the preview must prefix the programme name when the text is programme-level');
+  const card = grab('openNowPlayingInfoCard');
+  assert.match(card, /descriptionIsProgramme && info\.programName/,
+    'the card must apply the same labelling as the preview');
+  // An episode's description IS about the episode — never labelled.
+  assert.match(fn, /descriptionIsProgramme: false/,
+    'an episode description must never be labelled as programme-level');
+});
