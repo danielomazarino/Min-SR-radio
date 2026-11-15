@@ -3833,3 +3833,31 @@ body.player-gesture-lock {
   max-height: var(--card-max-h, none);
   min-height: var(--card-min-h, 0px);
 }
+
+/* ---- WS90: the player-opened card must REACH the player's top edge ----
+ *
+ * OWNER, 2026-11-15, with a screenshot: "i meant for the card if little
+ * information to go up to the same level as the extended player. as you see
+ * attached it doesn't and there is a small vertical visibility of the
+ * extended player visually. that is ux visually only."
+ *
+ * WS89's cap was a MAXIMUM, and a maximum only ever pulls the top edge DOWN.
+ * The overlay is bottom-anchored (`align-items: flex-end`), so a short card
+ * grew up from the bottom and stopped wherever its content ended — leaving
+ * the strip of expanded player visible above it that the screenshot shows.
+ *
+ * The fix is a FLOOR, not a smaller cap: the sheet's height becomes exactly
+ * the distance from the player's top edge to the viewport bottom, so the
+ * card's top edge sits ON the player's top edge whether the text is two
+ * lines or twenty. The value is measured from the live player in JS
+ * (--card-min-h) — the same measurement WS89 already takes, so there is one
+ * source of truth and no constant to drift. The sheet's own padding is
+ * accounted for in JS because box-sizing is border-box.
+ *
+ * The body scrolls inside the sheet, so a short description simply leaves
+ * empty space below it — which is what "go up to the same level" asks for.
+ */
+.sheet.context-card.card-floored {
+  height: var(--card-min-h, auto);
+  min-height: var(--card-min-h, 0px);
+}

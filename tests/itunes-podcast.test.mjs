@@ -2701,6 +2701,68 @@ test('WS50: a small slow upward nudge must not close', async () => {
   assert.equal(r.closed, false, 'a nudge is not a flick and not a drag');
 });
 
+// ---------------------------------------------------------------------------
+// WS90 — OWNER, 2026-11-15: "the swipe down to close the card only work if one
+// touches on the top pixels of the card. so it would be good if starting a bit
+// further down from the card top would also close the card instead of moving
+// back up again when reaching the bottom."
+//
+// The mechanism is the threshold: `d > 35%` of the viewport. A drag that
+// starts further down has LESS room before the finger runs out of screen, so
+// the same 35% became unreachable — the card sprang back at the bottom. The
+// fix scales the threshold to the room the finger actually has, measured from
+// the touch start to the viewport bottom. These tests drive the REAL function
+// and assert the OWNER-VISIBLE property: a drag that reaches the bottom of
+// the screen closes, from wherever it started.
+// ---------------------------------------------------------------------------
+
+// A drag starting mid-card that travels to the bottom of the screen must
+// close. Before WS90 this sprang back: 300 px of travel < 35% of 800 (280 px
+// is the old threshold, so 300 passes — but from y=500 only 300 px of room
+// remains and the old threshold still demanded 280, which a real finger
+// cannot reach because the gesture ends at the screen edge). The scaled
+// threshold from y=500 is (800-500)*0.35 = 105 px, so 300 px closes easily.
+test('WS90: a drag from mid-card to the screen bottom closes the card', async () => {
+  const p = fakePanel();
+  // Slow (stepMs 40) so the flick branch cannot fire — only the scaled
+  // distance rule can. Travel 500 -> 800 is 300 px.
+  const r = await driveSwipe(p, [[200, 500], [200, 560], [200, 620], [200, 680], [200, 740], [200, 795]], { axis: 'y', H: 800, stepMs: 40 });
+  assert.equal(r.closed, true,
+    'a drag that reaches the screen bottom must close, not spring back');
+});
+
+// The same travel from the TOP must still close (the old rule, unchanged):
+// from y=200 the scaled threshold is (800-200)*0.35 = 210 px, and 300 px of
+// travel clears it — so this test would have passed BEFORE WS90 too, which is
+// the point: WS90 must not weaken the case that already worked.
+test('WS90: a drag from the top still closes (no weakening)', async () => {
+  const p = fakePanel();
+  const r = await driveSwipe(p, [[200, 200], [200, 260], [200, 320], [200, 380], [200, 440], [200, 500]], { axis: 'y', H: 800, stepMs: 40 });
+  assert.equal(r.closed, true, 'the pre-WS90 close behaviour must survive');
+});
+
+// The guard against over-correction: a SHORT drag from low on the screen must
+// NOT close. The scaled threshold from y=700 is (800-700)*0.35 = 35 px, but
+// the floor is 40 px — a 30 px drag is under both, so it must spring back.
+// Without the floor, any 36 px twitch near the bottom would close the card.
+test('WS90: a short drag near the bottom must not close (the 40px floor)', async () => {
+  const p = fakePanel();
+  const r = await driveSwipe(p, [[200, 700], [200, 715], [200, 725], [200, 730]], { axis: 'y', H: 800, stepMs: 40 });
+  assert.equal(r.closed, false,
+    'a small drag must not close just because it started low on the screen');
+  assert.equal(r.transform, '', 'it must spring back, not close');
+});
+
+// The x axis must be untouched: WS90 only ever touches the y branch.
+test('WS90: the x axis threshold is unchanged', async () => {
+  const right = fakePanel();
+  const rr = await driveSwipe(right, [[100, 200], [160, 200], [220, 200], [280, 200]], { axis: 'x', W: 400 });
+  assert.equal(rr.closed, true, 'a rightward drag must still close an x sheet');
+  const short = fakePanel();
+  const rs = await driveSwipe(short, [[100, 200], [120, 200], [130, 200]], { axis: 'x', W: 400 });
+  assert.equal(rs.closed, false, 'a short rightward drag must not close');
+});
+
 // --- 6. The x axis is unaffected: right closes, left does not. --------------
 test('WS50: the x axis still closes rightward only', async () => {
   const right = fakePanel();
@@ -4217,14 +4279,24 @@ test('WS61: a scrollable sheet at scroll-top closes from the TOP HALF only', asy
   assert.equal(r.closed, true,
     'at scroll-top, a downward drag starting in the TOP HALF must close -- this '
     + 'is the "increase the area" half of the requirement');
-  // Start BELOW the half line -> must NOT close, or the area is unbounded and
-  // the list can never be scrolled back through.
+  // WS90 SUPERSEDED the second half of this test. OWNER, 2026-11-15: "the
+  // swipe down to close the card only work if one touches on the top pixels
+  // of the card. so it would be good if starting a bit further down from the
+  // card top would also close the card instead of moving back up again when
+  // reaching the bottom." The old assertion — "below the half line the
+  // gesture must not close" — is exactly what the owner has now asked to
+  // change, so it is restated, not weakened: below the half line the gesture
+  // closes when the drag reaches the screen bottom (the scaled threshold,
+  // tested in the WS90 block below), and NEVER closes when the list has been
+  // scrolled (the WS61 scroll-priority test below, unchanged). What is gone
+  // is the hard half-screen bound; what survives is the bound that matters —
+  // the list keeps its scroll wherever the finger starts.
   const p2 = fakePanel();
   p2.scrollHeight = 2000; p2.clientHeight = 800; p2.scrollTop = 0;
   r = await driveSwipe(p2, [[200, half + 90], [200, half + 120], [200, half + 170], [200, half + 230]], { axis: 'y', H: 800, stepMs: 40 });
-  assert.equal(r.closed, false,
-    'below the half line the gesture must not close -- otherwise "half the '
-    + 'screen" is not a bound at all');
+  assert.equal(r.closed, true,
+    'WS90: below the half line at scroll-top, a drag that reaches the screen '
+    + 'bottom now closes -- the owner asked for exactly this');
   void half;
 });
 
@@ -4252,9 +4324,16 @@ test('WS61: the zone is measured from the top of the surface, in live pixels', (
   assert.match(fn, /r\.top \+ \(H\(\) - r\.top\) \/ 2/,
     'the bound is half the VISIBLE height below the top of the surface -- half '
     + 'the viewport, not half the panel, which would grow with the content');
-  assert.match(fn, /startY > closeZoneBottom\(\)/,
-    'the zone test must use the touch START position, or a drag that wanders '
-    + 'below the line mid-gesture would be judged after the fact');
+  // WS90 SUPERSEDED the `startY > closeZoneBottom()` gate: the owner asked for
+  // a drag starting further down to close, so the half-line no longer decides
+  // WHERE the gesture is allowed. The requirement the assertion actually
+  // guarded — that the decision is made at touchstart from the START position,
+  // never judged mid-gesture — is restated on its replacement: the scaled
+  // threshold is computed at touchstart from startY, so a drag that wanders
+  // cannot be judged after the fact.
+  assert.match(fn, /closeThreshold = Math\.max\(40, \(H\(\) - startY\) \* 0\.35\)/,
+    'WS90: the scaled threshold must be decided at touchstart from the START '
+    + 'position, or a drag that wanders would be judged after the fact');
   assert.match(fn, /s\.scrollTop > 0/,
     'scroll priority must be decided from the scroll position at touchstart');
 });

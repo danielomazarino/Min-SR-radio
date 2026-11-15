@@ -521,3 +521,48 @@ test('WS89: the player info card is capped at the expanded player top edge', () 
   assert.match(rule, /min-height:\s*var\(--card-min-h/,
     'the WS62 short-list floor must be relaxed for the capped card');
 });
+
+test('WS90: the player info card REACHES the player top edge (a floor, not just a cap)', () => {
+  // OWNER, 2026-11-15, with a screenshot: "i meant for the card if little
+  // information to go up to the same level as the extended player. as you see
+  // attached it doesn't and there is a small vertical visibility of the
+  // extended player visually. that is ux visually only."
+  //
+  // WS89's cap was a MAXIMUM, and a maximum only ever pulls the top edge
+  // DOWN. The overlay is bottom-anchored, so a short card grew up from the
+  // bottom and stopped wherever its content ended — leaving the strip of
+  // expanded player visible above it that the screenshot shows. The fix is a
+  // FLOOR: the sheet's height becomes exactly the distance from the player's
+  // top edge to the viewport bottom, so the top edge sits ON the player's top
+  // edge whether the text is two lines or twenty.
+  const sigStart = APP.indexOf('function openContextCard(');
+  assert.notEqual(sigStart, -1, 'openContextCard must exist');
+  const bodyOpen = APP.indexOf('{', APP.indexOf(')', sigStart));
+  let d = 0, bodyEnd = bodyOpen;
+  for (let i = bodyOpen; i < APP.length; i++) {
+    if (APP[i] === '{') d++;
+    else if (APP[i] === '}') { d--; if (d === 0) { bodyEnd = i; break; } }
+  }
+  const ctx = APP.slice(sigStart, bodyEnd + 1);
+  // The floor must be measured from the SAME live player measurement, not a
+  // constant — one source of truth, no number to drift.
+  assert.match(ctx, /window\.innerHeight - maxHeightPx/,
+    'the floor must be derived from the measured player top, not a constant');
+  // The sheet's own padding must be accounted for (border-box), or the card
+  // lands short by exactly the padding.
+  assert.match(ctx, /sheetPadTop/, 'the sheet top padding must be accounted for');
+  assert.match(ctx, /sheetPadBottom/, 'the sheet bottom padding must be accounted for');
+  assert.match(ctx, /card-floored/, 'the floored sheet must carry the floored class');
+  // The CSS must apply the floor as a HEIGHT (not min-height alone — a
+  // min-height on a bottom-anchored flex child still leaves the top edge
+  // wherever the content ends... no: min-height DOES grow the box. But height
+  // pins it exactly, which is what "go up to the same level" asks for).
+  const css = fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8');
+  const rule = css.slice(css.indexOf('.sheet.context-card.card-floored'),
+    css.indexOf('}', css.indexOf('.sheet.context-card.card-floored')));
+  // Anchored so `min-height` cannot satisfy it — a bare /height:/ matches
+  // inside `min-height:` and the guard would be green while the floor was
+  // gone (found by the mutation run: removing the height line left 23/23).
+  assert.match(rule, /(^|[^-])height:\s*var\(--card-min-h/,
+    'the floor must pin the sheet height exactly');
+});
