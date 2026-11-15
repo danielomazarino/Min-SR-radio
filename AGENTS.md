@@ -326,7 +326,7 @@ playhead is at the live edge**.
 
 Checked individually, because they can fail separately:
 
-| | Requirement | Status as of 2026-09-30 (build `5eeabb9`, 256/256) |
+| | Requirement | Status as of 2026-11-15 (build `69dce1f`, 721/721) |
 |---|---|---|
 | R1 | header song title follows the playhead | **code-proven behind live** (WS26, driven test) |
 | R2 | header artist follows the playhead | **code-proven behind live** (WS26, driven test) |
@@ -334,6 +334,9 @@ Checked individually, because they can fail separately:
 | R4 | row 4 song line follows the playhead | **works — do not "re-fix" it.** Owner-confirmed on device for historical songs |
 | R5 | programme name follows the playhead | **Mechanism FIXED (WS26 Part 4); behaviour still unverified on device.** The old "the gate is unreachable" claim is **STALE** — a reachable re-evaluation path exists at `app.js` (`updateSeekableState`, the `lastWindowGateKey` block). Whether the *title* then updates on a real DVR seek is **unmeasured**. Do not re-derive the mechanism; read the code. |
 | R6 | the two halves of the panel must never disagree | **FIXED (WS27, commit `c016cdb`), deployed. Mechanism measured, not assumed:** `pickByPosition()` returns the first containing entry, so an earlier-starting entry still spanning "now" **shadowed** the polled song. Fix is the single line `const song = hit \|\| (atLiveEdge ? (nowPlaying.song \|\| null) : null);`. **Code-proven only — never device-verified.** |
+| R7 | episode info card opens from long-press (tablå, podcast/channel cards) and from the player's description preview | **FIXED (WS84–WS89), deployed.** Episode descriptions carried on every play path (WS88); programme text labelled when a song is playing (WS88); the player-opened card stops at the expanded player's top edge, measured live, as a MAXIMUM — content-sized below it (WS89, commit `69dce1f`). **Code-proven only — never device-verified.** |
+| R8 | favourite star on podcast/channel cards and tablå rows; filled when favourited, click unfavourites | **FIXED (WS84–WS85), deployed.** Provider-explicit (`buildFavStarButton(item, kind, provider)`); star sits left of the close button with extra spacing (WS85). **Code-proven only — never device-verified.** |
+| R9 | news source selectable: Ekot (default) or Radiosporten, via settings toggle | **FIXED (WS84–WS85), deployed.** Key `minradio.newsfeed.v1`; sport = Radiosporten program 179 (verified live, same Atom shape as Ekot). **Code-proven only — never device-verified.** |
 
 Read the "code-proven" labels precisely: they cover the **behind-live** case
 only. Desktop Chromium cannot load SR's DVR stream, so none of it has been
@@ -372,6 +375,41 @@ ordering, not by correctness.
 device-verified. If the owner reports a disagreement at the live edge, that is a
 new measurement about a *fixed* defect — investigate it as such, and do not
 assume the WS27 fix caused it.
+
+**WS84–WS89 (2026-11-12 → 2026-11-15), all deployed, latest build `69dce1f`
+(721/721).** What was built, so the next session does not re-derive it:
+
+- **WS84** — long-press episode info card (`openEpisodeInfoCard` →
+  `openContextCard`), favourite star (`buildFavStarButton`, provider-explicit),
+  news/sport toggle (`NEWS_FEEDS`, key `minradio.newsfeed.v1`, sport =
+  Radiosporten program 179).
+- **WS85** — search moved under the news-source section; `descriptionParagraphs()`
+  (own tag strip preserving newlines — `stripTags` collapses whitespace); star
+  left of the close button with extra spacing; star on ALL tablå cards +
+  `addLongPress` on tablå rows.
+- **WS86** — episode info card from the player (`openNowPlayingInfoCard`).
+- **WS87** — the info row/icon replaced by a tappable description preview
+  (`mountInfoPreview`) inside `.expand-text`, aligned with the title BY
+  STRUCTURE; `resolveNowPlayingInfo()` is the ONE resolver shared by preview
+  and card (R6 rule on a third surface).
+- **WS88** — episode descriptions on every play path (`fetchLatestEpisode`
+  extracts `ep.description`; `playPodcast` prefers `ep.description ||
+  pod.description`; all card-row playArgs carry it); programme text labelled
+  ("Vaken: …") when a SONG is playing — SR publishes no song descriptions.
+- **WS89** — the player-opened card stops at the expanded player's top edge:
+  `openContextCard` gains `maxHeightPx` (publishes `--card-max-h`, zeroes
+  `--card-min-h`, adds `.card-capped`); the cap is measured from the live
+  player (`getBoundingClientRect().top`), never a constant; it is a MAXIMUM —
+  the sheet stays content-sized below it; the WS62 short-list floor is relaxed
+  for the capped card only. List-opened cards pass no cap.
+
+**Test-harness gotchas learned in WS84–WS89** (they cost real time twice):
+`grab()` cannot extract functions with destructuring signatures
+(`function openContextCard({ ... })` — the destructuring brace closes the
+matcher); brace-match from the body opening brace instead. Arrow-function
+consts (`const buildExpandPanel = () => {`) need the same manual extraction.
+The WS2 repaint-hook guard and the WS20 `addLongPress` single-line guard both
+caught real regressions this session — keep their exact shapes.
 
 ---
 
