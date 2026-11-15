@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = '965dcf2';
+  const APP_BUILD = '69dce1f';
   // WS80 (owner, 2026-10-09): "change under Info from Daniel Omazarino to Danielo
   // Mazarino". Corrected at the single source -- this constant is what the About
   // overlay's `.about-version` line renders (`${APP_BUILD} · Utvecklad av ...`).
@@ -10678,7 +10678,7 @@ function seekMeasureRecordText() {
     return wrap;
   }
 
-  function openContextCard({ title, subtitle, image, buildBody }) {
+  function openContextCard({ title, subtitle, image, buildBody, maxHeightPx }) {
     const overlay = el('div', { class: 'sheet-overlay' });
     const sheet = el('div', { class: 'sheet context-card', role: 'dialog', 'aria-modal': 'true', 'aria-label': title });
     const grabZone = el('div', { class: 'sheet-grab-zone' }, el('div', { class: 'sheet-grab' }));
@@ -10743,6 +10743,21 @@ function seekMeasureRecordText() {
       sheet.style.setProperty('--card-fixed-h', `${grabH + headH}px`);
     };
     publishFixedHeight();
+    // WS89 (owner, 2026-11-15): a card opened FROM THE PLAYER must not rise
+    // higher than the expanded player's top edge — "i would like it to stop
+    // at the same height as the extended player top if not in need for being
+    // higher in case of text not becoming visible then". The cap is a MAXIMUM:
+    // the sheet stays content-sized below it, so a two-line card is short and
+    // a long description still scrolls. Measured from the live player, not a
+    // constant — the player's height varies (mini-bar, artwork, badges), and
+    // a hard-coded number is exactly the fudge this repo has been bitten by.
+    // The sheet's own `min-height` (the WS62 short-list floor) is relaxed for
+    // this card, or the floor would override the cap.
+    if (Number.isFinite(maxHeightPx) && maxHeightPx > 0) {
+      sheet.style.setProperty('--card-max-h', `${Math.round(maxHeightPx)}px`);
+      sheet.style.setProperty('--card-min-h', '0px');
+      sheet.classList.add('card-capped');
+    }
     // A stale height is the flakiness the owner reported, so it must not be
     // allowed to persist across an orientation change. Removed on close with
     // the rest of the card, since the node goes away anyway.
@@ -11211,6 +11226,15 @@ function seekMeasureRecordText() {
     const description = info.descriptionIsProgramme && info.programName
       ? `${info.programName}: ${info.description}`
       : info.description;
+    // WS89 (owner, 2026-11-15): the card must stop at the expanded player's
+    // top edge. Measured from the live player — its height varies (mini-bar,
+    // artwork, badges) and a constant would be a fudge. The player is on
+    // screen whenever this card opens from it, so the measurement is always
+    // available on this path. Cards opened from lists pass no cap and keep
+    // the full-height behaviour.
+    const playerTop = $player.classList.contains('visible')
+      ? Math.round($player.getBoundingClientRect().top)
+      : null;
     openEpisodeInfoCard({
       title: info.title,
       description,
@@ -11218,10 +11242,10 @@ function seekMeasureRecordText() {
       duration: info.duration,
       artwork: info.artwork,
       showNoAudioNote: false,
-    }, { name: info.programName }, null);
+    }, { name: info.programName }, null, playerTop);
   }
 
-  function openEpisodeInfoCard(ep, pod, playArgs) {
+  function openEpisodeInfoCard(ep, pod, playArgs, maxHeightPx) {
     const when = formatTime(ep.publishDateUtc) || null;
     const dur = Number.isFinite(ep.duration) && ep.duration > 0 ? fmtDur(ep.duration) : null;
     const meta = [when, dur].filter(Boolean).join(' · ');
@@ -11229,6 +11253,7 @@ function seekMeasureRecordText() {
       title: ep.title || pod.name,
       subtitle: pod.name,
       image: ep.artwork || pod.image || null,
+      maxHeightPx,
       buildBody: (body, close) => {
         const info = el('div', { class: 'epi-info' });
         const paras = descriptionParagraphs(ep.description);
