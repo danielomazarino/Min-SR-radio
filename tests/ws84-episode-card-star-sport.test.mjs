@@ -362,28 +362,33 @@ test('WS85: the tablå rows open the episode info card on long-press, tap still 
 });
 
 test('WS86: the player opens the episode info card for what the playhead is sitting on', () => {
-  // The card must describe the PLAYHEAD's programme — the same schedule entry
-  // the title pill reads — not the on-air one. Behind live, the on-air
-  // programme would be the wrong answer (the R5 rule, on a third surface).
-  const fn = grab('openNowPlayingInfoCard');
+  // WS87 restated: the playhead resolution moved into resolveNowPlayingInfo()
+  // (shared with the panel preview), so the assertions moved with it. The
+  // requirement is unchanged — the card must describe the PLAYHEAD's
+  // programme, not the on-air one (the R5 rule, on a third surface).
+  const fn = grab('resolveNowPlayingInfo');
   assert.match(fn, /pickByPosition\(schedule\.map/,
-    'the live card must resolve the programme from the playhead schedule');
+    'the live programme must resolve from the playhead schedule');
   assert.match(fn, /playheadWallMs\(\)/,
     'the resolution must use the playhead wall clock, not Date.now()');
-  assert.match(fn, /ev\.description \|\| null/,
+  assert.match(fn, /description: ev\.description \|\| null/,
     'the schedule entry\'s description must be shown');
-  // An episode track shows its own description; no Spela button is offered
-  // because the episode is ALREADY playing.
-  assert.match(fn, /cur\.description \|\| null/,
-    'an episode card must show the track description');
-  const card = grab('openEpisodeInfoCard');
-  // The card is shared, so the no-audio wording must not claim a dead button
-  // for the player case — the player case passes playArgs null and the card
-  // must not print "Inget ljud" for something that IS playing.
-  assert.match(fn, /openEpisodeInfoCard\(/, 'the player path must open the shared card');
+  assert.match(fn, /description: cur\.description \|\| null/,
+    'an episode must show the track description');
+  const card = grab('openNowPlayingInfoCard');
+  assert.match(card, /openEpisodeInfoCard\(/, 'the player path must open the shared card');
+  assert.match(card, /showNoAudioNote: false/,
+    'the player path must suppress the no-audio note — the programme IS playing');
 });
 
-test('WS86: the expanded panel carries the info action and it survives repaints', () => {
+test('WS87: the expanded panel shows the description preview and it survives repaints', () => {
+  // WS87 SUPERSEDES WS86's row (owner, 2026-11-15): "i don't like the 'Vad
+  // handlar det här om' and the info icon. instead show some lines of the
+  // episode information directly under the episode name in the player ...
+  // when clicking on the episode text shown open the big card". The
+  // requirement is the same access to the card, delivered as a description
+  // preview instead of a labelled row — restated, not weakened.
+  //
   // buildExpandPanel is a `const ... = () => {` arrow, not a `function`
   // declaration, so grab() (which keys on `function NAME(`) cannot see it —
   // the exact silent-extraction trap AGENTS.md §7 warns about. Extract by
@@ -396,11 +401,37 @@ test('WS86: the expanded panel carries the info action and it survives repaints'
     else if (APP[i] === '}') { d--; if (d === 0) { end = i; break; } }
   }
   const fn = APP.slice(start, end + 1);
-  assert.match(fn, /expand-info-row/, 'the panel must carry the info row');
+  assert.match(fn, /expand-desc-btn/, 'the panel must carry the description preview');
   assert.match(fn, /openNowPlayingInfoCard\(\)/,
-    'the row must open the now-playing info card');
-  // The repaint hook must re-append the row, or the first metadata update
+    'the preview must open the now-playing info card');
+  // WS87b (owner, 2026-11-15): the preview must align with the TITLE, not
+  // the image — mounted INSIDE the .expand-text column, by structure, not by
+  // a margin kept in sync with the image width.
+  assert.match(fn, /\.expand-row:last-child \.expand-text/,
+    'the preview must mount into the text column, aligned with the title');
+  // The repaint must re-render the preview, or the first metadata update
   // would erase the only way to open the card.
-  assert.match(fn, /baseRepaint\(\); content\.appendChild\(infoRow\)/,
-    'the repaint must re-append the info row');
+  assert.match(fn, /baseRepaint\(\);[\s\S]*?infoPreview = mountInfoPreview\(\)/,
+    'the repaint must re-mount the description preview');
+  // The old labelled row must be gone, not hidden behind the new one.
+  assert.ok(!/expand-info-row/.test(fn),
+    'the WS86 "Vad handlar det här?" row must be gone (owner, 2026-11-15)');
+});
+
+test('WS87: the panel preview and the info card read the SAME resolver', () => {
+  // One fact, one source: the preview lines and the card must both come from
+  // resolveNowPlayingInfo(), or the two surfaces could describe different
+  // programmes (the R6 rule on a third surface).
+  const fn = grab('resolveNowPlayingInfo');
+  assert.match(fn, /pickByPosition\(schedule\.map/,
+    'the live programme must resolve from the playhead schedule');
+  assert.match(fn, /playheadWallMs\(\)/,
+    'the resolution must use the playhead wall clock, not Date.now()');
+  const card = grab('openNowPlayingInfoCard');
+  assert.match(card, /resolveNowPlayingInfo\(\)/,
+    'the card must read the same resolver the preview reads');
+  const panel = APP.slice(APP.indexOf('const buildExpandPanel = () => {'),
+    APP.indexOf('expandPanelToggle = function'));
+  assert.match(panel, /mountInfoPreview = \(\) => \{[\s\S]*?resolveNowPlayingInfo\(\)/,
+    'the preview must read the same resolver the card reads');
 });
