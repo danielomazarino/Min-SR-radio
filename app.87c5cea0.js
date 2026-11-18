@@ -51,7 +51,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // honest identity: it names the exact code, and `git log <id>` resolves it.
   // package.json's version is the single remaining version source; this app
   // deliberately does not display it, because it is not per-build.
-  const APP_BUILD = 'cd94986';
+  const APP_BUILD = '76f3213';
   // WS80 (owner, 2026-10-09): "change under Info from Daniel Omazarino to Danielo
   // Mazarino". Corrected at the single source -- this constant is what the About
   // overlay's `.about-version` line renders (`${APP_BUILD} · Utvecklad av ...`).
@@ -164,7 +164,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   const NEWS_FEEDS = {
     ekot: { url: 'https://api.sr.se/api/rss/program/83?format=145', label: 'Nyheter' },
     sport: { url: 'https://api.sr.se/api/rss/program/179?format=145', label: 'Sport' },
-    alla: { url: null, label: 'Alla flashar', sources: ['ekot', 'sport'] },
+    alla: { url: null, label: 'Flashar', sources: ['ekot', 'sport'] },
   };
   function loadNewsFeed() {
     return NEWS_FEEDS[localStorage.getItem(NEWS_FEED_KEY)] || NEWS_FEEDS.ekot;
