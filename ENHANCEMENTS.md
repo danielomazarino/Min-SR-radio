@@ -10771,3 +10771,43 @@ reference the user's eye was comparing.** WS77 centred the arc circle, WS79 the
 mass centroid, WS80 the bounding edge, WS81 the *reference box*. Three of the four
 were genuinely wrong. When a defect keeps surviving fixes, the productive question
 is not "is this value right?" but **"what is being compared to what?"**
+
+---
+
+## 2026-11-19 (WS91–WS92) — combined news feed and "Flashar" label
+
+**Owner request:** change the settings spelling from "Nyheder" to "Nyheter", and
+check whether an "Alla flashar" button can show both sources mixed in time order.
+A follow-up request changed the home-screen label to just **"Flashar"**.
+
+**What was found and changed:**
+
+- The literal `Nyheder` did not exist in the app. The actual settings heading was
+  `Nyhedskälla`; it is now **`Nyhetskälla`**.
+- `NEWS_FEEDS` gained a third option, key `alla`, which fetches both Ekot
+  (program 83) and Radiosporten (program 179). Its label was first `Alla flashar`
+  and is now **`Flashar`** after the owner's follow-up.
+- `fetchNewsFlashes()` fetches the configured sources in parallel, parses both
+  with the existing Atom parser, sorts all items by `publishDateUtc`, and returns
+  the newest `count` items. A single failed source no longer blanks the combined
+  list; the working source still renders. If every source fails, the existing
+  boot error path still applies.
+- Single-source behaviour and the default (`ekot`) are unchanged. No CSS changed.
+
+**Commits:** `cd94986` + `5400e00` (combined feed and spelling), then `76f3213` +
+`20192d8` (label rename and build artifacts).
+
+**Verified:**
+
+- Full suite: **729/729 pass**, up from 726. The focused news suite was 62/62
+  before the label rename and 26/26 after it.
+- Driven browser check on the built app: the settings sheet rendered
+  `Nyhetskälla` with `Nyheter`, `Sport`, and `Flashar`; after saving, the home
+  section showed a mixed list with both `Ekot` and `Radiosporten` items in
+  publish-time order.
+- Deploy: live `index.html` served `app.87c5cea0.js`; the served bundle contained
+  `label: 'Flashar'` and was byte-identical to the local artifact. The service
+  worker referenced the same bundle and cache `minradio-20d4fa3c`.
+
+**Not verified:** the owner's iPhone. The deploy checks prove the right code is
+served, not how it behaves on the device. The build id to check is **`76f3213`**.
