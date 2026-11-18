@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const APP_RAW = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
-const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '');
+const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 const APP = stripComments(APP_RAW);
 
 // ---------------------------------------------------------------------------
@@ -24,13 +24,15 @@ const APP = stripComments(APP_RAW);
 
 function grab(name, src = APP) {
   const start = src.indexOf(`function ${name}(`);
-  assert.notEqual(start, -1, `${name} must exist in app.js`);
-  let d = 0, end = start;
-  for (let i = start; i < src.length; i++) {
+  const asyncStart = src.indexOf(`async function ${name}(`);
+  const from = asyncStart !== -1 && (start === -1 || asyncStart < start) ? asyncStart : start;
+  assert.notEqual(from, -1, `${name} must exist in app.js`);
+  let d = 0, end = from;
+  for (let i = from; i < src.length; i++) {
     if (src[i] === '{') d++;
     else if (src[i] === '}') { d--; if (d === 0) { end = i; break; } }
   }
-  return src.slice(start, end + 1);
+  return src.slice(from, end + 1);
 }
 
 function grabConst(name, src = APP) {
@@ -147,8 +149,10 @@ test('WS84: the sport feed URL is the Radiosporten feed and the parser URL follo
   // The parser must read the SELECTED feed, not a hardcoded one — otherwise
   // the toggle would change the label while the app kept fetching Ekot.
   const fn = grab('fetchNewsFlashes');
-  assert.match(fn, /loadNewsFeed\(\)\.url/,
-    'fetchNewsFlashes must fetch the selected feed, not a constant');
+  assert.match(fn, /const feed = loadNewsFeed\(\);/,
+    'fetchNewsFlashes must read the selected feed, not a constant');
+  assert.match(fn, /feed\.sources[\s\S]*feed\.url/,
+    'the selected feed must drive both single and combined fetches');
   const feeds = grabConst('NEWS_FEEDS');
   assert.match(feeds, /ekot: \{ url: 'https:\/\/api\.sr\.se\/api\/rss\/program\/83\?format=145'/,
     'Ekot stays the default feed');
@@ -160,6 +164,99 @@ test('WS84: the home section title follows the selected feed', () => {
   const src = APP;
   assert.match(src, /text: loadNewsFeed\(\)\.label/,
     'the news section title must come from the selected feed, not a literal');
+});
+
+test('the settings heading spells Nyhetskälla and offers Alla flashar', () => {
+  const src = APP;
+  assert.match(src, /text: 'Nyhetskälla'/, 'the settings heading must use Swedish spelling');
+  assert.ok(!src.includes('Nyhedskälla'), 'the old misspelling must be gone');
+  const feeds = grabConst('NEWS_FEEDS');
+  assert.match(feeds, /alla: \{ url: null, label: 'Alla flashar', sources: \['ekot', 'sport'\] \}/,
+    'the combined option must name both source feeds');
+});
+
+test('Alla flashar fetches both feeds and merges them newest-first', async () => {
+  const fn = grab('fetchNewsFlashes');
+  const asyncFn = fn.replace(/^  /gm, '');
+  const factory = new Function('deps', `
+    const { localStorage, fetch, NEWS_FEEDS, NEWS_FEED_KEY, FETCH_TIMEOUT_MS,
+      unescapeXml, stripTags, textToParagraphs, newsClipDbId, newsAudioUrl } = deps;
+    ${grab('loadNewsFeed').replace(/^  /gm, '')}
+    ${asyncFn}
+    return { fetchNewsFlashes };
+  `);
+  const entry = (title, published, id) => `<entry><title type="text">${title}</title>` +
+    `<published>${published}</published>` +
+    `<link href="https://www.sverigesradio.se/artikel/${id}" />` +
+    '<content type="html">&lt;p&gt;En lagom lång ingress för testet.&lt;/p&gt;</content>' +
+    '<author><name>Test</name></author></entry>';
+  const ekotXml = `<feed>${entry('Ekot ny', '2026-11-18T20:00:00+01:00', 111)}` +
+    `${entry('Ekot gammal', '2026-11-18T10:00:00+01:00', 112)}</feed>`;
+  const sportXml = `<feed>${entry('Sport mitt', '2026-11-18T15:00:00+01:00', 113)}` +
+    `${entry('Sport nyast', '2026-11-18T22:00:00+01:00', 114)}</feed>`;
+  const calls = [];
+  const world = factory({
+    localStorage: { getItem: () => 'alla' },
+    NEWS_FEEDS: {
+      ekot: { url: 'https://example.test/ekot' },
+      sport: { url: 'https://example.test/sport' },
+      alla: { url: null, sources: ['ekot', 'sport'] },
+    },
+    NEWS_FEED_KEY: 'minradio.newsfeed.v1',
+    FETCH_TIMEOUT_MS: 10000,
+    fetch: async (url) => {
+      calls.push(url);
+      return { ok: true, text: async () => url.includes('ekot') ? ekotXml : sportXml };
+    },
+    unescapeXml: (s) => String(s).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'),
+    stripTags: (s) => String(s).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
+    textToParagraphs: () => ['En lagom lång ingress för testet.'],
+    newsClipDbId: () => null,
+    newsAudioUrl: () => null,
+  });
+  const items = await world.fetchNewsFlashes(4);
+  assert.deepEqual(calls, ['https://example.test/ekot', 'https://example.test/sport'],
+    'both sources must be fetched');
+  assert.deepEqual(items.map((i) => i.title),
+    ['Sport nyast', 'Ekot ny', 'Sport mitt', 'Ekot gammal'],
+    'the merged list must be ordered by publish time across both sources');
+});
+
+test('Alla flashar still shows the other source when one feed fails', async () => {
+  const fn = grab('fetchNewsFlashes');
+  const asyncFn = fn.replace(/^  /gm, '');
+  const factory = new Function('deps', `
+    const { localStorage, fetch, NEWS_FEEDS, NEWS_FEED_KEY, FETCH_TIMEOUT_MS,
+      unescapeXml, stripTags, textToParagraphs, newsClipDbId, newsAudioUrl } = deps;
+    ${grab('loadNewsFeed').replace(/^  /gm, '')}
+    ${asyncFn}
+    return { fetchNewsFlashes };
+  `);
+  const xml = '<feed><entry><title type="text">Sport bara</title>' +
+    '<published>2026-11-18T21:00:00+01:00</published>' +
+    '<link href="https://www.sverigesradio.se/artikel/115" /></entry></feed>';
+  const world = factory({
+    localStorage: { getItem: () => 'alla' },
+    NEWS_FEEDS: {
+      ekot: { url: 'https://example.test/ekot' },
+      sport: { url: 'https://example.test/sport' },
+      alla: { url: null, sources: ['ekot', 'sport'] },
+    },
+    NEWS_FEED_KEY: 'minradio.newsfeed.v1',
+    FETCH_TIMEOUT_MS: 10000,
+    fetch: async (url) => {
+      if (url.includes('ekot')) throw new Error('Ekot nere');
+      return { ok: true, text: async () => xml };
+    },
+    unescapeXml: (s) => String(s),
+    stripTags: (s) => String(s),
+    textToParagraphs: () => [],
+    newsClipDbId: () => null,
+    newsAudioUrl: () => null,
+  });
+  const items = await world.fetchNewsFlashes(4);
+  assert.deepEqual(items.map((i) => i.title), ['Sport bara'],
+    'a single failed source must not blank the combined feed');
 });
 
 // ---- Feature 2: the favourite star ------------------------------------------

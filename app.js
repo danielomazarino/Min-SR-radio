@@ -156,10 +156,15 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   // "Lyssna:" clip), so fetchNewsFlashes' parser needs no branch — only the
   // URL changes. Persisted under its own key; default 'ekot' so existing
   // users see no change.
+  //
+  // Owner, 2026-11-18: a third option, "Alla flashar", fetches BOTH feeds and
+  // merges them into one newest-first list. It has no URL of its own; its
+  // `sources` list names the feeds to combine.
   const NEWS_FEED_KEY = 'minradio.newsfeed.v1';
   const NEWS_FEEDS = {
     ekot: { url: 'https://api.sr.se/api/rss/program/83?format=145', label: 'Nyheter' },
     sport: { url: 'https://api.sr.se/api/rss/program/179?format=145', label: 'Sport' },
+    alla: { url: null, label: 'Alla flashar', sources: ['ekot', 'sport'] },
   };
   function loadNewsFeed() {
     return NEWS_FEEDS[localStorage.getItem(NEWS_FEED_KEY)] || NEWS_FEEDS.ekot;
@@ -1357,49 +1362,68 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   }
 
   async function fetchNewsFlashes(count) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-    let xml;
-    try {
-      const res = await fetch(loadNewsFeed().url, { signal: controller.signal });
-      if (!res.ok) throw new Error(`Nyhetsflödet svarade med ${res.status}`);
-      xml = await res.text();
-    } finally {
-      clearTimeout(timer);
+    const feed = loadNewsFeed();
+    const urls = feed.sources
+      ? feed.sources.map((name) => NEWS_FEEDS[name]?.url).filter(Boolean)
+      : [feed.url].filter(Boolean);
+    if (!urls.length) throw new Error('Nyhetsflödet saknar källa.');
+
+    // Fetch every source in parallel. A single failing source must not blank
+    // the whole list: the other source is still useful, and the existing boot
+    // path already treats a total failure as its own error state.
+    const responses = await Promise.allSettled(urls.map(async (url) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+      try {
+        const res = await fetch(url, { signal: controller.signal });
+        if (!res.ok) throw new Error(`Nyhetsflödet svarade med ${res.status}`);
+        return await res.text();
+      } finally {
+        clearTimeout(timer);
+      }
+    }));
+    const xmls = responses
+      .filter((r) => r.status === 'fulfilled')
+      .map((r) => r.value);
+    if (!xmls.length) {
+      const reason = responses.find((r) => r.status === 'rejected')?.reason;
+      throw reason instanceof Error ? reason : new Error('Nyhetsflödet kunde inte hämtas.');
     }
-    const entries = xml.split(/<entry[\s>]/).slice(1);
+
     const items = [];
-    for (const block of entries) {
-      const title = /<title type="text">([\s\S]*?)<\/title>/.exec(block)?.[1];
-      const published = /<published>([\s\S]*?)<\/published>/.exec(block)?.[1];
-      const link = /<link href="([^"]+)"\s*\/>/.exec(block)?.[1];
-      const contentHtml = /<content type="html">([\s\S]*?)<\/content>/.exec(block)?.[1] || '';
-      const author = /<author>\s*<name>([\s\S]*?)<\/name>/.exec(block)?.[1];
-      if (!title || !link) continue;
-      const decoded = unescapeXml(contentHtml);
-      const imgMatch = /<img src="([^"]+)"/.exec(decoded);
-      let publishedMs = published ? Date.parse(published.trim()) : NaN;
-      if (!Number.isFinite(publishedMs)) publishedMs = null;
-      const idMatch = /artikel\/(\d+)/.exec(link);
-      const articleId = idMatch ? Number(idMatch[1]) : null;
-      const audioDbId = newsClipDbId(decoded);
-      items.push({
-        id: idMatch ? Number(idMatch[1]) : publishedMs ?? items.length,
-        title: stripTags(title).slice(0, 160),
-        // Feed content = lead text (full body is not reachable from a static host)
-        lead: textToParagraphs(decoded),
-        imageUrl: imgMatch ? imgMatch[1] : null,
-        imageAlt: null,
-        url: link.trim(),
-        publishDateUtc: publishedMs,
-        programName: author ? unescapeXml(author).trim().slice(0, 80) : null,
-        // The clip id travels with the item so the resolver URL is derived, not
-        // guessed, and so a bad id can never produce a play button.
-        audioDbId,
-        audioUrl: newsAudioUrl(articleId, audioDbId),
-        duration: null,
-      });
-      if (items.length >= count * 3) break;
+    for (const xml of xmls) {
+      const entries = xml.split(/<entry[\s>]/).slice(1);
+      for (const block of entries) {
+        const title = /<title type="text">([\s\S]*?)<\/title>/.exec(block)?.[1];
+        const published = /<published>([\s\S]*?)<\/published>/.exec(block)?.[1];
+        const link = /<link href="([^"]+)"\s*\/>/.exec(block)?.[1];
+        const contentHtml = /<content type="html">([\s\S]*?)<\/content>/.exec(block)?.[1] || '';
+        const author = /<author>\s*<name>([\s\S]*?)<\/name>/.exec(block)?.[1];
+        if (!title || !link) continue;
+        const decoded = unescapeXml(contentHtml);
+        const imgMatch = /<img src="([^"]+)"/.exec(decoded);
+        let publishedMs = published ? Date.parse(published.trim()) : NaN;
+        if (!Number.isFinite(publishedMs)) publishedMs = null;
+        const idMatch = /artikel\/(\d+)/.exec(link);
+        const articleId = idMatch ? Number(idMatch[1]) : null;
+        const audioDbId = newsClipDbId(decoded);
+        items.push({
+          id: idMatch ? Number(idMatch[1]) : publishedMs ?? items.length,
+          title: stripTags(title).slice(0, 160),
+          // Feed content = lead text (full body is not reachable from a static host)
+          lead: textToParagraphs(decoded),
+          imageUrl: imgMatch ? imgMatch[1] : null,
+          imageAlt: null,
+          url: link.trim(),
+          publishDateUtc: publishedMs,
+          programName: author ? unescapeXml(author).trim().slice(0, 80) : null,
+          // The clip id travels with the item so the resolver URL is derived, not
+          // guessed, and so a bad id can never produce a play button.
+          audioDbId,
+          audioUrl: newsAudioUrl(articleId, audioDbId),
+          duration: null,
+        });
+      }
     }
     items.sort((a, b) => (b.publishDateUtc ?? 0) - (a.publishDateUtc ?? 0));
     return items.slice(0, count);
@@ -12056,7 +12080,7 @@ function seekMeasureRecordText() {
     const newsFeed = loadNewsFeed();
     const feedBtns = {};
     const feedSection = el('div', { class: 'setting-section' },
-      el('h3', { class: 'section-title', text: 'Nyhedskälla' }),
+      el('h3', { class: 'section-title', text: 'Nyhetskälla' }),
       el('div', { class: 'setting-row news-feed-row' },
         ...Object.entries(NEWS_FEEDS).map(([name, def]) => {
           const btn = el('button', {
@@ -12667,7 +12691,7 @@ function seekMeasureRecordText() {
     selectedSection.appendChild(selectedWrap);
 
     // WS85 (owner, 2026-11-14): the selection UI — heading, counter, tabs and
-    // the search box — moved UP, directly under the Nyhedskälla section and
+    // the search box — moved UP, directly under the Nyhetskälla section and
     // ABOVE the "Valda favoriter" list. The owner marked the old position at
     // the very bottom of the sheet and drew the arrow to the spot under the
     // news-source toggle. The "Valda favoriter" section now follows the
