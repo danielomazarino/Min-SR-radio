@@ -164,7 +164,7 @@ import { installEpisodeSeekPointerHandlers } from './src/episode-seek.mjs';
   const NEWS_FEEDS = {
     ekot: { url: 'https://api.sr.se/api/rss/program/83?format=145', label: 'Nyheter' },
     sport: { url: 'https://api.sr.se/api/rss/program/179?format=145', label: 'Sport' },
-    alla: { url: null, label: 'Alla flashar', sources: ['ekot', 'sport'] },
+    alla: { url: null, label: 'Flashar', sources: ['ekot', 'sport'] },
   };
   function loadNewsFeed() {
     return NEWS_FEEDS[localStorage.getItem(NEWS_FEED_KEY)] || NEWS_FEEDS.ekot;

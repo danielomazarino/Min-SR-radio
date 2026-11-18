@@ -166,12 +166,12 @@ test('WS84: the home section title follows the selected feed', () => {
     'the news section title must come from the selected feed, not a literal');
 });
 
-test('the settings heading spells Nyhetskälla and offers Alla flashar', () => {
+test('the settings heading spells Nyhetskälla and offers Flashar', () => {
   const src = APP;
   assert.match(src, /text: 'Nyhetskälla'/, 'the settings heading must use Swedish spelling');
   assert.ok(!src.includes('Nyhedskälla'), 'the old misspelling must be gone');
   const feeds = grabConst('NEWS_FEEDS');
-  assert.match(feeds, /alla: \{ url: null, label: 'Alla flashar', sources: \['ekot', 'sport'\] \}/,
+  assert.match(feeds, /alla: \{ url: null, label: 'Flashar', sources: \['ekot', 'sport'\] \}/,
     'the combined option must name both source feeds');
 });
 
